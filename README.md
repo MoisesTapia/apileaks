@@ -1,4 +1,8 @@
-# APILeak v0.1.0
+# APILeak v0.1.0 [Beta][DEVELOPMENT]
+
+<div align="center">
+  <img src="images/logo_apileaks.png" alt="APILeak Logo" width="500"/>
+</div>
 
 ```
       .o.       ooooooooo.   ooooo ooooo                            oooo                 
