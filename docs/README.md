@@ -6,11 +6,14 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 
 ### User Documentation
 - **[Installation Guide](installation.md)** - Complete installation instructions
+- **[User Guide](user-guide.md)** - Comprehensive user guide and tutorials
+- **[Usage Examples](usage-examples.md)** - Practical usage examples and scenarios
 - **[Configuration Guide](configuration.md)** - Detailed configuration options
+- **[JWT Attack Testing](jwt-attacks.md)** - Comprehensive JWT security testing guide
 - **[Payload Generator](payload-generator.md)** - Advanced payload generation and obfuscation
 - **[WAF Evasion Guide](waf-evasion.md)** - Web Application Firewall bypass techniques
 - **[CLI Reference](cli-reference.md)** - Command-line interface documentation
-- **[Examples](examples.md)** - Practical usage examples
+- **[Quick Reference](quick-reference.md)** - Quick command reference
 
 ### Developer Documentation
 - **[Architecture](architecture.md)** - System architecture and design
@@ -19,25 +22,27 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[Development Setup](development.md)** - Development environment setup
 
 ### OWASP Modules Documentation
-- **[OWASP Overview](owasp/README.md)** - OWASP API Security Top 10 coverage
-- **[BOLA Testing](owasp/bola-testing.md)** - Broken Object Level Authorization
-- **[Authentication Testing](owasp/auth-testing.md)** - Broken Authentication
-- **[Property Level Auth](owasp/property-level-auth.md)** - Property Level Authorization
-- **[Resource Consumption](owasp/resource-consumption.md)** - Resource Consumption Testing
-- **[Function Level Auth](owasp/function-level-auth.md)** - Function Level Authorization
-- **[SSRF Testing](owasp/ssrf-testing.md)** - Server-Side Request Forgery
+- **[OWASP Coverage](owasp-coverage.md)** - OWASP API Security Top 10 coverage analysis
+- **[OWASP Modules Guide](owasp-modules-guide.md)** - Complete OWASP testing modules guide
+- **[Property Level Auth](owasp/property-level-auth.md)** - Property Level Authorization testing
 
 ### Advanced Topics
-- **[Performance Tuning](advanced/performance.md)** - Performance optimization
-- **[Security Considerations](advanced/security.md)** - Security best practices
-- **[Troubleshooting](advanced/troubleshooting.md)** - Common issues and solutions
-- **[Integration Guide](advanced/integration.md)** - CI/CD and tool integration
+- **[Advanced Discovery](advanced-discovery.md)** - Advanced endpoint discovery techniques
+- **[Framework Detection](framework-detection-version-fuzzing.md)** - Framework detection and version fuzzing
+- **[Colored HTTP Output](colored-http-output.md)** - HTTP request/response visualization
+- **[Docker Usage](docker-usage.md)** - Docker deployment and usage
+- **[CI/CD Integration](ci-cd-integration.md)** - Continuous integration and deployment
+- **[Developer Guide](developer-guide.md)** - Development and contribution guide
+- **[Testing Guide](testing.md)** - Testing strategies and guidelines
+- **[Troubleshooting Guide](troubleshooting-guide.md)** - Common issues and solutions
 
 ## 🚀 Quick Links
 
-- **Getting Started**: [Installation Guide](installation.md) → [Configuration Guide](configuration.md) → [Payload Generator](payload-generator.md) → [WAF Evasion Guide](waf-evasion.md) → [Examples](examples.md)
-- **For Developers**: [Architecture](architecture.md) → [API Reference](api-reference.md) → [Testing Guide](testing.md)
-- **For Security Testers**: [OWASP Overview](owasp/README.md) → [Payload Generator](payload-generator.md) → [WAF Evasion Guide](waf-evasion.md) → [CLI Reference](cli-reference.md)
+- **Getting Started**: [Installation Guide](installation.md) → [User Guide](user-guide.md) → [Usage Examples](usage-examples.md)
+- **JWT Security Testing**: [JWT Attack Testing](jwt-attacks.md) → [Usage Examples](usage-examples.md)
+- **For Developers**: [Developer Guide](developer-guide.md) → [Architecture](architecture.md) → [Testing Guide](testing.md)
+- **For Security Testers**: [OWASP Modules Guide](owasp-modules-guide.md) → [JWT Attack Testing](jwt-attacks.md) → [WAF Evasion Guide](waf-evasion.md)
+- **Advanced Features**: [Advanced Discovery](advanced-discovery.md) → [Framework Detection](framework-detection-version-fuzzing.md) → [CI/CD Integration](ci-cd-integration.md)
 
 ## 📖 Documentation Standards
 
