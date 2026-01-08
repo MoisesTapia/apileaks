@@ -1,48 +1,48 @@
 # Advanced Discovery Module
 
-El módulo de **Advanced Discovery** de APILeak proporciona capacidades avanzadas de mapeo de superficie de ataque que van más allá del fuzzing tradicional. Este módulo incluye descubrimiento de subdominios, análisis de políticas CORS y verificación de headers de seguridad.
+The **Advanced Discovery** module of APILeak provides advanced attack surface mapping capabilities that go beyond traditional fuzzing. This module includes subdomain discovery, CORS policy analysis, and security header verification.
 
-## 📋 Tabla de Contenidos
+## 📋 Table of Contents
 
-- [Descripción General](#descripción-general)
-- [Componentes](#componentes)
-- [Configuración](#configuración)
-- [Uso desde CLI](#uso-desde-cli)
-- [Ejemplos Prácticos](#ejemplos-prácticos)
-- [Interpretación de Resultados](#interpretación-de-resultados)
-- [Integración CI/CD](#integración-cicd)
+- [Overview](#overview)
+- [Components](#components)
+- [Configuration](#configuration)
+- [CLI Usage](#cli-usage)
+- [Practical Examples](#practical-examples)
+- [Results Interpretation](#results-interpretation)
+- [CI/CD Integration](#cicd-integration)
 - [Troubleshooting](#troubleshooting)
 
-## Descripción General
+## Overview
 
-Advanced Discovery extiende las capacidades de APILeak para proporcionar un mapeo completo de la superficie de ataque, incluyendo:
+Advanced Discovery extends APILeak's capabilities to provide complete attack surface mapping, including:
 
-### 🎯 **Objetivos Principales**
-- **Mapeo Completo**: Descubrir toda la infraestructura relacionada con la API
-- **Análisis de Seguridad**: Evaluar configuraciones de seguridad a nivel de infraestructura
-- **Detección de Riesgos**: Identificar configuraciones peligrosas en CORS y headers
-- **Superficie de Ataque**: Proporcionar una vista completa de los puntos de entrada
+### 🎯 **Main Objectives**
+- **Complete Mapping**: Discover all infrastructure related to the API
+- **Security Analysis**: Evaluate security configurations at infrastructure level
+- **Risk Detection**: Identify dangerous configurations in CORS and headers
+- **Attack Surface**: Provide a complete view of entry points
 
-### 🔍 **Capacidades**
-- Descubrimiento automático de subdominios
-- Análisis exhaustivo de políticas CORS
-- Verificación de headers de seguridad críticos
-- Detección de configuraciones inseguras
-- Generación de findings con severidad apropiada
+### 🔍 **Capabilities**
+- Automatic subdomain discovery
+- Comprehensive CORS policy analysis
+- Critical security header verification
+- Insecure configuration detection
+- Finding generation with appropriate severity
 
-## Componentes
+## Components
 
 ### 1. 🌐 **Subdomain Discovery**
 
-Descubre subdominios relacionados con el dominio objetivo.
+Discovers subdomains related to the target domain.
 
-**Características:**
-- Prueba subdominios comunes (api, dev, staging, test, qa, admin, etc.)
-- Verificación DNS y accesibilidad HTTP
-- Detección de subdominios sensibles (dev, staging, admin)
-- Procesamiento concurrente con rate limiting
+**Features:**
+- Tests common subdomains (api, dev, staging, test, qa, admin, etc.)
+- DNS verification and HTTP accessibility
+- Detection of sensitive subdomains (dev, staging, admin)
+- Concurrent processing with rate limiting
 
-**Patrones de Subdominios Probados:**
+**Tested Subdomain Patterns:**
 ```
 api, www, dev, staging, test, qa, uat, prod, production,
 admin, management, dashboard, portal, app, mobile,
@@ -51,16 +51,16 @@ v1, v2, v3, beta, alpha, demo, sandbox, internal
 
 ### 2. 🔒 **CORS Analyzer**
 
-Analiza políticas CORS para detectar configuraciones inseguras.
+Analyzes CORS policies to detect insecure configurations.
 
-**Pruebas Realizadas:**
+**Tests Performed:**
 - Wildcard origins (`*`)
-- Orígenes sospechosos (`evil.com`, `attacker.com`)
-- Métodos peligrosos (DELETE, PUT, PATCH)
-- Credenciales con wildcard (CRÍTICO)
-- Configuraciones permisivas
+- Suspicious origins (`evil.com`, `attacker.com`)
+- Dangerous methods (DELETE, PUT, PATCH)
+- Credentials with wildcard (CRITICAL)
+- Permissive configurations
 
-**Orígenes de Prueba:**
+**Test Origins:**
 ```
 https://evil.com
 https://attacker.com
@@ -72,25 +72,25 @@ null
 
 ### 3. 🛡️ **Security Headers Analyzer**
 
-Verifica la presencia y configuración de headers de seguridad críticos.
+Verifies the presence and configuration of critical security headers.
 
-**Headers Analizados:**
-- `X-Frame-Options` - Protección contra clickjacking
-- `Content-Security-Policy` - Política de seguridad de contenido
-- `Strict-Transport-Security` - HSTS para HTTPS forzado
-- `X-Content-Type-Options` - Prevención de MIME sniffing
-- `Referrer-Policy` - Control de información de referrer
-- `Permissions-Policy` - Control de permisos del navegador
-- `X-XSS-Protection` - Protección XSS (legacy)
-- `Cache-Control` - Control de caché
-- `X-Permitted-Cross-Domain-Policies` - Políticas cross-domain
+**Analyzed Headers:**
+- `X-Frame-Options` - Clickjacking protection
+- `Content-Security-Policy` - Content security policy
+- `Strict-Transport-Security` - HSTS for forced HTTPS
+- `X-Content-Type-Options` - MIME sniffing prevention
+- `Referrer-Policy` - Referrer information control
+- `Permissions-Policy` - Browser permissions control
+- `X-XSS-Protection` - XSS protection (legacy)
+- `Cache-Control` - Cache control
+- `X-Permitted-Cross-Domain-Policies` - Cross-domain policies
 
-## Configuración
+## Configuration
 
-### Configuración Básica
+### Basic Configuration
 
 ```yaml
-# Configuración mínima
+# Minimal configuration
 advanced_discovery:
   enabled: true
   subdomain_discovery: true

@@ -1,50 +1,50 @@
-# Framework Detection y API Version Fuzzing
+# Framework Detection and API Version Fuzzing
 
-## Descripción General
+## Overview
 
-APILeak v0.1.0 incluye capacidades avanzadas de detección de frameworks y fuzzing de versiones de API que permiten identificar tecnologías específicas y mapear diferentes versiones de APIs para un análisis de seguridad más completo.
+APILeak v0.1.0 includes advanced framework detection and API version fuzzing capabilities that allow identifying specific technologies and mapping different API versions for more comprehensive security analysis.
 
 ## Framework Detection
 
-### Descripción
+### Description
 
-El módulo de detección de frameworks identifica automáticamente las tecnologías utilizadas por la API objetivo, permitiendo adaptar las pruebas de seguridad según el framework específico detectado.
+The framework detection module automatically identifies the technologies used by the target API, allowing security tests to be adapted according to the specific detected framework.
 
-### Frameworks Soportados
+### Supported Frameworks
 
-- **FastAPI** - Framework Python moderno para APIs
-- **Express.js** - Framework Node.js popular
-- **Django** - Framework web Python completo
-- **Flask** - Microframework Python ligero
-- **Spring Boot** - Framework Java empresarial
-- **ASP.NET** - Framework Microsoft .NET
-- **Ruby on Rails** - Framework Ruby completo
-- **Laravel** - Framework PHP moderno
+- **FastAPI** - Modern Python framework for APIs
+- **Express.js** - Popular Node.js framework
+- **Django** - Complete Python web framework
+- **Flask** - Lightweight Python microframework
+- **Spring Boot** - Enterprise Java framework
+- **ASP.NET** - Microsoft .NET framework
+- **Ruby on Rails** - Complete Ruby framework
+- **Laravel** - Modern PHP framework
 
-### Métodos de Detección
+### Detection Methods
 
-1. **Análisis de Headers HTTP**
-   - `Server`: Identifica servidores web y frameworks
-   - `X-Powered-By`: Headers específicos de frameworks
-   - `X-AspNet-Version`: Versiones específicas de ASP.NET
+1. **HTTP Headers Analysis**
+   - `Server`: Identifies web servers and frameworks
+   - `X-Powered-By`: Framework-specific headers
+   - `X-AspNet-Version`: ASP.NET specific versions
 
-2. **Patrones de Mensajes de Error**
-   - Mensajes de error característicos de cada framework
-   - Stack traces específicos
-   - Páginas de error por defecto
+2. **Error Message Patterns**
+   - Characteristic error messages from each framework
+   - Specific stack traces
+   - Default error pages
 
-3. **Análisis de Contenido de Respuesta**
-   - Patrones específicos en el HTML/JSON
-   - Cookies y tokens característicos
-   - Estructuras de respuesta típicas
+3. **Response Content Analysis**
+   - Specific patterns in HTML/JSON
+   - Characteristic cookies and tokens
+   - Typical response structures
 
-4. **Endpoints por Defecto**
-   - `/docs`, `/redoc` para FastAPI
-   - `/admin/` para Django
-   - `/actuator` para Spring Boot
-   - `/swagger` para varios frameworks
+4. **Default Endpoints**
+   - `/docs`, `/redoc` for FastAPI
+   - `/admin/` for Django
+   - `/actuator` for Spring Boot
+   - `/swagger` for various frameworks
 
-### Configuración
+### Configuration
 
 ```yaml
 advanced_discovery:
@@ -57,63 +57,63 @@ advanced_discovery:
     confidence_threshold: 0.6
 ```
 
-### Uso desde CLI
+### CLI Usage
 
 ```bash
-# Habilitar detección de frameworks
+# Enable framework detection
 python apileaks.py full --target https://api.example.com --detect-framework
 
-# Usar flag corto
+# Use short flag
 python apileaks.py full --target https://api.example.com --df
 
-# Configurar umbral de confianza
+# Configure confidence threshold
 python apileaks.py full --target https://api.example.com --df --framework-confidence 0.8
 
-# Combinar con fuzzing de directorios
+# Combine with directory fuzzing
 python apileaks.py dir --target https://api.example.com --df
 ```
 
-### Payloads Específicos por Framework
+### Framework-Specific Payloads
 
-Una vez detectado el framework, APILeak genera automáticamente payloads específicos:
+Once the framework is detected, APILeak automatically generates specific payloads:
 
 #### FastAPI
-- Inyección de modelos Pydantic
-- Manipulación de especificaciones OpenAPI
-- Condiciones de carrera en endpoints async
+- Pydantic model injection
+- OpenAPI specification manipulation
+- Race conditions in async endpoints
 
 #### Express.js
-- Contaminación de prototipos
+- Prototype pollution
 - Path traversal via express.static
-- Vulnerabilidades del body parser
+- Body parser vulnerabilities
 
 #### Django
-- Inyección de templates Django
-- Bypass de tokens CSRF
-- Inyección SQL via ORM
+- Django template injection
+- CSRF token bypass
+- SQL injection via ORM
 
 #### Flask
-- Inyección de templates Jinja2
-- Bypass del debugger Werkzeug
-- Manipulación de cookies de sesión
+- Jinja2 template injection
+- Werkzeug debugger bypass
+- Session cookie manipulation
 
 #### Spring Boot
-- Inyección de Spring Expression Language (SpEL)
-- Exposición de endpoints Actuator
-- Vulnerabilidades de deserialización
+- Spring Expression Language (SpEL) injection
+- Actuator endpoint exposure
+- Deserialization vulnerabilities
 
 #### ASP.NET
-- Manipulación de ViewState
-- Bypass de validación de requests
-- Ataques de deserialización
+- ViewState manipulation
+- Request validation bypass
+- Deserialization attacks
 
 ## API Version Fuzzing
 
-### Descripción
+### Description
 
-El módulo de fuzzing de versiones de API descubre automáticamente diferentes versiones de la API objetivo y compara sus endpoints para identificar inconsistencias de seguridad y funcionalidades específicas por versión.
+The API version fuzzing module automatically discovers different versions of the target API and compares their endpoints to identify security inconsistencies and version-specific functionality.
 
-### Patrones de Versiones Soportados
+### Supported Version Patterns
 
 - `/v1`, `/v2`, `/v3`, `/v4`, `/v5`
 - `/api/v1`, `/api/v2`, `/api/v3`, `/api/v4`, `/api/v5`
@@ -122,29 +122,29 @@ El módulo de fuzzing de versiones de API descubre automáticamente diferentes v
 - `/version1`, `/version2`, `/version3`
 - `/ver1`, `/ver2`, `/ver3`
 
-### Funcionalidades
+### Features
 
-1. **Descubrimiento de Versiones**
-   - Prueba patrones comunes de versionado
-   - Identifica versiones accesibles
-   - Determina el estado de cada versión (activa, deprecada, desarrollo)
+1. **Version Discovery**
+   - Tests common versioning patterns
+   - Identifies accessible versions
+   - Determines the status of each version (active, deprecated, development)
 
-2. **Análisis de Endpoints**
-   - Prueba endpoints comunes en cada versión
-   - Compara disponibilidad entre versiones
-   - Identifica endpoints únicos por versión
+2. **Endpoint Analysis**
+   - Tests common endpoints in each version
+   - Compares availability between versions
+   - Identifies unique endpoints per version
 
-3. **Detección de Estado**
-   - **Activa**: Versión en producción normal
-   - **Deprecada**: Versión marcada como obsoleta
-   - **Desarrollo**: Versión beta o experimental
+3. **Status Detection**
+   - **Active**: Version in normal production
+   - **Deprecated**: Version marked as obsolete
+   - **Development**: Beta or experimental version
 
-4. **Comparación de Versiones**
-   - Endpoints comunes entre todas las versiones
-   - Endpoints únicos por versión
-   - Diferencias de funcionalidad
+4. **Version Comparison**
+   - Common endpoints across all versions
+   - Unique endpoints per version
+   - Functionality differences
 
-### Configuración
+### Configuration
 
 ```yaml
 advanced_discovery:
@@ -167,36 +167,36 @@ advanced_discovery:
     detect_deprecated: true
 ```
 
-### Uso desde CLI
+### CLI Usage
 
 ```bash
-# Habilitar fuzzing de versiones
+# Enable version fuzzing
 python apileaks.py full --target https://api.example.com --fuzz-versions
 
-# Usar flag corto
+# Use short flag
 python apileaks.py full --target https://api.example.com --fv
 
-# Patrones personalizados
+# Custom patterns
 python apileaks.py full --target https://api.example.com --fv --version-patterns "/v1,/v2,/api/v1"
 
-# Combinar con detección de frameworks
+# Combine with framework detection
 python apileaks.py full --target https://api.example.com --df --fv
 
-# Solo en modo directorio
+# Directory mode only
 python apileaks.py dir --target https://api.example.com --fv
 ```
 
-## Integración con Advanced Discovery Engine
+## Integration with Advanced Discovery Engine
 
-Ambos módulos se integran en el **Advanced Discovery Engine** que orquesta:
+Both modules integrate into the **Advanced Discovery Engine** which orchestrates:
 
-1. **Detección de Frameworks** (Fase 1)
-2. **Descubrimiento de Versiones** (Fase 2)
-3. **Descubrimiento de Subdominios** (Fase 3)
-4. **Análisis CORS** (Fase 4)
-5. **Análisis de Security Headers** (Fase 5)
+1. **Framework Detection** (Phase 1)
+2. **Version Discovery** (Phase 2)
+3. **Subdomain Discovery** (Phase 3)
+4. **CORS Analysis** (Phase 4)
+5. **Security Headers Analysis** (Phase 5)
 
-### Flujo de Trabajo
+### Workflow
 
 ```mermaid
 graph TB
@@ -213,21 +213,21 @@ graph TB
     I --> F
 ```
 
-## Findings y Reportes
+## Findings and Reports
 
-### Tipos de Findings
+### Finding Types
 
 #### Framework Detection
-- **INFO**: Framework detectado con confianza
-- **MEDIUM**: Framework con vulnerabilidades conocidas
+- **INFO**: Framework detected with confidence
+- **MEDIUM**: Framework with known vulnerabilities
 
 #### Version Fuzzing
-- **INFO**: Múltiples versiones descubiertas
-- **MEDIUM**: Versiones deprecadas accesibles
-- **HIGH**: Versiones de desarrollo en producción
-- **LOW**: Diferencias significativas entre versiones
+- **INFO**: Multiple versions discovered
+- **MEDIUM**: Deprecated versions accessible
+- **HIGH**: Development versions in production
+- **LOW**: Significant differences between versions
 
-### Ejemplo de Salida
+### Example Output
 
 ```
 🎯 Target: https://api.example.com
@@ -257,9 +257,9 @@ Findings Generated:
 ✓ Version Analysis: 1 finding (development version in production)
 ```
 
-## Configuración Avanzada
+## Advanced Configuration
 
-### Archivo de Configuración YAML
+### YAML Configuration File
 
 ```yaml
 target:
@@ -307,10 +307,10 @@ reporting:
   output_dir: "reports"
 ```
 
-### Variables de Entorno
+### Environment Variables
 
 ```bash
-# Configuración básica
+# Basic configuration
 export APILEAK_TARGET="https://api.example.com"
 export APILEAK_RATE_LIMIT="5"
 export APILEAK_TIMEOUT="15"
@@ -324,95 +324,95 @@ export APILEAK_FUZZ_VERSIONS="true"
 export APILEAK_VERSION_PATTERNS="/v1,/v2,/api/v1,/api/v2"
 ```
 
-## Casos de Uso
+## Use Cases
 
-### 1. Reconocimiento Inicial
+### 1. Initial Reconnaissance
 ```bash
-# Identificar tecnología y versiones disponibles
+# Identify technology and available versions
 python apileaks.py full --target https://api.example.com --df --fv
 ```
 
-### 2. Testing Específico por Framework
+### 2. Framework-Specific Testing
 ```bash
-# Detectar framework y usar payloads específicos
+# Detect framework and use specific payloads
 python apileaks.py full --target https://api.example.com --df --framework-confidence 0.8
 ```
 
-### 3. Análisis de Versiones Legacy
+### 3. Legacy Version Analysis
 ```bash
-# Buscar versiones deprecadas o de desarrollo
+# Search for deprecated or development versions
 python apileaks.py dir --target https://api.example.com --fv --version-patterns "/v1,/v2,/legacy,/beta"
 ```
 
-### 4. Integración en CI/CD
+### 4. CI/CD Integration
 ```bash
-# Verificar que no hay versiones de desarrollo expuestas
+# Verify no development versions are exposed
 python apileaks.py full --target $API_URL --fv --rate-limit 5 --json-logs
 ```
 
-## Mejores Prácticas
+## Best Practices
 
 ### Framework Detection
-1. **Usar umbral de confianza apropiado**: 0.6-0.8 para balance entre precisión y cobertura
-2. **Combinar con fuzzing**: Usar `--df` junto con `dir` o `full` para mejor contexto
-3. **Revisar payloads específicos**: Los payloads se adaptan automáticamente al framework detectado
+1. **Use appropriate confidence threshold**: 0.6-0.8 for balance between precision and coverage
+2. **Combine with fuzzing**: Use `--df` together with `dir` or `full` for better context
+3. **Review specific payloads**: Payloads automatically adapt to detected framework
 
 ### Version Fuzzing
-1. **Patrones personalizados**: Usar `--version-patterns` para APIs con esquemas específicos
-2. **Monitorear versiones deprecadas**: Alertar sobre versiones que deberían estar deshabilitadas
-3. **Comparar funcionalidad**: Revisar diferencias entre versiones para inconsistencias de seguridad
+1. **Custom patterns**: Use `--version-patterns` for APIs with specific schemes
+2. **Monitor deprecated versions**: Alert on versions that should be disabled
+3. **Compare functionality**: Review differences between versions for security inconsistencies
 
-### Rendimiento
-1. **Rate limiting**: Usar `--rate-limit` apropiado para evitar sobrecargar el servidor
-2. **Timeouts**: Configurar timeouts según la latencia del objetivo
-3. **Concurrencia**: Ajustar `max_concurrent_requests` según la capacidad del servidor
+### Performance
+1. **Rate limiting**: Use appropriate `--rate-limit` to avoid overloading server
+2. **Timeouts**: Configure timeouts according to target latency
+3. **Concurrency**: Adjust `max_concurrent_requests` according to server capacity
 
 ## Troubleshooting
 
-### Problemas Comunes
+### Common Issues
 
-1. **Framework no detectado**
-   - Reducir `--framework-confidence`
-   - Verificar que el target responde correctamente
-   - Revisar logs con `--log-level DEBUG`
+1. **Framework not detected**
+   - Reduce `--framework-confidence`
+   - Verify target responds correctly
+   - Review logs with `--log-level DEBUG`
 
-2. **Versiones no encontradas**
-   - Usar patrones personalizados con `--version-patterns`
-   - Verificar conectividad al target
-   - Aumentar timeout si la red es lenta
+2. **Versions not found**
+   - Use custom patterns with `--version-patterns`
+   - Verify connectivity to target
+   - Increase timeout if network is slow
 
-3. **Rate limiting del servidor**
-   - Reducir `--rate-limit`
-   - Usar `--user-agent-random` para evasión
-   - Implementar delays entre requests
+3. **Server rate limiting**
+   - Reduce `--rate-limit`
+   - Use `--user-agent-random` for evasion
+   - Implement delays between requests
 
-### Logs de Debug
+### Debug Logs
 
 ```bash
-# Habilitar logs detallados
+# Enable detailed logs
 python apileaks.py full --target https://api.example.com --df --fv --log-level DEBUG --log-file debug.log
 ```
 
 ## Roadmap
 
-### Funcionalidades Futuras
+### Future Features
 
-1. **Más Frameworks**
-   - Soporte para Gin (Go)
-   - Soporte para Rocket (Rust)
-   - Soporte para Phoenix (Elixir)
+1. **More Frameworks**
+   - Support for Gin (Go)
+   - Support for Rocket (Rust)
+   - Support for Phoenix (Elixir)
 
-2. **Detección Avanzada**
-   - Machine learning para detección
-   - Fingerprinting de versiones específicas
-   - Detección de microservicios
+2. **Advanced Detection**
+   - Machine learning for detection
+   - Specific version fingerprinting
+   - Microservices detection
 
-3. **Integración Mejorada**
-   - Plugins para frameworks específicos
-   - Reportes especializados por tecnología
-   - Recomendaciones automáticas de seguridad
+3. **Enhanced Integration**
+   - Framework-specific plugins
+   - Technology-specialized reports
+   - Automatic security recommendations
 
-## Referencias
+## References
 
 - [OWASP API Security Top 10](https://owasp.org/www-project-api-security/)
 - [Framework Security Guides](https://cheatsheetseries.owasp.org/)

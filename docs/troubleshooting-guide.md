@@ -1,146 +1,146 @@
-# 🔧 Guía de Troubleshooting - APILeak
+# 🔧 APILeak Troubleshooting Guide
 
-Esta guía cubre los problemas más comunes al usar APILeak y sus soluciones.
+This guide covers the most common issues when using APILeak and their solutions.
 
-## 📋 Tabla de Contenidos
+## 📋 Table of Contents
 
-1. [Problemas de Conexión](#problemas-de-conexión)
-2. [Problemas de Autenticación](#problemas-de-autenticación)
-3. [Rate Limiting y Timeouts](#rate-limiting-y-timeouts)
-4. [Problemas de Configuración](#problemas-de-configuración)
-5. [Problemas de Wordlists](#problemas-de-wordlists)
-6. [Problemas de Reportes](#problemas-de-reportes)
-7. [Problemas de Módulos OWASP](#problemas-de-módulos-owasp)
-8. [Problemas de Performance](#problemas-de-performance)
-9. [Logs y Debugging](#logs-y-debugging)
+1. [Connection Issues](#connection-issues)
+2. [Authentication Problems](#authentication-problems)
+3. [Rate Limiting and Timeouts](#rate-limiting-and-timeouts)
+4. [Configuration Issues](#configuration-issues)
+5. [Wordlist Problems](#wordlist-problems)
+6. [Report Generation Issues](#report-generation-issues)
+7. [OWASP Module Problems](#owasp-module-problems)
+8. [Performance Issues](#performance-issues)
+9. [Logging and Debugging](#logging-and-debugging)
 
 ---
 
-## 🌐 Problemas de Conexión
+## 🌐 Connection Issues
 
 ### Error: Connection timeout
 
-**Síntomas:**
+**Symptoms:**
 ```
 Error: Connection timeout
 requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.example.com', port=443)
 ```
 
-**Causas Comunes:**
-- API no disponible o lenta
-- Firewall bloqueando conexiones
-- Proxy o VPN interfiriendo
-- Timeout muy bajo
+**Common Causes:**
+- API unavailable or slow
+- Firewall blocking connections
+- Proxy or VPN interference
+- Timeout too low
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Aumentar timeout
+# 1. Increase timeout
 python apileaks.py full --target https://api.example.com --config config/high_timeout.yaml
 ```
 
 ```yaml
 # config/high_timeout.yaml
 target:
-  timeout: 60  # Aumentar a 60 segundos
+  timeout: 60  # Increase to 60 seconds
   verify_ssl: true
 ```
 
 ```bash
-# 2. Verificar conectividad básica
+# 2. Verify basic connectivity
 curl -I https://api.example.com
 ping api.example.com
 
-# 3. Probar con rate limiting muy bajo
+# 3. Try with very low rate limiting
 python apileaks.py full --target https://api.example.com --rate-limit 1
 ```
 
 ### Error: SSL Certificate verification failed
 
-**Síntomas:**
+**Symptoms:**
 ```
 requests.exceptions.SSLError: HTTPSConnectionPool(host='api.example.com', port=443): 
 Max retries exceeded with url: / (Caused by SSLError(SSLCertVerificationError))
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```yaml
-# config/no_ssl_verify.yaml (solo para testing)
+# config/no_ssl_verify.yaml (testing only)
 target:
-  verify_ssl: false  # ⚠️ Solo usar en entornos de desarrollo
+  verify_ssl: false  # ⚠️ Only use in development environments
 ```
 
 ```bash
-# Mejor solución: Agregar certificado al trust store
+# Better solution: Add certificate to trust store
 python apileaks.py full --target https://api.example.com --config config/no_ssl_verify.yaml
 ```
 
 ### Error: Name resolution failed
 
-**Síntomas:**
+**Symptoms:**
 ```
 requests.exceptions.ConnectionError: Failed to establish a new connection: 
 [Errno -2] Name or service not known
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar DNS
+# 1. Verify DNS
 nslookup api.example.com
 dig api.example.com
 
-# 2. Usar IP directa si es necesario
+# 2. Use direct IP if necessary
 python apileaks.py full --target https://192.168.1.100
 
-# 3. Verificar /etc/hosts (Linux/Mac)
+# 3. Check /etc/hosts (Linux/Mac)
 cat /etc/hosts
 ```
 
 ---
 
-## 🔐 Problemas de Autenticación
+## 🔐 Authentication Problems
 
 ### Error: JWT token validation failed
 
-**Síntomas:**
+**Symptoms:**
 ```
 Warning: JWT token validation failed
 Invalid JWT token format
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar formato del token
-python apileaks.py jwt-decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
+# 1. Verify token format
+python apileaks.py jwt decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
 
-# 2. Generar token de prueba
-python apileaks.py jwt-encode '{"sub":"user123","role":"user"}' --secret mysecret
+# 2. Generate test token
+python apileaks.py jwt encode '{"sub":"user123","role":"user"}' --secret mysecret
 
-# 3. Verificar que el token no esté expirado
-python apileaks.py jwt-decode $JWT_TOKEN | grep exp
+# 3. Verify token is not expired
+python apileaks.py jwt decode $JWT_TOKEN | grep exp
 ```
 
-### Error: 401 Unauthorized en todos los endpoints
+### Error: 401 Unauthorized on all endpoints
 
-**Síntomas:**
+**Symptoms:**
 ```
 All endpoints returning 401 Unauthorized
 Authentication context 'anonymous' failed
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar token manualmente
+# 1. Verify token manually
 curl -H "Authorization: Bearer $JWT_TOKEN" https://api.example.com/
 
-# 2. Probar sin autenticación primero
+# 2. Try without authentication first
 python apileaks.py full --target https://api.example.com --modules bola
 
-# 3. Usar configuración con múltiples contextos
+# 3. Use configuration with multiple contexts
 ```
 
 ```yaml
@@ -153,49 +153,49 @@ authentication:
       privilege_level: 0
     - name: "user"
       type: "bearer"
-      token: "tu_jwt_token_aqui"
+      token: "your_jwt_token_here"
       privilege_level: 1
 ```
 
 ### Error: Token expired
 
-**Síntomas:**
+**Symptoms:**
 ```
 JWT token expired
 exp claim validation failed
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Generar nuevo token
-# Contactar al equipo de desarrollo para obtener un token válido
+# 1. Generate new token
+# Contact development team for a valid token
 
-# 2. Usar token con expiración larga para testing
-python apileaks.py jwt-encode '{"sub":"user123","exp":2000000000}' --secret mysecret
+# 2. Use token with long expiration for testing
+python apileaks.py jwt encode '{"sub":"user123","exp":2000000000}' --secret mysecret
 
-# 3. Configurar renovación automática (si la API lo soporta)
+# 3. Configure automatic renewal (if API supports it)
 ```
 
 ---
 
-## ⚡ Rate Limiting y Timeouts
+## ⚡ Rate Limiting and Timeouts
 
 ### Error: Too many requests (429)
 
-**Síntomas:**
+**Symptoms:**
 ```
 HTTP 429: Too Many Requests
 Rate limit exceeded
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Reducir rate limiting drásticamente
+# 1. Drastically reduce rate limiting
 python apileaks.py full --target https://api.example.com --rate-limit 1
 
-# 2. Usar modo adaptativo (por defecto)
+# 2. Use adaptive mode (default)
 python apileaks.py full --target https://api.example.com --modules bola
 ```
 
@@ -206,66 +206,66 @@ rate_limiting:
   burst_size: 2
   adaptive: true
   respect_retry_after: true
-  backoff_factor: 3.0  # Backoff más agresivo
+  backoff_factor: 3.0  # More aggressive backoff
 ```
 
 ### Error: Request timeout
 
-**Síntomas:**
+**Symptoms:**
 ```
 requests.exceptions.ReadTimeout: HTTPSConnectionPool read timed out
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```yaml
 # config/extended_timeout.yaml
 target:
-  timeout: 120  # 2 minutos
+  timeout: 120  # 2 minutes
 
 rate_limiting:
-  requests_per_second: 2  # Más lento pero más confiable
+  requests_per_second: 2  # Slower but more reliable
 ```
 
 ### Error: Server overloaded
 
-**Síntomas:**
+**Symptoms:**
 ```
 HTTP 503: Service Unavailable
 Server temporarily overloaded
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Esperar y reintentar
-sleep 300  # 5 minutos
+# 1. Wait and retry
+sleep 300  # 5 minutes
 python apileaks.py full --target https://api.example.com --rate-limit 1
 
-# 2. Ejecutar módulos por separado
+# 2. Run modules separately
 python apileaks.py full --target https://api.example.com --modules bola --rate-limit 1
 python apileaks.py full --target https://api.example.com --modules auth --rate-limit 1
 ```
 
 ---
 
-## ⚙️ Problemas de Configuración
+## ⚙️ Configuration Issues
 
 ### Error: Configuration validation failed
 
-**Síntomas:**
+**Symptoms:**
 ```
 Configuration validation failed
 Error: target.base_url is required
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar configuración YAML
+# 1. Verify YAML configuration
 python -c "import yaml; yaml.safe_load(open('config/my_config.yaml'))"
 
-# 2. Usar configuración mínima válida
+# 2. Use minimal valid configuration
 ```
 
 ```yaml
@@ -283,217 +283,217 @@ rate_limiting:
 
 ### Error: Invalid YAML format
 
-**Síntomas:**
+**Symptoms:**
 ```
 yaml.scanner.ScannerError: while scanning for the next token
 found character '\t' that cannot start any token
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar sintaxis YAML
+# 1. Verify YAML syntax
 yamllint config/my_config.yaml
 
-# 2. Convertir tabs a espacios
+# 2. Convert tabs to spaces
 sed -i 's/\t/  /g' config/my_config.yaml
 
-# 3. Usar editor con validación YAML
+# 3. Use editor with YAML validation
 ```
 
 ### Error: Module not found
 
-**Síntomas:**
+**Symptoms:**
 ```
 Error: Unknown module 'invalid_module'
 Available modules: bola, auth, property, resource, function_auth
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar módulos disponibles
+# 1. Check available modules
 python apileaks.py full --help
 
-# 2. Usar solo módulos válidos
+# 2. Use only valid modules
 python apileaks.py full --target https://api.example.com --modules bola,auth,property
 
-# 3. Verificar ortografía
-# Correcto: bola, auth, property, resource, function_auth
-# Incorrecto: BOLA, authentication, properties
+# 3. Check spelling
+# Correct: bola, auth, property, resource, function_auth
+# Incorrect: BOLA, authentication, properties
 ```
 
 ---
 
-## 📝 Problemas de Wordlists
+## 📝 Wordlist Problems
 
 ### Error: Wordlist file not found
 
-**Síntomas:**
+**Symptoms:**
 ```
 Error: Wordlist file not found: wordlists/custom.txt
 FileNotFoundError: [Errno 2] No such file or directory
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar que el archivo existe
+# 1. Verify file exists
 ls -la wordlists/
 find . -name "*.txt" -path "*/wordlists/*"
 
-# 2. Usar wordlists por defecto
-python apileaks.py dir --target https://api.example.com  # Usa wordlists/endpoints.txt
+# 2. Use default wordlists
+python apileaks.py dir --target https://api.example.com  # Uses wordlists/endpoints.txt
 
-# 3. Crear wordlist personalizada
+# 3. Create custom wordlist
 echo -e "/api\n/admin\n/users" > wordlists/custom.txt
 ```
 
 ### Error: Empty wordlist
 
-**Síntomas:**
+**Symptoms:**
 ```
 Warning: Wordlist is empty or contains no valid entries
 No endpoints to test
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar contenido del wordlist
+# 1. Check wordlist content
 head -10 wordlists/endpoints.txt
 wc -l wordlists/endpoints.txt
 
-# 2. Filtrar líneas vacías y comentarios
+# 2. Filter empty lines and comments
 grep -v '^#' wordlists/endpoints.txt | grep -v '^$' > wordlists/clean_endpoints.txt
 
-# 3. Usar wordlist conocido
+# 3. Use known wordlist
 wget https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt -O wordlists/api-endpoints.txt
 ```
 
 ### Error: Wordlist encoding issues
 
-**Síntomas:**
+**Symptoms:**
 ```
 UnicodeDecodeError: 'utf-8' codec can't decode byte
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Convertir a UTF-8
+# 1. Convert to UTF-8
 iconv -f ISO-8859-1 -t UTF-8 wordlists/original.txt > wordlists/utf8.txt
 
-# 2. Verificar encoding
+# 2. Check encoding
 file wordlists/endpoints.txt
 chardet wordlists/endpoints.txt
 
-# 3. Limpiar caracteres problemáticos
+# 3. Clean problematic characters
 sed 's/[^[:print:]]//g' wordlists/original.txt > wordlists/clean.txt
 ```
 
 ---
 
-## 📊 Problemas de Reportes
+## 📊 Report Generation Issues
 
 ### Error: Permission denied writing reports
 
-**Síntomas:**
+**Symptoms:**
 ```
 PermissionError: [Errno 13] Permission denied: 'reports/scan.json'
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar permisos del directorio
+# 1. Check directory permissions
 ls -la reports/
 chmod 755 reports/
 
-# 2. Crear directorio si no existe
+# 2. Create directory if it doesn't exist
 mkdir -p reports
 chmod 755 reports
 
-# 3. Usar directorio alternativo
+# 3. Use alternative directory
 python apileaks.py full --target https://api.example.com --output /tmp/apileak-reports
 ```
 
 ### Error: Disk space full
 
-**Síntomas:**
+**Symptoms:**
 ```
 OSError: [Errno 28] No space left on device
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar espacio disponible
+# 1. Check available space
 df -h
 
-# 2. Limpiar reportes antiguos
+# 2. Clean old reports
 find reports/ -name "*.json" -mtime +7 -delete
 
-# 3. Usar directorio con más espacio
+# 3. Use directory with more space
 python apileaks.py full --target https://api.example.com --output /var/tmp/apileak-reports
 ```
 
 ### Error: Invalid JSON in report
 
-**Síntomas:**
+**Symptoms:**
 ```
 json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Verificar si el archivo está completo
+# 1. Check if file is complete
 tail reports/scan.json
 
-# 2. Verificar si el scan terminó correctamente
+# 2. Check if scan completed correctly
 grep -i "error\|exception" apileak.log
 
-# 3. Re-ejecutar el scan
+# 3. Re-run the scan
 python apileaks.py full --target https://api.example.com --log-level DEBUG
 ```
 
 ---
 
-## 🛡️ Problemas de Módulos OWASP
+## 🛡️ OWASP Module Problems
 
 ### Error: BOLA module failed
 
-**Síntomas:**
+**Symptoms:**
 ```
 BOLA testing failed: No valid endpoints found for testing
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Ejecutar discovery primero
+# 1. Run discovery first
 python apileaks.py dir --target https://api.example.com
 
-# 2. Verificar que hay endpoints válidos
+# 2. Verify valid endpoints exist
 curl https://api.example.com/users/1
 curl https://api.example.com/api/v1/users/1
 
-# 3. Usar configuración específica para BOLA
+# 3. Use specific BOLA configuration
 python apileaks.py full --config config/examples/bola_testing_config.yaml --target https://api.example.com
 ```
 
 ### Error: Auth module - JWT secrets not found
 
-**Síntomas:**
+**Symptoms:**
 ```
 Warning: JWT secrets wordlist not found: wordlists/jwt_secrets.txt
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Crear wordlist de secretos JWT
+# 1. Create JWT secrets wordlist
 cat > wordlists/jwt_secrets.txt << EOF
 secret
 password
@@ -503,10 +503,10 @@ jwt_secret
 your_secret_key
 EOF
 
-# 2. Descargar wordlist común
+# 2. Download common wordlist
 wget https://raw.githubusercontent.com/wallarm/jwt-secrets/master/jwt.secrets.list -O wordlists/jwt_secrets.txt
 
-# 3. Deshabilitar testing de secretos débiles
+# 3. Disable weak secrets testing
 ```
 
 ```yaml
@@ -515,136 +515,136 @@ owasp_testing:
   auth_testing:
     enabled: true
     jwt_testing: true
-    weak_secrets_wordlist: ""  # Deshabilitar
+    weak_secrets_wordlist: ""  # Disable
 ```
 
 ### Error: Resource module - Large payload failed
 
-**Síntomas:**
+**Symptoms:**
 ```
 Resource consumption test failed: Payload too large
 MemoryError: Unable to allocate memory for payload
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```yaml
 # config/smaller_payloads.yaml
 owasp_testing:
   resource_testing:
     enabled: true
-    large_payload_sizes: [1024, 10240, 102400]  # 1KB, 10KB, 100KB en lugar de MB
+    large_payload_sizes: [1024, 10240, 102400]  # 1KB, 10KB, 100KB instead of MB
 ```
 
 ```bash
-# Ejecutar con límites de memoria
-ulimit -v 1000000  # Limitar memoria virtual
+# Run with memory limits
+ulimit -v 1000000  # Limit virtual memory
 python apileaks.py full --target https://api.example.com --modules resource
 ```
 
 ---
 
-## 🚀 Problemas de Performance
+## 🚀 Performance Issues
 
 ### Error: Scan taking too long
 
-**Síntomas:**
+**Symptoms:**
 ```
 Scan has been running for over 2 hours
 No progress visible
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Usar módulos específicos
+# 1. Use specific modules
 python apileaks.py full --target https://api.example.com --modules bola,auth
 
-# 2. Reducir scope
+# 2. Reduce scope
 python apileaks.py dir --target https://api.example.com --wordlist wordlists/small_endpoints.txt
 
-# 3. Aumentar rate limiting si el servidor lo permite
+# 3. Increase rate limiting if server allows
 python apileaks.py full --target https://api.example.com --rate-limit 20
 ```
 
 ### Error: High memory usage
 
-**Síntomas:**
+**Symptoms:**
 ```
 Process killed (OOM - Out of Memory)
 Memory usage exceeding system limits
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Limitar memoria del proceso
+# 1. Limit process memory
 ulimit -v 2000000  # 2GB virtual memory limit
 
-# 2. Ejecutar módulos por separado
+# 2. Run modules separately
 for module in bola auth property; do
   python apileaks.py full --target https://api.example.com --modules $module
 done
 
-# 3. Usar configuración con menos concurrencia
+# 3. Use configuration with less concurrency
 ```
 
 ```yaml
 # config/low_memory.yaml
 rate_limiting:
-  requests_per_second: 2  # Menos concurrencia
+  requests_per_second: 2  # Less concurrency
 
 owasp_testing:
   resource_testing:
-    large_payload_sizes: [1024]  # Solo payloads pequeños
+    large_payload_sizes: [1024]  # Only small payloads
 ```
 
 ### Error: Too many open files
 
-**Síntomas:**
+**Symptoms:**
 ```
 OSError: [Errno 24] Too many open files
 ```
 
-**Soluciones:**
+**Solutions:**
 
 ```bash
-# 1. Aumentar límite de archivos abiertos
+# 1. Increase open files limit
 ulimit -n 4096
 
-# 2. Verificar límites actuales
+# 2. Check current limits
 ulimit -a
 
-# 3. Configurar límites permanentes (Linux)
+# 3. Configure permanent limits (Linux)
 echo "* soft nofile 4096" >> /etc/security/limits.conf
 echo "* hard nofile 8192" >> /etc/security/limits.conf
 ```
 
 ---
 
-## 🔍 Logs y Debugging
+## 🔍 Logging and Debugging
 
-### Habilitar Logging Detallado
+### Enable Detailed Logging
 
 ```bash
-# Logging completo
+# Complete logging
 python apileaks.py full --target https://api.example.com \
   --log-level DEBUG \
   --log-file debug.log \
   --json-logs
 
-# Ver logs en tiempo real
+# View logs in real-time
 tail -f debug.log
 
-# Filtrar logs por módulo
+# Filter logs by module
 grep "bola" debug.log
 grep "ERROR" debug.log
 ```
 
-### Debugging de Requests HTTP
+### HTTP Request Debugging
 
 ```bash
-# Habilitar logging de requests
+# Enable request logging
 export PYTHONPATH=$PYTHONPATH:.
 python -c "
 import logging
@@ -658,42 +658,42 @@ requests_log.propagate = True
 " && python apileaks.py full --target https://api.example.com --modules bola
 ```
 
-### Debugging de Configuración
+### Configuration Debugging
 
 ```python
 # debug_config.py
 import yaml
 from core import ConfigurationManager
 
-# Cargar y validar configuración
+# Load and validate configuration
 config_manager = ConfigurationManager()
 config = config_manager.load_config('config/my_config.yaml')
 
-# Mostrar configuración cargada
-print("Configuración cargada:")
+# Show loaded configuration
+print("Loaded configuration:")
 print(yaml.dump(config.__dict__, default_flow_style=False))
 
-# Validar configuración
+# Validate configuration
 errors = config_manager.validate_configuration()
 if errors:
-    print("Errores de validación:")
+    print("Validation errors:")
     for error in errors:
         print(f"  - {error}")
 else:
-    print("✅ Configuración válida")
+    print("✅ Valid configuration")
 ```
 
-### Debugging de Módulos OWASP
+### OWASP Module Debugging
 
 ```bash
-# Test individual de módulos
+# Individual module testing
 python -c "
 from modules.owasp import BOLATestingModule
 from core import APILeakCore
 import asyncio
 
 async def test_bola():
-    # Configuración mínima para testing
+    # Minimal configuration for testing
     config = type('Config', (), {
         'target': type('Target', (), {'base_url': 'https://api.example.com'})(),
         'authentication': type('Auth', (), {'contexts': []})(),
@@ -709,66 +709,66 @@ asyncio.run(test_bola())
 
 ---
 
-## 🆘 Obtener Ayuda
+## 🆘 Getting Help
 
-### Información del Sistema
+### System Information
 
 ```bash
-# Información de versión
+# Version information
 python apileaks.py --version
 
-# Información del sistema
+# System information
 python --version
 pip list | grep -E "(requests|aiohttp|click)"
 
-# Información de red
+# Network information
 curl -I https://httpbin.org/get
 ```
 
-### Reportar Issues
+### Reporting Issues
 
-Cuando reportes un issue, incluye:
+When reporting an issue, include:
 
-1. **Comando ejecutado:**
+1. **Command executed:**
 ```bash
 python apileaks.py full --target https://api.example.com --modules bola --log-level DEBUG
 ```
 
-2. **Configuración utilizada:**
+2. **Configuration used:**
 ```yaml
 # config/my_config.yaml
 target:
   base_url: "https://api.example.com"
-# ... resto de la configuración
+# ... rest of configuration
 ```
 
-3. **Logs de error:**
+3. **Error logs:**
 ```
 ERROR: Connection timeout
 Traceback (most recent call last):
   File "apileaks.py", line 123, in main
-# ... stack trace completo
+# ... complete stack trace
 ```
 
-4. **Información del entorno:**
+4. **Environment information:**
 ```bash
-# Sistema operativo
+# Operating system
 uname -a
 
-# Versión de Python
+# Python version
 python --version
 
-# Dependencias
+# Dependencies
 pip freeze
 ```
 
-### Recursos Adicionales
+### Additional Resources
 
-- **Documentación:** [docs/owasp-modules-guide.md](owasp-modules-guide.md)
-- **Ejemplos:** [config/examples/](../config/examples/)
-- **Issues:** GitHub Issues del proyecto
-- **Logs:** Siempre usar `--log-level DEBUG` para troubleshooting
+- **Documentation:** [CLI Reference](cli-reference.md)
+- **Examples:** [config/examples/](../config/examples/)
+- **Issues:** Project GitHub Issues
+- **Logs:** Always use `--log-level DEBUG` for troubleshooting
 
 ---
 
-*Esta guía cubre los problemas más comunes. Si encuentras un issue no documentado aquí, por favor repórtalo para ayudar a mejorar esta guía.*
+*This guide covers the most common issues. If you encounter an undocumented issue, please report it to help improve this guide.*

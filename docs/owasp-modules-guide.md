@@ -1,76 +1,76 @@
-# 🛡️ Guía Completa de Módulos OWASP - APILeak
+# 🛡️ Complete OWASP Modules Guide - APILeak
 
-Esta guía cubre todos los módulos OWASP implementados en APILeak, desde conceptos básicos hasta ejemplos avanzados de uso.
+This guide covers all OWASP modules implemented in APILeak, from basic concepts to advanced usage examples.
 
-## 📋 Tabla de Contenidos
+## 📋 Table of Contents
 
-1. [Introducción a los Módulos OWASP](#introducción)
-2. [Módulos Disponibles](#módulos-disponibles)
-3. [Uso Básico](#uso-básico)
-4. [Configuración Avanzada](#configuración-avanzada)
-5. [Ejemplos Prácticos](#ejemplos-prácticos)
-6. [Interpretación de Resultados](#interpretación-de-resultados)
+1. [Introduction to OWASP Modules](#introduction)
+2. [Available Modules](#available-modules)
+3. [Basic Usage](#basic-usage)
+4. [Advanced Configuration](#advanced-configuration)
+5. [Practical Examples](#practical-examples)
+6. [Results Interpretation](#results-interpretation)
 7. [Troubleshooting](#troubleshooting)
 
 ---
 
-## 🎯 Introducción
+## 🎯 Introduction
 
-APILeak implementa módulos especializados para cada categoría del **OWASP API Security Top 10 2023**. Cada módulo está diseñado para detectar vulnerabilidades específicas mediante técnicas avanzadas de testing automatizado.
+APILeak implements specialized modules for each category of the **OWASP API Security Top 10 2023**. Each module is designed to detect specific vulnerabilities through advanced automated testing techniques.
 
-### ¿Por qué usar los módulos OWASP?
+### Why use OWASP modules?
 
-- **Cobertura Completa**: Cada módulo cubre una categoría específica del OWASP Top 10
-- **Testing Especializado**: Técnicas específicas para cada tipo de vulnerabilidad
-- **Automatización**: Detección automática sin intervención manual
-- **Reportes Detallados**: Evidencia clara y recomendaciones de remediación
-
----
-
-## 🧩 Módulos Disponibles
-
-| Módulo | OWASP Category | Descripción | Prioridad |
-|--------|----------------|-------------|-----------|
-| `bola` | **API1** - Broken Object Level Authorization | Detecta acceso no autorizado a objetos | **P0** |
-| `auth` | **API2** - Broken Authentication | Identifica fallas en autenticación JWT | **P0** |
-| `property` | **API3** - Broken Object Property Level Authorization | Detecta exposición excesiva de datos | **P0** |
-| `resource` | **API4** - Unrestricted Resource Consumption | Identifica ausencia de rate limiting y DoS | **P1** |
-| `function_auth` | **API5** - Broken Function Level Authorization | Detecta escalación de privilegios | **P0** |
-
-### Estado de Implementación
-
-✅ **Completamente Implementados**: `bola`, `auth`, `property`, `resource`, `function_auth`  
-🚧 **En Desarrollo**: `ssrf` (API7), `business_flows` (API6)  
-📋 **Planificados**: `security_misconfig` (API8), `inventory_mgmt` (API9), `unsafe_consumption` (API10)
+- **Complete Coverage**: Each module covers a specific OWASP Top 10 category
+- **Specialized Testing**: Specific techniques for each type of vulnerability
+- **Automation**: Automatic detection without manual intervention
+- **Detailed Reports**: Clear evidence and remediation recommendations
 
 ---
 
-## 🚀 Uso Básico
+## 🧩 Available Modules
 
-### Comando Básico
+| Module | OWASP Category | Description | Priority |
+|--------|----------------|-------------|----------|
+| `bola` | **API1** - Broken Object Level Authorization | Detects unauthorized object access | **P0** |
+| `auth` | **API2** - Broken Authentication | Identifies JWT authentication flaws | **P0** |
+| `property` | **API3** - Broken Object Property Level Authorization | Detects excessive data exposure | **P0** |
+| `resource` | **API4** - Unrestricted Resource Consumption | Identifies missing rate limiting and DoS | **P1** |
+| `function_auth` | **API5** - Broken Function Level Authorization | Detects privilege escalation | **P0** |
+
+### Implementation Status
+
+✅ **Fully Implemented**: `bola`, `auth`, `property`, `resource`, `function_auth`  
+🚧 **In Development**: `ssrf` (API7), `business_flows` (API6)  
+📋 **Planned**: `security_misconfig` (API8), `inventory_mgmt` (API9), `unsafe_consumption` (API10)
+
+---
+
+## 🚀 Basic Usage
+
+### Basic Command
 
 ```bash
-# Ejecutar TODOS los módulos OWASP
+# Run ALL OWASP modules
 python apileaks.py full --target https://api.example.com
 
-# Ejecutar módulos específicos
+# Run specific modules
 python apileaks.py full --target https://api.example.com --modules bola,auth,resource
 ```
 
-### Módulos por Defecto
+### Default Modules
 
-Por defecto, APILeak ejecuta estos módulos en modo `full`:
+By default, APILeak runs these modules in `full` mode:
 ```bash
 bola,auth,property,resource,function_auth
 ```
 
-### Sintaxis de Módulos
+### Module Syntax
 
 ```bash
 --modules <module1>,<module2>,<module3>
 ```
 
-**Módulos disponibles:**
+**Available modules:**
 - `bola` - BOLA Testing
 - `auth` - Authentication Testing  
 - `property` - Property Level Authorization
@@ -79,9 +79,9 @@ bola,auth,property,resource,function_auth
 
 ---
 
-## ⚙️ Configuración Avanzada
+## ⚙️ Advanced Configuration
 
-### Archivo de Configuración YAML
+### YAML Configuration File
 
 ```yaml
 # config/owasp_config.yaml
@@ -92,7 +92,7 @@ target:
 owasp_testing:
   enabled_modules: ["bola", "auth", "property", "resource", "function_auth"]
   
-  # Configuración específica por módulo
+  # Module-specific configuration
   bola_testing:
     enabled: true
     id_patterns: ["sequential", "guid", "uuid"]
@@ -120,7 +120,7 @@ owasp_testing:
     admin_endpoints: ["/admin", "/api/admin", "/management"]
     dangerous_methods: ["DELETE", "PUT", "PATCH"]
 
-# Autenticación para testing
+# Authentication for testing
 authentication:
   contexts:
     - name: "anonymous"
@@ -142,44 +142,44 @@ rate_limiting:
   respect_retry_after: true
 ```
 
-### Variables de Entorno
+### Environment Variables
 
 ```bash
-# Configuración básica
+# Basic configuration
 export APILEAK_TARGET="https://api.example.com"
 export APILEAK_MODULES="bola,auth,resource"
 export APILEAK_RATE_LIMIT="5"
 export APILEAK_JWT_TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 
-# Ejecutar con variables de entorno
+# Run with environment variables
 python apileaks.py full
 ```
 
 ---
 
-## 📚 Ejemplos Prácticos
+## 📚 Practical Examples
 
 ### 1. 🔐 BOLA Testing (API1)
 
-**¿Qué detecta?**
-- Acceso no autorizado a objetos de otros usuarios
-- Enumeración de IDs secuenciales
-- Escalación horizontal de privilegios
+**What does it detect?**
+- Unauthorized access to other users' objects
+- Sequential ID enumeration
+- Horizontal privilege escalation
 
 ```bash
-# Test básico BOLA
+# Basic BOLA test
 python apileaks.py full --target https://api.example.com --modules bola
 
-# BOLA con múltiples contextos de autenticación
+# BOLA with multiple authentication contexts
 python apileaks.py full --target https://api.example.com --modules bola \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
 
-# BOLA con rate limiting bajo para APIs sensibles
+# BOLA with low rate limiting for sensitive APIs
 python apileaks.py full --target https://api.example.com --modules bola \
   --rate-limit 2
 ```
 
-**Ejemplo de vulnerabilidad detectada:**
+**Example of detected vulnerability:**
 ```
 🚨 CRITICAL: BOLA_ANONYMOUS_ACCESS
 Endpoint: https://api.example.com/users/123
@@ -189,25 +189,25 @@ Recommendation: Implement proper authentication checks for object access.
 
 ### 2. 🔑 Authentication Testing (API2)
 
-**¿Qué detecta?**
-- Algoritmos JWT débiles (none, algorithm confusion)
-- Tokens que no expiran correctamente
-- Secretos JWT débiles
-- Endpoints accesibles sin autenticación
+**What does it detect?**
+- Weak JWT algorithms (none, algorithm confusion)
+- Tokens that don't expire properly
+- Weak JWT secrets
+- Endpoints accessible without authentication
 
 ```bash
-# Test completo de autenticación
+# Complete authentication test
 python apileaks.py full --target https://api.example.com --modules auth
 
-# Test con token JWT específico
+# Test with specific JWT token
 python apileaks.py full --target https://api.example.com --modules auth \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
 
-# Test con wordlist personalizada de secretos JWT
+# Test with custom JWT secrets wordlist
 python apileaks.py full --config config/auth_config.yaml --target https://api.example.com
 ```
 
-**Ejemplo de configuración para auth testing:**
+**Example configuration for auth testing:**
 ```yaml
 owasp_testing:
   auth_testing:
@@ -219,21 +219,21 @@ owasp_testing:
 
 ### 3. 📊 Property Level Authorization (API3)
 
-**¿Qué detecta?**
-- Exposición de campos sensibles (passwords, API keys)
-- Vulnerabilidades de mass assignment
-- Campos no documentados en respuestas
-- Propiedades de solo lectura modificables
+**What does it detect?**
+- Exposure of sensitive fields (passwords, API keys)
+- Mass assignment vulnerabilities
+- Undocumented fields in responses
+- Modifiable read-only properties
 
 ```bash
-# Test de autorización a nivel de propiedades
+# Property level authorization test
 python apileaks.py full --target https://api.example.com --modules property
 
-# Con campos sensibles personalizados
+# With custom sensitive fields
 python apileaks.py full --config config/property_config.yaml --target https://api.example.com
 ```
 
-**Configuración personalizada:**
+**Custom configuration:**
 ```yaml
 owasp_testing:
   property_testing:
@@ -255,52 +255,52 @@ owasp_testing:
 
 ### 4. ⚡ Resource Consumption (API4)
 
-**¿Qué detecta?**
-- Ausencia de rate limiting
-- Aceptación de payloads grandes
-- JSON profundamente anidado
-- Vulnerabilidades ReDoS
-- Procesamiento de consultas complejas
+**What does it detect?**
+- Missing rate limiting
+- Large payload acceptance
+- Deeply nested JSON
+- ReDoS vulnerabilities
+- Complex query processing
 
 ```bash
-# Test básico de consumo de recursos
+# Basic resource consumption test
 python apileaks.py full --target https://api.example.com --modules resource
 
-# Test con burst personalizado
+# Test with custom burst
 python apileaks.py full --target https://api.example.com --modules resource \
   --rate-limit 20
 
-# Test con configuración avanzada
+# Test with advanced configuration
 python apileaks.py full --config config/resource_config.yaml --target https://api.example.com
 ```
 
-**Configuración avanzada:**
+**Advanced configuration:**
 ```yaml
 owasp_testing:
   resource_testing:
     enabled: true
-    burst_size: 150                    # Requests para rate limiting test
+    burst_size: 150                    # Requests for rate limiting test
     large_payload_sizes: [1048576, 10485760, 104857600]  # 1MB, 10MB, 100MB
-    json_depth_limit: 1500             # Profundidad JSON
+    json_depth_limit: 1500             # JSON depth
 ```
 
 ### 5. 🛡️ Function Level Authorization (API5)
 
-**¿Qué detecta?**
-- Acceso no autorizado a funciones administrativas
-- Bypass por método HTTP
-- Bypass por parámetros y headers
-- Escalación vertical de privilegios
+**What does it detect?**
+- Unauthorized access to administrative functions
+- HTTP method bypass
+- Parameter and header bypass
+- Vertical privilege escalation
 
 ```bash
-# Test de autorización a nivel de función
+# Function level authorization test
 python apileaks.py full --target https://api.example.com --modules function_auth
 
-# Con endpoints administrativos personalizados
+# With custom administrative endpoints
 python apileaks.py full --config config/function_auth_config.yaml --target https://api.example.com
 ```
 
-**Configuración personalizada:**
+**Custom configuration:**
 ```yaml
 owasp_testing:
   function_auth_testing:
@@ -316,12 +316,12 @@ owasp_testing:
 
 ---
 
-## 🎯 Ejemplos de Casos de Uso Reales
+## 🎯 Real-World Use Case Examples
 
-### Caso 1: API de E-commerce
+### Case 1: E-commerce API
 
 ```bash
-# Testing completo para API de e-commerce
+# Complete testing for e-commerce API
 python apileaks.py full --target https://api.shop.example.com \
   --modules bola,auth,property,resource \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9... \
@@ -329,10 +329,10 @@ python apileaks.py full --target https://api.shop.example.com \
   --output ecommerce_security_test
 ```
 
-### Caso 2: API Bancaria (Alta Seguridad)
+### Case 2: Banking API (High Security)
 
 ```bash
-# Testing con rate limiting muy bajo para APIs críticas
+# Testing with very low rate limiting for critical APIs
 python apileaks.py full --target https://api.bank.example.com \
   --modules bola,auth,property,function_auth \
   --rate-limit 1 \
@@ -341,10 +341,10 @@ python apileaks.py full --target https://api.bank.example.com \
   --output banking_security_audit
 ```
 
-### Caso 3: API de Redes Sociales
+### Case 3: Social Media API
 
 ```bash
-# Testing enfocado en BOLA y property level auth
+# Testing focused on BOLA and property level auth
 python apileaks.py full --target https://api.social.example.com \
   --modules bola,property,resource \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9... \
@@ -352,7 +352,7 @@ python apileaks.py full --target https://api.social.example.com \
   --output social_media_test
 ```
 
-### Caso 4: Testing en CI/CD
+### Case 4: CI/CD Testing
 
 ```bash
 #!/bin/bash
@@ -366,7 +366,7 @@ export APILEAK_OUTPUT_DIR="security_reports"
 
 python apileaks.py full --log-level ERROR
 
-# Verificar si hay vulnerabilidades críticas
+# Check for critical vulnerabilities
 if [ $? -eq 2 ]; then
     echo "❌ Critical vulnerabilities found! Failing CI/CD pipeline."
     exit 1
@@ -381,19 +381,19 @@ fi
 
 ---
 
-## 📊 Interpretación de Resultados
+## 📊 Results Interpretation
 
-### Niveles de Severidad
+### Severity Levels
 
-| Severidad | Descripción | Acción Requerida |
-|-----------|-------------|------------------|
-| **CRITICAL** | Vulnerabilidades que permiten acceso no autorizado inmediato | Corrección inmediata |
-| **HIGH** | Vulnerabilidades significativas que requieren atención urgente | Corrección en 24-48h |
-| **MEDIUM** | Vulnerabilidades moderadas que deben ser corregidas | Corrección en 1-2 semanas |
-| **LOW** | Problemas menores de seguridad | Corrección en próximo ciclo |
-| **INFO** | Información sobre configuración o endpoints encontrados | Revisión opcional |
+| Severity | Description | Required Action |
+|----------|-------------|-----------------|
+| **CRITICAL** | Vulnerabilities allowing immediate unauthorized access | Immediate fix |
+| **HIGH** | Significant vulnerabilities requiring urgent attention | Fix within 24-48h |
+| **MEDIUM** | Moderate vulnerabilities that should be fixed | Fix within 1-2 weeks |
+| **LOW** | Minor security issues | Fix in next cycle |
+| **INFO** | Information about configuration or discovered endpoints | Optional review |
 
-### Categorías de Findings por Módulo
+### Finding Categories by Module
 
 #### BOLA Module (API1)
 - `BOLA_ANONYMOUS_ACCESS` (CRITICAL)
@@ -425,7 +425,7 @@ fi
 - `HTTP_METHOD_BYPASS` (HIGH)
 - `PARAMETER_BYPASS` (MEDIUM)
 
-### Ejemplo de Reporte
+### Example Report
 
 ```json
 {
@@ -464,73 +464,73 @@ fi
 
 ## 🔧 Troubleshooting
 
-### Problemas Comunes
+### Common Issues
 
-#### 1. Rate Limiting del Servidor
+#### 1. Server Rate Limiting
 ```
 Error: Too many requests (429)
 ```
-**Solución:**
+**Solution:**
 ```bash
-# Reducir rate limit
+# Reduce rate limit
 python apileaks.py full --target https://api.example.com --rate-limit 1
 
-# Usar modo adaptativo (por defecto)
+# Use adaptive mode (default)
 python apileaks.py full --target https://api.example.com --modules bola
 ```
 
-#### 2. Timeouts de Conexión
+#### 2. Connection Timeouts
 ```
 Error: Connection timeout
 ```
-**Solución:**
+**Solution:**
 ```yaml
 target:
-  timeout: 60  # Aumentar timeout a 60 segundos
+  timeout: 60  # Increase timeout to 60 seconds
 ```
 
-#### 3. JWT Token Inválido
+#### 3. Invalid JWT Token
 ```
 Warning: JWT token validation failed
 ```
-**Solución:**
+**Solution:**
 ```bash
-# Verificar token JWT
-python apileaks.py jwt-decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
+# Verify JWT token
+python apileaks.py jwt decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
 
-# Generar nuevo token
-python apileaks.py jwt-encode '{"sub":"user123","role":"user"}' --secret mysecret
+# Generate new token
+python apileaks.py jwt encode '{"sub":"user123","role":"user"}' --secret mysecret
 ```
 
-#### 4. Wordlists No Encontradas
+#### 4. Wordlists Not Found
 ```
 Error: Wordlist file not found
 ```
-**Solución:**
+**Solution:**
 ```bash
-# Verificar que existan los wordlists
+# Verify wordlists exist
 ls -la wordlists/
 
-# Usar wordlists personalizadas
+# Use custom wordlists
 python apileaks.py full --config config/custom_wordlists.yaml --target https://api.example.com
 ```
 
-### Logs de Debug
+### Debug Logs
 
 ```bash
-# Habilitar logging detallado
+# Enable detailed logging
 python apileaks.py full --target https://api.example.com \
   --modules bola \
   --log-level DEBUG \
   --log-file debug.log
 ```
 
-### Configuración de Red
+### Network Configuration
 
 ```yaml
-# Para APIs detrás de proxies o con SSL personalizado
+# For APIs behind proxies or with custom SSL
 target:
-  verify_ssl: false  # Solo para testing, no en producción
+  verify_ssl: false  # Only for testing, not in production
   timeout: 30
   
 rate_limiting:
@@ -540,26 +540,26 @@ rate_limiting:
 
 ---
 
-## 📈 Mejores Prácticas
+## 📈 Best Practices
 
-### 1. **Selección de Módulos**
-- **APIs Públicas**: Usar todos los módulos (`bola,auth,property,resource,function_auth`)
-- **APIs Internas**: Enfocar en `bola,property,function_auth`
-- **APIs de Alto Tráfico**: Usar `resource,auth` con rate limiting bajo
+### 1. **Module Selection**
+- **Public APIs**: Use all modules (`bola,auth,property,resource,function_auth`)
+- **Internal APIs**: Focus on `bola,property,function_auth`
+- **High Traffic APIs**: Use `resource,auth` with low rate limiting
 
 ### 2. **Rate Limiting**
-- **APIs de Producción**: `--rate-limit 1-5`
-- **APIs de Staging**: `--rate-limit 5-10`
-- **APIs de Desarrollo**: `--rate-limit 10-20`
+- **Production APIs**: `--rate-limit 1-5`
+- **Staging APIs**: `--rate-limit 5-10`
+- **Development APIs**: `--rate-limit 10-20`
 
-### 3. **Autenticación**
-- Usar múltiples contextos de autenticación cuando sea posible
-- Incluir tokens con diferentes niveles de privilegios
-- Probar tanto con tokens válidos como inválidos
+### 3. **Authentication**
+- Use multiple authentication contexts when possible
+- Include tokens with different privilege levels
+- Test with both valid and invalid tokens
 
 ### 4. **CI/CD Integration**
 ```bash
-# Script para CI/CD
+# Script for CI/CD
 python apileaks.py full \
   --target "${API_ENDPOINT}" \
   --jwt "${JWT_TOKEN}" \
@@ -568,54 +568,54 @@ python apileaks.py full \
   --output "security-scan-${BUILD_NUMBER}" \
   --log-level ERROR
 
-# Verificar exit codes
+# Check exit codes
 # 0 = No critical/high findings
 # 1 = High severity findings found  
 # 2 = Critical findings found (fail pipeline)
 ```
 
 ### 5. **Reporting**
-- Usar nombres descriptivos para outputs
-- Generar múltiples formatos (JSON para automatización, HTML para humanos)
-- Archivar reportes con timestamps
+- Use descriptive names for outputs
+- Generate multiple formats (JSON for automation, HTML for humans)
+- Archive reports with timestamps
 
 ---
 
-## 🚀 Próximos Pasos
+## 🚀 Next Steps
 
-### Módulos en Desarrollo
+### Modules in Development
 - **SSRF Testing** (API7) - Server Side Request Forgery
 - **Business Flows** (API6) - Unrestricted Access to Sensitive Business Flows
 - **Security Misconfiguration** (API8)
 
-### Características Futuras
-- **Machine Learning**: Detección inteligente de patrones
-- **Custom Rules**: Reglas personalizadas por industria
-- **Integration APIs**: APIs para integración con SIEM/SOAR
-- **Real-time Monitoring**: Monitoreo continuo de APIs
+### Future Features
+- **Machine Learning**: Intelligent pattern detection
+- **Custom Rules**: Industry-specific custom rules
+- **Integration APIs**: APIs for SIEM/SOAR integration
+- **Real-time Monitoring**: Continuous API monitoring
 
 ---
 
-## 📞 Soporte
+## 📞 Support
 
-### Documentación Adicional
-- **[Referencia Rápida](quick-reference.md)** - Comandos básicos y ejemplos
-- **[Integración CI/CD](ci-cd-integration.md)** - Configuración para pipelines automatizados
-- **[Guía de Troubleshooting](troubleshooting-guide.md)** - Solución de problemas comunes
-- **[Configuraciones de Ejemplo](../config/examples/README.md)** - Ejemplos listos para usar
+### Additional Documentation
+- **[Quick Reference](quick-reference.md)** - Basic commands and examples
+- **[CI/CD Integration](ci-cd-integration.md)** - Configuration for automated pipelines
+- **[Troubleshooting Guide](troubleshooting-guide.md)** - Common problem solutions
+- **[Example Configurations](../config/examples/README.md)** - Ready-to-use examples
 
-### Configuraciones de Ejemplo Disponibles
+### Available Example Configurations
 - **[BOLA Testing](../config/examples/bola_testing_config.yaml)** - API1: Broken Object Level Authorization
 - **[Auth Testing](../config/examples/auth_testing_config.yaml)** - API2: Broken Authentication
 - **[Property Testing](../config/examples/property_testing_config.yaml)** - API3: Broken Object Property Level Authorization
 - **[Resource Testing](../config/resource_testing_example.yaml)** - API4: Unrestricted Resource Consumption
 - **[Function Auth Testing](../config/examples/function_auth_testing_config.yaml)** - API5: Broken Function Level Authorization
 
-### Reportar Issues
-- **Troubleshooting:** Consulta primero la [Guía de Troubleshooting](troubleshooting-guide.md)
+### Report Issues
+- **Troubleshooting:** First check the [Troubleshooting Guide](troubleshooting-guide.md)
 - **GitHub Issues:** [APILeak Issues](https://github.com/your-org/apileak/issues)
-- **Documentación:** [APILeak Docs](https://docs.apileak.com)
+- **Documentation:** [APILeak Docs](https://docs.apileak.com)
 
 ---
 
-*Esta documentación cubre la versión 0.1.0 de APILeak. Para actualizaciones, consulta el [CHANGELOG](../CHANGELOG.md).*
+*This documentation covers APILeak version 0.1.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*

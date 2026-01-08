@@ -1,34 +1,35 @@
-# 🚀 APILeak - Referencia Rápida de Módulos OWASP
+# 🚀 APILeak - Quick Reference
 
-## Comandos Básicos
+## Basic Commands
 
 ```bash
-# Escaneo completo (todos los módulos)
+# Full scan (all modules)
 python apileaks.py full --target https://api.example.com
 
-# Módulos específicos
+# Specific modules
 python apileaks.py full --target https://api.example.com --modules bola,auth,resource
 
-# Con autenticación JWT
+# With JWT authentication
 python apileaks.py full --target https://api.example.com --jwt YOUR_JWT_TOKEN
 
-# Con rate limiting personalizado
+# With custom rate limiting
 python apileaks.py full --target https://api.example.com --rate-limit 5
 ```
 
-## Módulos Disponibles
+## Available Modules
 
-| Código | Módulo | OWASP | Descripción |
-|--------|--------|-------|-------------|
-| `bola` | BOLA Testing | API1 | Acceso no autorizado a objetos |
-| `auth` | Authentication | API2 | Fallas en autenticación JWT |
-| `property` | Property Level Auth | API3 | Exposición excesiva de datos |
-| `resource` | Resource Consumption | API4 | Rate limiting y DoS |
-| `function_auth` | Function Level Auth | API5 | Escalación de privilegios |
+| Code | Module | OWASP | Description |
+|------|--------|-------|-------------|
+| `bola` | BOLA Testing | API1 | Broken Object Level Authorization |
+| `auth` | Authentication | API2 | Broken Authentication (JWT) |
+| `property` | Property Level Auth | API3 | Broken Object Property Level Authorization |
+| `resource` | Resource Consumption | API4 | Unrestricted Resource Consumption |
+| `function_auth` | Function Level Auth | API5 | Broken Function Level Authorization |
+| `ssrf` | SSRF Testing | API10 | Server Side Request Forgery |
 
-## Ejemplos por Tipo de API
+## Examples by API Type
 
-### API de E-commerce
+### E-commerce API
 ```bash
 python apileaks.py full --target https://api.shop.com \
   --modules bola,auth,property \
@@ -36,7 +37,7 @@ python apileaks.py full --target https://api.shop.com \
   --rate-limit 5
 ```
 
-### API Bancaria
+### Banking API
 ```bash
 python apileaks.py full --target https://api.bank.com \
   --modules bola,auth,function_auth \
@@ -44,7 +45,7 @@ python apileaks.py full --target https://api.bank.com \
   --rate-limit 1
 ```
 
-### API de Redes Sociales
+### Social Media API
 ```bash
 python apileaks.py full --target https://api.social.com \
   --modules bola,property,resource \
@@ -52,7 +53,7 @@ python apileaks.py full --target https://api.social.com \
   --rate-limit 10
 ```
 
-## Configuración Rápida YAML
+## Quick YAML Configuration
 
 ```yaml
 # config/quick_config.yaml
@@ -77,7 +78,7 @@ rate_limiting:
 python apileaks.py full --config config/quick_config.yaml
 ```
 
-## Variables de Entorno
+## Environment Variables
 
 ```bash
 export APILEAK_TARGET="https://api.example.com"
@@ -88,22 +89,22 @@ export APILEAK_RATE_LIMIT="5"
 python apileaks.py full
 ```
 
-## Interpretación de Resultados
+## Result Interpretation
 
 ### Exit Codes
-- `0` - Sin vulnerabilidades críticas/altas
-- `1` - Vulnerabilidades altas encontradas
-- `2` - Vulnerabilidades críticas encontradas
+- `0` - No critical/high vulnerabilities
+- `1` - High vulnerabilities found
+- `2` - Critical vulnerabilities found
 
-### Severidades
-- **CRITICAL** - Corrección inmediata
-- **HIGH** - Corrección en 24-48h
-- **MEDIUM** - Corrección en 1-2 semanas
-- **LOW** - Próximo ciclo de desarrollo
+### Severity Levels
+- **CRITICAL** - Immediate fix required
+- **HIGH** - Fix within 24-48h
+- **MEDIUM** - Fix within 1-2 weeks
+- **LOW** - Next development cycle
 
-## Troubleshooting Rápido
+## Quick Troubleshooting
 
-### Rate Limiting del Servidor
+### Server Rate Limiting
 ```bash
 python apileaks.py full --target URL --rate-limit 1
 ```
@@ -115,7 +116,7 @@ python apileaks.py full --target URL --log-level DEBUG
 
 ### JWT Issues
 ```bash
-python apileaks.py jwt-decode YOUR_JWT_TOKEN
+python apileaks.py jwt decode YOUR_JWT_TOKEN
 ```
 
 ## CI/CD Integration
@@ -127,7 +128,8 @@ python apileaks.py full \
   --jwt "${JWT_TOKEN}" \
   --modules bola,auth,property \
   --rate-limit 3 \
-  --log-level ERROR
+  --ci-mode \
+  --fail-on critical
 
 if [ $? -eq 2 ]; then
     echo "❌ Critical vulnerabilities found!"
@@ -137,4 +139,4 @@ fi
 
 ---
 
-Para documentación completa, ver: [docs/owasp-modules-guide.md](owasp-modules-guide.md)
+For complete documentation, see: [CLI Reference](cli-reference.md)

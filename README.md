@@ -4,17 +4,7 @@
   <img src="images/logo_apileaks.png" alt="APILeak Logo" width="500"/>
 </div>
 
-```
-      .o.       ooooooooo.   ooooo ooooo                            oooo                 
-     .888.      `888   `Y88. `888' `888'                            `888                 
-    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o 
-   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8 
-  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.  
- .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b 
-o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P' 
-
-APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
-```
+## APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
 
 **Enterprise-grade API security testing tool with comprehensive OWASP API Security Top 10 2023 coverage.**
 

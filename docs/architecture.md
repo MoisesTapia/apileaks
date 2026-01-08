@@ -176,7 +176,7 @@ Used for creating different types of modules:
 
 ### 4. Command Pattern
 Used for CLI interface:
-- **Commands**: dir, par, full, jwt-decode, jwt-encode
+- **Commands**: dir, par, full, jwt (with subcommands: decode, encode, test-alg-none, test-null-signature, brute-secret, test-kid-injection, test-jwks-spoof, test-inline-jwks)
 - **Benefits**: Easy to add new commands and maintain consistency
 
 ## Data Flow

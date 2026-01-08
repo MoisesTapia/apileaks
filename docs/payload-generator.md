@@ -1,53 +1,53 @@
 # Payload Generator
 
-El **Payload Generator** es un componente avanzado de APILeak que proporciona capacidades sofisticadas de generación, codificación y ofuscación de payloads para pruebas de seguridad en APIs. Este módulo implementa técnicas avanzadas de evasión de WAF y generación de payloads específicos por vulnerabilidad.
+The **Payload Generator** is an advanced APILeak component that provides sophisticated payload generation, encoding, and obfuscation capabilities for API security testing. This module implements advanced WAF evasion techniques and vulnerability-specific payload generation.
 
-## 📋 Tabla de Contenidos
+## 📋 Table of Contents
 
-- [Características Principales](#características-principales)
-- [Arquitectura](#arquitectura)
-- [Tipos de Codificación](#tipos-de-codificación)
-- [Técnicas de Ofuscación](#técnicas-de-ofuscación)
-- [Generación de Payloads por Vulnerabilidad](#generación-de-payloads-por-vulnerabilidad)
-- [Sistema de Templates](#sistema-de-templates)
-- [Expansión de Wordlists](#expansión-de-wordlists)
-- [Configuración](#configuración)
-- [Ejemplos de Uso](#ejemplos-de-uso)
-- [Integración con Otros Módulos](#integración-con-otros-módulos)
-- [Rendimiento y Optimización](#rendimiento-y-optimización)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Encoding Types](#encoding-types)
+- [Obfuscation Techniques](#obfuscation-techniques)
+- [Vulnerability-Specific Payload Generation](#vulnerability-specific-payload-generation)
+- [Template System](#template-system)
+- [Wordlist Expansion](#wordlist-expansion)
+- [Configuration](#configuration)
+- [Usage Examples](#usage-examples)
+- [Integration with Other Modules](#integration-with-other-modules)
+- [Performance and Optimization](#performance-and-optimization)
 
-## 🚀 Características Principales
+## 🚀 Key Features
 
-### ✅ Codificación Múltiple
-- **URL Encoding**: Codificación estándar para URLs (`%20`, `%27`, etc.)
-- **Base64 Encoding**: Codificación Base64 para evasión de filtros
-- **HTML Encoding**: Entidades HTML (`&lt;`, `&gt;`, etc.)
-- **Unicode Encoding**: Codificación Unicode (`\u0027`, etc.)
-- **Double URL Encoding**: Doble codificación URL para bypass avanzado
-- **Hexadecimal Encoding**: Codificación hexadecimal
+### ✅ Multiple Encoding
+- **URL Encoding**: Standard URL encoding (`%20`, `%27`, etc.)
+- **Base64 Encoding**: Base64 encoding for filter evasion
+- **HTML Encoding**: HTML entities (`&lt;`, `&gt;`, etc.)
+- **Unicode Encoding**: Unicode encoding (`\u0027`, etc.)
+- **Double URL Encoding**: Double URL encoding for advanced bypass
+- **Hexadecimal Encoding**: Hexadecimal encoding
 
-### ✅ Técnicas de Ofuscación
-- **Variaciones de Case**: Mayúsculas, minúsculas, mixtas, alternadas
-- **Mutaciones de Caracteres**: Sustituciones y transformaciones
-- **Inserción de Espacios**: Diferentes tipos de caracteres de espacio
-- **Inserción de Comentarios**: Comentarios SQL/código para bypass
-- **Concatenación de Strings**: Técnicas de concatenación
+### ✅ Obfuscation Techniques
+- **Case Variations**: Uppercase, lowercase, mixed, alternating
+- **Character Mutations**: Substitutions and transformations
+- **Whitespace Insertion**: Different types of space characters
+- **Comment Insertion**: SQL/code comments for bypass
+- **String Concatenation**: Concatenation techniques
 
-### ✅ Payloads Específicos por Vulnerabilidad
+### ✅ Vulnerability-Specific Payloads
 - **SQL Injection**: Time-based, error-based, union-based, boolean-based
 - **XSS**: Reflected, stored, DOM-based, filter evasion
 - **Command Injection**: Linux/Windows, time-based detection
-- **Path Traversal**: Múltiples OS, variantes codificadas
+- **Path Traversal**: Multiple OS, encoded variants
 - **SSTI**: Server-Side Template Injection
 - **NoSQL Injection**: MongoDB, JavaScript injection
 
-### ✅ Adaptación por Framework
-- **FastAPI**: Payloads específicos para FastAPI
-- **Django**: Templates Django, configuraciones específicas
-- **Express**: Payloads Node.js/Express
-- **Flask**: Templates Flask, SSTI específicos
+### ✅ Framework Adaptation
+- **FastAPI**: FastAPI-specific payloads
+- **Django**: Django templates, specific configurations
+- **Express**: Node.js/Express payloads
+- **Flask**: Flask templates, specific SSTI
 
-## 🏗️ Arquitectura
+## 🏗️ Architecture
 
 ```mermaid
 graph TB
@@ -76,10 +76,10 @@ graph TB
     WLE --> COMB[Combined Expansion]
 ```
 
-## 🔐 Tipos de Codificación
+## 🔐 Encoding Types
 
 ### URL Encoding
-Codifica caracteres especiales para uso en URLs:
+Encodes special characters for URL usage:
 
 ```python
 from utils.payload_generator import PayloadGenerator, EncodingType
@@ -87,43 +87,43 @@ from utils.payload_generator import PayloadGenerator, EncodingType
 generator = PayloadGenerator()
 payload = "' OR '1'='1' --"
 
-# Generar versión URL encoded
+# Generate URL encoded version
 encoded = generator.generate_encoded_payloads(payload, [EncodingType.URL])
-# Resultado: %27%20OR%20%271%27%3D%271%27%20--
+# Result: %27%20OR%20%271%27%3D%271%27%20--
 ```
 
 ### Base64 Encoding
-Codifica payloads en Base64 para evasión:
+Encodes payloads in Base64 for evasion:
 
 ```python
-# Generar versión Base64
+# Generate Base64 version
 encoded = generator.generate_encoded_payloads(payload, [EncodingType.BASE64])
-# Resultado: JyBPUiAnMSc9JzEnIC0t
+# Result: JyBPUiAnMSc9JzEnIC0t
 ```
 
 ### Unicode Encoding
-Convierte caracteres a representación Unicode:
+Converts characters to Unicode representation:
 
 ```python
-# Generar versión Unicode
+# Generate Unicode version
 encoded = generator.generate_encoded_payloads(payload, [EncodingType.UNICODE])
-# Resultado: \u0027\u0020\u004f\u0052\u0020\u0027\u0031\u0027\u003d\u0027\u0031\u0027\u0020\u002d\u002d
+# Result: \u0027\u0020\u004f\u0052\u0020\u0027\u0031\u0027\u003d\u0027\u0031\u0027\u0020\u002d\u002d
 ```
 
-### Codificación Combinada
-Aplica múltiples codificaciones en secuencia:
+### Combined Encoding
+Applies multiple encodings in sequence:
 
 ```python
-# Múltiples codificaciones
+# Multiple encodings
 encodings = [EncodingType.URL, EncodingType.BASE64, EncodingType.UNICODE]
 encoded = generator.generate_encoded_payloads(payload, encodings)
-# Genera todas las combinaciones posibles
+# Generates all possible combinations
 ```
 
-## 🎭 Técnicas de Ofuscación
+## 🎭 Obfuscation Techniques
 
-### Variaciones de Case
-Genera diferentes variaciones de mayúsculas y minúsculas:
+### Case Variations
+Generates different uppercase and lowercase variations:
 
 ```python
 from utils.payload_generator import ObfuscationType
@@ -131,63 +131,63 @@ from utils.payload_generator import ObfuscationType
 payload = "SELECT * FROM users"
 obfuscated = generator.apply_obfuscation(payload, [ObfuscationType.CASE_VARIATION])
 
-# Resultados:
+# Results:
 # - SELECT * FROM USERS
 # - select * from users  
 # - SeLeCt * FrOm UsErS
 # - sElecT * froM uSErs
 ```
 
-### Mutaciones de Caracteres
-Aplica sustituciones de caracteres para evasión:
+### Character Mutations
+Applies character substitutions for evasion:
 
 ```python
 payload = "' OR '1'='1' --"
 obfuscated = generator.apply_obfuscation(payload, [ObfuscationType.MUTATION])
 
-# Resultados:
+# Results:
 # - %27 OR %271%27=%271%27 --
 # - ' || '1'='1' --
 # - ' OR '1' LIKE '1' --
 ```
 
-### Inserción de Espacios
-Inserta diferentes tipos de caracteres de espacio:
+### Whitespace Insertion
+Inserts different types of space characters:
 
 ```python
 payload = "UNION SELECT"
 obfuscated = generator.apply_obfuscation(payload, [ObfuscationType.WHITESPACE_INSERTION])
 
-# Resultados:
+# Results:
 # - UNION\tSELECT
 # - UNION\nSELECT
 # - UNION\rSELECT
 ```
 
-### Inserción de Comentarios
-Inserta comentarios SQL/código para bypass:
+### Comment Insertion
+Inserts SQL/code comments for bypass:
 
 ```python
 payload = "SELECT password FROM users"
 obfuscated = generator.apply_obfuscation(payload, [ObfuscationType.COMMENT_INSERTION])
 
-# Resultados:
+# Results:
 # - SELECT/**/password/**/FROM/**/users
 # - SELECT -- comment\npassword FROM users
 # - SELECT # comment\npassword FROM users
 ```
 
-## 🎯 Generación de Payloads por Vulnerabilidad
+## 🎯 Vulnerability-Specific Payload Generation
 
 ### SQL Injection
-Genera payloads específicos para inyección SQL:
+Generates SQL injection specific payloads:
 
 ```python
 from utils.payload_generator import VulnerabilityType
 
 sql_payloads = generator.generate_injection_payloads(VulnerabilityType.SQL_INJECTION)
 
-# Ejemplos de payloads generados:
+# Example generated payloads:
 # - ' OR '1'='1' --
 # - '; DROP TABLE users; --
 # - ' UNION SELECT 1,2,3 --
@@ -196,12 +196,12 @@ sql_payloads = generator.generate_injection_payloads(VulnerabilityType.SQL_INJEC
 ```
 
 ### XSS (Cross-Site Scripting)
-Genera payloads para ataques XSS:
+Generates XSS attack payloads:
 
 ```python
 xss_payloads = generator.generate_injection_payloads(VulnerabilityType.XSS)
 
-# Ejemplos de payloads generados:
+# Example generated payloads:
 # - <script>alert('XSS')</script>
 # - <img src=x onerror=alert('XSS')>
 # - <svg onload=alert('XSS')>
@@ -210,12 +210,12 @@ xss_payloads = generator.generate_injection_payloads(VulnerabilityType.XSS)
 ```
 
 ### Command Injection
-Genera payloads para inyección de comandos:
+Generates command injection payloads:
 
 ```python
 cmd_payloads = generator.generate_injection_payloads(VulnerabilityType.COMMAND_INJECTION)
 
-# Ejemplos de payloads generados:
+# Example generated payloads:
 # - ; cat /etc/passwd
 # - | whoami
 # - && id
@@ -225,12 +225,12 @@ cmd_payloads = generator.generate_injection_payloads(VulnerabilityType.COMMAND_I
 ```
 
 ### Path Traversal
-Genera payloads para path traversal:
+Generates path traversal payloads:
 
 ```python
 path_payloads = generator.generate_injection_payloads(VulnerabilityType.PATH_TRAVERSAL)
 
-# Ejemplos de payloads generados:
+# Example generated payloads:
 # - ../../../etc/passwd
 # - ..\\..\\..\\windows\\system32\\drivers\\etc\\hosts
 # - %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
@@ -238,12 +238,12 @@ path_payloads = generator.generate_injection_payloads(VulnerabilityType.PATH_TRA
 ```
 
 ### Server-Side Template Injection (SSTI)
-Genera payloads para SSTI:
+Generates SSTI payloads:
 
 ```python
 ssti_payloads = generator.generate_injection_payloads(VulnerabilityType.SSTI)
 
-# Ejemplos de payloads generados:
+# Example generated payloads:
 # - {{7*7}}
 # - ${7*7}
 # - {{config.items()}}
@@ -251,10 +251,10 @@ ssti_payloads = generator.generate_injection_payloads(VulnerabilityType.SSTI)
 # - {{''.__class__.__mro__[2].__subclasses__()}}
 ```
 
-## 📋 Sistema de Templates
+## 📋 Template System
 
-### Templates por Defecto
-El sistema incluye templates predefinidos para cada tipo de vulnerabilidad:
+### Default Templates
+The system includes predefined templates for each vulnerability type:
 
 ```yaml
 # templates/payloads/advanced_sql_injection.yaml
@@ -279,26 +279,26 @@ obfuscations:
   - "comment_insertion"
 ```
 
-### Templates Personalizados
-Puedes crear templates personalizados:
+### Custom Templates
+You can create custom templates:
 
 ```python
 from utils.payload_generator import PayloadGenerationConfig
 
 config = PayloadGenerationConfig(
-    custom_templates_dir="mi_directorio/templates"
+    custom_templates_dir="my_directory/templates"
 )
 generator = PayloadGenerator(config)
 ```
 
-### Información de Templates
-Obtener información sobre templates disponibles:
+### Template Information
+Get information about available templates:
 
 ```python
-# Listar tipos de vulnerabilidad disponibles
+# List available vulnerability types
 vuln_types = generator.get_available_vulnerability_types()
 
-# Obtener información detallada de templates
+# Get detailed template information
 sql_templates = generator.get_template_info(VulnerabilityType.SQL_INJECTION)
 for template in sql_templates:
     print(f"Template: {template['name']}")
@@ -306,10 +306,10 @@ for template in sql_templates:
     print(f"Encodings: {template['encodings']}")
 ```
 
-## 📚 Expansión de Wordlists
+## 📚 Wordlist Expansion
 
-### Expansión con Prefijos
-Expande wordlists agregando prefijos comunes:
+### Prefix Expansion
+Expands wordlists by adding common prefixes:
 
 ```python
 wordlist = ["users", "admin", "api"]
@@ -317,15 +317,15 @@ prefixes = ["v1/", "v2/", "api/"]
 
 expanded = generator.expand_wordlist(wordlist, prefixes=prefixes)
 
-# Resultado:
-# - users, admin, api (originales)
+# Result:
+# - users, admin, api (originals)
 # - v1/users, v1/admin, v1/api
 # - v2/users, v2/admin, v2/api  
 # - api/users, api/admin, api/api
 ```
 
-### Expansión con Sufijos
-Expande wordlists agregando sufijos comunes:
+### Suffix Expansion
+Expands wordlists by adding common suffixes:
 
 ```python
 wordlist = ["users", "admin", "api"]
@@ -333,15 +333,15 @@ suffixes = ["/list", "/create", "/delete"]
 
 expanded = generator.expand_wordlist(wordlist, suffixes=suffixes)
 
-# Resultado:
-# - users, admin, api (originales)
+# Result:
+# - users, admin, api (originals)
 # - users/list, users/create, users/delete
 # - admin/list, admin/create, admin/delete
 # - api/list, api/create, api/delete
 ```
 
-### Expansión Combinada
-Combina prefijos y sufijos:
+### Combined Expansion
+Combines prefixes and suffixes:
 
 ```python
 wordlist = ["users", "admin"]
@@ -350,16 +350,16 @@ suffixes = ["/list", "/create"]
 
 expanded = generator.expand_wordlist(wordlist, prefixes, suffixes)
 
-# Resultado incluye todas las combinaciones:
+# Result includes all combinations:
 # - v1/users/list, v1/users/create
 # - v1/admin/list, v1/admin/create
 # - api/users/list, api/users/create
 # - api/admin/list, api/admin/create
 ```
 
-## ⚙️ Configuración
+## ⚙️ Configuration
 
-### Configuración Básica
+### Basic Configuration
 ```python
 from utils.payload_generator import PayloadGenerationConfig, EncodingType, ObfuscationType
 
@@ -374,7 +374,7 @@ config = PayloadGenerationConfig(
 generator = PayloadGenerator(config)
 ```
 
-### Configuración Avanzada via YAML
+### Advanced Configuration via YAML
 ```yaml
 # config/payload_generator_config.yaml
 payload_generation:
@@ -419,78 +419,78 @@ payload_generation:
     worker_threads: 4
 ```
 
-## 💡 Ejemplos de Uso
+## 💡 Usage Examples
 
-### Ejemplo 1: Generación Básica de Payloads
+### Example 1: Basic Payload Generation
 ```python
 from utils.payload_generator import PayloadGenerator, VulnerabilityType
 
-# Crear generador
+# Create generator
 generator = PayloadGenerator()
 
-# Generar payloads SQL injection
+# Generate SQL injection payloads
 sql_payloads = generator.generate_injection_payloads(VulnerabilityType.SQL_INJECTION)
 
-# Usar en fuzzing
-for payload in sql_payloads[:10]:  # Primeros 10 payloads
+# Use in fuzzing
+for payload in sql_payloads[:10]:  # First 10 payloads
     test_url = f"https://api.example.com/users?id={payload}"
-    # Realizar request de prueba
+    # Perform test request
 ```
 
-### Ejemplo 2: Codificación para Evasión de WAF
+### Example 2: Encoding for WAF Evasion
 ```python
-# Payload que podría ser bloqueado por WAF
+# Payload that might be blocked by WAF
 dangerous_payload = "<script>alert('XSS')</script>"
 
-# Generar versiones codificadas
+# Generate encoded versions
 encoded_payloads = generator.generate_encoded_payloads(dangerous_payload)
 
-# Probar cada versión codificada
+# Test each encoded version
 for encoded in encoded_payloads:
     test_data = {"comment": encoded}
-    # Enviar request con payload codificado
+    # Send request with encoded payload
 ```
 
-### Ejemplo 3: Adaptación por Framework
+### Example 3: Framework Adaptation
 ```python
-# Detectar framework (ejemplo: FastAPI detectado)
+# Detect framework (example: FastAPI detected)
 detected_framework = "fastapi"
 
-# Generar payloads específicos para FastAPI
+# Generate FastAPI-specific payloads
 fastapi_payloads = generator.generate_framework_specific_payloads(
     detected_framework, 
     VulnerabilityType.SQL_INJECTION
 )
 
-# Usar payloads optimizados para FastAPI
+# Use optimized payloads for FastAPI
 for payload in fastapi_payloads:
-    # Probar contra API FastAPI
+    # Test against FastAPI
     pass
 ```
 
-### Ejemplo 4: Expansión de Wordlists para Discovery
+### Example 4: Wordlist Expansion for Discovery
 ```python
-# Endpoints base descubiertos
+# Discovered base endpoints
 base_endpoints = ["users", "admin", "config"]
 
-# Expandir con patrones comunes de API
+# Expand with common API patterns
 expanded_endpoints = generator.expand_wordlist(
     base_endpoints,
     prefixes=["v1/", "v2/", "api/", "internal/"],
     suffixes=["/list", "/create", "/update", "/delete", "/search"]
 )
 
-# Usar endpoints expandidos para discovery
+# Use expanded endpoints for discovery
 for endpoint in expanded_endpoints:
     test_url = f"https://api.example.com/{endpoint}"
-    # Probar endpoint
+    # Test endpoint
 ```
 
-### Ejemplo 5: Configuración Personalizada
+### Example 5: Custom Configuration
 ```python
 from utils.payload_generator import PayloadGenerationConfig, EncodingType
 
-# Configuración para evasión agresiva de WAF
+# Configuration for aggressive WAF evasion
 aggressive_config = PayloadGenerationConfig(
     enabled_encodings=[
         EncodingType.URL, 
@@ -505,22 +505,22 @@ aggressive_config = PayloadGenerationConfig(
         ObfuscationType.COMMENT_INSERTION
     ],
     max_variations_per_payload=20,
-    include_original=False  # Solo versiones ofuscadas
+    include_original=False  # Only obfuscated versions
 )
 
 aggressive_generator = PayloadGenerator(aggressive_config)
 
-# Generar payloads altamente ofuscados
+# Generate highly obfuscated payloads
 obfuscated_payloads = aggressive_generator.generate_injection_payloads(
     VulnerabilityType.XSS
 )
 ```
 
-## 🔗 Integración con Otros Módulos
+## 🔗 Integration with Other Modules
 
-### Integración con Fuzzing Engine
+### Integration with Fuzzing Engine
 ```python
-# En el módulo de fuzzing
+# In the fuzzing module
 from utils.payload_generator import PayloadGenerator, VulnerabilityType
 
 class ParameterFuzzer:
@@ -528,7 +528,7 @@ class ParameterFuzzer:
         self.payload_generator = PayloadGenerator()
     
     def fuzz_parameter(self, endpoint, parameter):
-        # Generar payloads para diferentes vulnerabilidades
+        # Generate payloads for different vulnerabilities
         sql_payloads = self.payload_generator.generate_injection_payloads(
             VulnerabilityType.SQL_INJECTION
         )
@@ -539,19 +539,19 @@ class ParameterFuzzer:
         all_payloads = sql_payloads + xss_payloads
         
         for payload in all_payloads:
-            # Probar payload en parámetro
+            # Test payload on parameter
             self.test_payload(endpoint, parameter, payload)
 ```
 
-### Integración con OWASP Modules
+### Integration with OWASP Modules
 ```python
-# En módulos OWASP
+# In OWASP modules
 class BOLATestingModule:
     def __init__(self):
         self.payload_generator = PayloadGenerator()
     
     def test_object_enumeration(self, endpoint):
-        # Expandir IDs con patrones comunes
+        # Expand IDs with common patterns
         base_ids = ["1", "2", "admin", "test"]
         expanded_ids = self.payload_generator.expand_wordlist(
             base_ids,
@@ -560,26 +560,26 @@ class BOLATestingModule:
         )
         
         for object_id in expanded_ids:
-            # Probar acceso a objeto
+            # Test object access
             self.test_object_access(endpoint, object_id)
 ```
 
-### Integración con WAF Detection
+### Integration with WAF Detection
 ```python
-# Cuando se detecta WAF
+# When WAF is detected
 class WAFEvasionModule:
     def __init__(self):
         self.payload_generator = PayloadGenerator()
     
     def evade_waf(self, detected_waf, base_payload):
         if detected_waf == "cloudflare":
-            # Usar técnicas específicas para Cloudflare
+            # Use Cloudflare-specific techniques
             encoded = self.payload_generator.generate_encoded_payloads(
                 base_payload, 
                 [EncodingType.UNICODE, EncodingType.DOUBLE_URL]
             )
         elif detected_waf == "aws_waf":
-            # Usar técnicas específicas para AWS WAF
+            # Use AWS WAF-specific techniques
             obfuscated = self.payload_generator.apply_obfuscation(
                 base_payload,
                 [ObfuscationType.CASE_VARIATION, ObfuscationType.COMMENT_INSERTION]
@@ -588,115 +588,115 @@ class WAFEvasionModule:
         return encoded or obfuscated
 ```
 
-## ⚡ Rendimiento y Optimización
+## ⚡ Performance and Optimization
 
-### Configuración de Rendimiento
+### Performance Configuration
 ```python
-# Configuración optimizada para rendimiento
+# Performance-optimized configuration
 performance_config = PayloadGenerationConfig(
-    max_variations_per_payload=5,  # Limitar variaciones
-    enable_caching=True,           # Habilitar caché
-    parallel_generation=True,      # Generación paralela
-    worker_threads=4               # Hilos de trabajo
+    max_variations_per_payload=5,  # Limit variations
+    enable_caching=True,           # Enable caching
+    parallel_generation=True,      # Parallel generation
+    worker_threads=4               # Worker threads
 )
 ```
 
-### Caché de Payloads
-El sistema incluye caché automático para mejorar rendimiento:
+### Payload Caching
+The system includes automatic caching to improve performance:
 
 ```python
-# Los payloads se cachean automáticamente
+# Payloads are automatically cached
 generator = PayloadGenerator()
 
-# Primera llamada: genera y cachea
+# First call: generates and caches
 payloads1 = generator.generate_injection_payloads(VulnerabilityType.SQL_INJECTION)
 
-# Segunda llamada: usa caché (más rápido)
+# Second call: uses cache (faster)
 payloads2 = generator.generate_injection_payloads(VulnerabilityType.SQL_INJECTION)
 ```
 
-### Generación Paralela
-Para wordlists grandes, la generación se paraleliza automáticamente:
+### Parallel Generation
+For large wordlists, generation is automatically parallelized:
 
 ```python
-# Wordlist grande se procesa en paralelo
+# Large wordlist is processed in parallel
 large_wordlist = [f"endpoint_{i}" for i in range(1000)]
 expanded = generator.expand_wordlist(
     large_wordlist,
     prefixes=["v1/", "v2/", "api/"],
     suffixes=["/list", "/create", "/delete"]
 )
-# Procesamiento automático en múltiples hilos
+# Automatic processing in multiple threads
 ```
 
-### Métricas de Rendimiento
+### Performance Metrics
 ```python
 import time
 
 start_time = time.time()
 
-# Generar payloads
+# Generate payloads
 payloads = generator.generate_injection_payloads(VulnerabilityType.SQL_INJECTION)
 
 end_time = time.time()
-print(f"Generados {len(payloads)} payloads en {end_time - start_time:.2f} segundos")
+print(f"Generated {len(payloads)} payloads in {end_time - start_time:.2f} seconds")
 ```
 
-## 🛡️ Consideraciones de Seguridad
+## 🛡️ Security Considerations
 
-### Uso Responsable
-- **Solo en entornos autorizados**: Usar únicamente en sistemas propios o con autorización explícita
-- **Respeto a rate limits**: No sobrecargar sistemas objetivo
-- **Documentación de pruebas**: Mantener registro de todas las pruebas realizadas
+### Responsible Use
+- **Only in authorized environments**: Use only on owned systems or with explicit authorization
+- **Respect rate limits**: Do not overload target systems
+- **Test documentation**: Maintain records of all tests performed
 
-### Limitaciones de Payloads
+### Payload Limitations
 ```python
-# Configurar límites para evitar DoS accidental
+# Configure limits to avoid accidental DoS
 safe_config = PayloadGenerationConfig(
-    max_variations_per_payload=10,  # Limitar variaciones
-    max_payloads_per_type=50       # Limitar payloads totales
+    max_variations_per_payload=10,  # Limit variations
+    max_payloads_per_type=50       # Limit total payloads
 )
 ```
 
-### Validación de Entrada
+### Input Validation
 ```python
-# El sistema valida automáticamente las entradas
+# The system automatically validates inputs
 try:
     payloads = generator.generate_encoded_payloads(user_input)
 except ValueError as e:
-    print(f"Entrada inválida: {e}")
+    print(f"Invalid input: {e}")
 ```
 
 ## 🔧 Troubleshooting
 
-### Problemas Comunes
+### Common Issues
 
 #### Error: "No templates found"
 ```python
-# Verificar directorio de templates
+# Verify templates directory
 config = PayloadGenerationConfig(
-    custom_templates_dir="templates/payloads"  # Verificar ruta
+    custom_templates_dir="templates/payloads"  # Verify path
 )
 
-# Verificar que existan archivos .yaml en el directorio
+# Verify .yaml files exist in directory
 import os
 template_files = os.listdir("templates/payloads")
-print(f"Templates encontrados: {template_files}")
+print(f"Templates found: {template_files}")
 ```
 
-#### Rendimiento Lento
+#### Slow Performance
 ```python
-# Optimizar configuración
+# Optimize configuration
 fast_config = PayloadGenerationConfig(
-    max_variations_per_payload=5,    # Reducir variaciones
-    enable_caching=True,             # Habilitar caché
-    parallel_generation=True         # Usar paralelización
+    max_variations_per_payload=5,    # Reduce variations
+    enable_caching=True,             # Enable caching
+    parallel_generation=True         # Use parallelization
 )
 ```
 
-#### Memoria Insuficiente
+#### Insufficient Memory
 ```python
-# Procesar en lotes más pequeños
+# Process in smaller batches
 def generate_in_batches(generator, vuln_type, batch_size=100):
     all_payloads = generator.generate_injection_payloads(vuln_type)
     
@@ -704,17 +704,17 @@ def generate_in_batches(generator, vuln_type, batch_size=100):
         batch = all_payloads[i:i + batch_size]
         yield batch
 
-# Usar generador por lotes
+# Use batch generator
 for batch in generate_in_batches(generator, VulnerabilityType.SQL_INJECTION):
-    # Procesar lote
+    # Process batch
     process_payload_batch(batch)
 ```
 
-## 📊 Métricas y Estadísticas
+## 📊 Metrics and Statistics
 
-### Estadísticas de Generación
+### Generation Statistics
 ```python
-# Obtener estadísticas de payloads generados
+# Get statistics of generated payloads
 stats = {
     'sql_injection': len(generator.generate_injection_payloads(VulnerabilityType.SQL_INJECTION)),
     'xss': len(generator.generate_injection_payloads(VulnerabilityType.XSS)),
@@ -722,14 +722,14 @@ stats = {
     'path_traversal': len(generator.generate_injection_payloads(VulnerabilityType.PATH_TRAVERSAL))
 }
 
-print("Payloads generados por tipo:")
+print("Payloads generated by type:")
 for vuln_type, count in stats.items():
     print(f"  {vuln_type}: {count} payloads")
 ```
 
-### Análisis de Cobertura
+### Coverage Analysis
 ```python
-# Analizar cobertura de templates
+# Analyze template coverage
 vuln_types = generator.get_available_vulnerability_types()
 coverage = {}
 
@@ -741,31 +741,31 @@ for vuln_type in vuln_types:
         'total_payloads': total_payloads
     }
 
-print("Cobertura de templates:")
+print("Template coverage:")
 for vuln_type, info in coverage.items():
-    print(f"  {vuln_type}: {info['templates']} templates, {info['total_payloads']} payloads base")
+    print(f"  {vuln_type}: {info['templates']} templates, {info['total_payloads']} base payloads")
 ```
 
 ---
 
-## 📚 Referencias
+## 📚 References
 
-- **[Configuración Avanzada](configuration.md)** - Configuración detallada del sistema
-- **[WAF Evasion Guide](waf-evasion.md)** - Técnicas de evasión de WAF
-- **[Testing Guide](testing.md)** - Estrategias de testing
-- **[API Reference](api-reference.md)** - Referencia completa de la API
+- **[Advanced Configuration](configuration.md)** - Detailed system configuration
+- **[WAF Evasion Guide](waf-evasion.md)** - WAF evasion techniques
+- **[Testing Guide](testing.md)** - Testing strategies
+- **[API Reference](api-reference.md)** - Complete API reference
 
-## 🤝 Contribuciones
+## 🤝 Contributions
 
-Para contribuir al Payload Generator:
+To contribute to the Payload Generator:
 
-1. Crear nuevos templates en `templates/payloads/`
-2. Agregar nuevas técnicas de codificación
-3. Implementar nuevas técnicas de ofuscación
-4. Mejorar la documentación
+1. Create new templates in `templates/payloads/`
+2. Add new encoding techniques
+3. Implement new obfuscation techniques
+4. Improve documentation
 
-Ver [Contributing Guide](../CONTRIBUTING.md) para más detalles.
+See [Contributing Guide](../CONTRIBUTING.md) for more details.
 
 ---
 
-**¡El Payload Generator está listo para pruebas de seguridad avanzadas!** 🚀🛡️
+**The Payload Generator is ready for advanced security testing!** 🚀🛡️
