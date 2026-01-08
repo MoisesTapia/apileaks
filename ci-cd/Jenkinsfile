@@ -1,0 +1,427 @@
+// Jenkins Pipeline for APILeak OWASP Enhancement
+// Enterprise-grade API security testing in CI/CD pipelines
+
+pipeline {
+    agent any
+    
+    parameters {
+        string(name: 'API_TARGET_URL', defaultValue: '', description: 'Target API URL to scan')
+        choice(name: 'SCAN_TYPE', choices: ['dir', 'par', 'full'], description: 'Type of scan to perform')
+        string(name: 'RATE_LIMIT', defaultValue: '10', description: 'Requests per second limit')
+        string(name: 'OWASP_MODULES', defaultValue: 'bola,auth,property,function_auth', description: 'OWASP modules to enable')
+        booleanParam(name: 'ENABLE_FULL_SCAN', defaultValue: false, description: 'Enable full OWASP security scan')
+        booleanParam(name: 'FAIL_ON_HIGH', defaultValue: true, description: 'Fail pipeline on high severity findings')
+    }
+    
+    environment {
+        // Docker configuration
+        DOCKER_IMAGE = 'apileak:latest'
+        DOCKER_REGISTRY = credentials('docker-registry')
+        
+        // APILeak configuration
+        APILEAK_LOG_LEVEL = 'WARNING'
+        APILEAK_RATE_LIMIT = "${params.RATE_LIMIT}"
+        APILEAK_TIMEOUT = '30'
+        
+        // Security thresholds (Requirements 9.4)
+        CRITICAL_THRESHOLD = '0'   // Fail pipeline if any critical vulnerabilities found
+        HIGH_THRESHOLD = '5'       // Fail pipeline if more than 5 high vulnerabilities found
+        MEDIUM_THRESHOLD = '20'    // Fail pipeline if more than 20 medium vulnerabilities found
+        
+        // CI/CD Integration variables
+        BUILD_ID = "${env.BUILD_ID}"
+        JOB_NAME = "${env.JOB_NAME}"
+        BUILD_URL = "${env.BUILD_URL}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Build and Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            sh '''
+                                python3 -m venv venv
+                                . venv/bin/activate
+                                pip install --upgrade pip
+                                pip install -r requirements.txt
+                                pip install pytest pytest-cov pytest-html
+                                
+                                # Run unit tests with coverage
+                                python -m pytest tests/ -v \
+                                    --cov=core --cov=modules --cov=utils \
+                                    --cov-report=xml --cov-report=html \
+                                    --html=reports/pytest-report.html --self-contained-html
+                                
+                                # Verify imports
+                                python -c "from core import APILeakCore; print('APILeak modules import successfully')"
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: 'pytest-report.html',
+                                reportName: 'PyTest Report'
+                            ])
+                            publishCoverage adapters: [
+                                coberturaAdapter('coverage.xml')
+                            ], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+                        }
+                    }
+                }
+                
+                stage('Build Docker Image') {
+                    steps {
+                        script {
+                            // Build multi-architecture Docker image
+                            sh '''
+                                docker buildx create --use --name apileak-builder || true
+                                docker buildx build \
+                                    --platform linux/amd64,linux/arm64 \
+                                    --tag ${DOCKER_IMAGE} \
+                                    --load \
+                                    .
+                                docker images
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scans') {
+            when {
+                expression { params.API_TARGET_URL != '' }
+            }
+            parallel {
+                stage('Directory Fuzzing') {
+                    steps {
+                        script {
+                            sh '''
+                                mkdir -p reports
+                                
+                                # Run directory fuzzing scan
+                                docker run --rm \
+                                    -e APILEAK_LOG_LEVEL=${APILEAK_LOG_LEVEL} \
+                                    -e APILEAK_RATE_LIMIT=${APILEAK_RATE_LIMIT} \
+                                    -e APILEAK_TARGET="${params.API_TARGET_URL}" \
+                                    -v $(pwd)/reports:/app/reports \
+                                    ${DOCKER_IMAGE} dir \
+                                    --target "${params.API_TARGET_URL}" \
+                                    --wordlist wordlists/endpoints.txt \
+                                    --output apileak-endpoints-${BUILD_ID} \
+                                    --log-level ${APILEAK_LOG_LEVEL} \
+                                    --rate-limit ${APILEAK_RATE_LIMIT}
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/apileak-endpoints-*', allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Parameter Fuzzing') {
+                    steps {
+                        script {
+                            sh '''
+                                mkdir -p reports
+                                
+                                # Run parameter fuzzing scan
+                                docker run --rm \
+                                    -e APILEAK_LOG_LEVEL=${APILEAK_LOG_LEVEL} \
+                                    -e APILEAK_RATE_LIMIT=${APILEAK_RATE_LIMIT} \
+                                    -e APILEAK_TARGET="${params.API_TARGET_URL}" \
+                                    -e APILEAK_JWT_TOKEN="${API_JWT_TOKEN}" \
+                                    -v $(pwd)/reports:/app/reports \
+                                    ${DOCKER_IMAGE} par \
+                                    --target "${params.API_TARGET_URL}" \
+                                    --wordlist wordlists/parameters.txt \
+                                    --output apileak-parameters-${BUILD_ID} \
+                                    --log-level ${APILEAK_LOG_LEVEL} \
+                                    --rate-limit ${APILEAK_RATE_LIMIT} \
+                                    ${API_JWT_TOKEN:+--jwt $API_JWT_TOKEN}
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/apileak-parameters-*', allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Full OWASP Scan') {
+                    when {
+                        expression { params.ENABLE_FULL_SCAN == true }
+                    }
+                    steps {
+                        script {
+                            sh '''
+                                mkdir -p reports
+                                
+                                # Run full OWASP security scan
+                                docker run --rm \
+                                    -e APILEAK_LOG_LEVEL=${APILEAK_LOG_LEVEL} \
+                                    -e APILEAK_RATE_LIMIT=${APILEAK_RATE_LIMIT} \
+                                    -e APILEAK_TARGET="${params.API_TARGET_URL}" \
+                                    -e APILEAK_JWT_TOKEN="${API_JWT_TOKEN}" \
+                                    -e APILEAK_MODULES="${params.OWASP_MODULES}" \
+                                    -v $(pwd)/reports:/app/reports \
+                                    -v $(pwd)/config:/app/config:ro \
+                                    ${DOCKER_IMAGE} full \
+                                    --target "${params.API_TARGET_URL}" \
+                                    --output apileak-full-${BUILD_ID} \
+                                    --log-level ${APILEAK_LOG_LEVEL} \
+                                    --rate-limit ${APILEAK_RATE_LIMIT} \
+                                    --modules "${params.OWASP_MODULES}" \
+                                    ${API_JWT_TOKEN:+--jwt $API_JWT_TOKEN} \
+                                    ${API_CONFIG_FILE:+--config $API_CONFIG_FILE}
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/apileak-full-*', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Analysis') {
+            when {
+                expression { params.API_TARGET_URL != '' }
+            }
+            steps {
+                script {
+                    // Check security thresholds for all scan results
+                    sh '''
+                        python3 -m venv venv
+                        . venv/bin/activate
+                        pip install jinja2 lxml
+                        
+                        # Check thresholds for each scan type
+                        for report in reports/apileak-*-${BUILD_ID}.json; do
+                            if [ -f "$report" ]; then
+                                echo "Checking thresholds for: $report"
+                                python ci-cd/scripts/check_thresholds.py \
+                                    --report "$report" \
+                                    --critical-threshold ${CRITICAL_THRESHOLD} \
+                                    --high-threshold ${HIGH_THRESHOLD} \
+                                    --medium-threshold ${MEDIUM_THRESHOLD} \
+                                    --jenkins-mode
+                            fi
+                        done
+                    '''
+                    
+                    // Generate consolidated report
+                    sh '''
+                        . venv/bin/activate
+                        
+                        # Generate consolidated security report
+                        python ci-cd/scripts/generate_consolidated_report.py \
+                            --input-dir reports/ \
+                            --output reports/consolidated-security-report-${BUILD_ID}.html \
+                            --pipeline-id ${BUILD_ID} \
+                            --project-name "${JOB_NAME}" \
+                            --commit-sha "${GIT_COMMIT_SHORT}" \
+                            --jenkins-mode \
+                            --build-url "${BUILD_URL}"
+                        
+                        # Generate Jenkins-compatible XML report
+                        python ci-cd/scripts/generate_jenkins_report.py \
+                            --input-dir reports/ \
+                            --output reports/apileak-junit-${BUILD_ID}.xml
+                    '''
+                }
+            }
+            post {
+                always {
+                    // Publish test results
+                    publishTestResults testResultsPattern: 'reports/apileak-junit-*.xml'
+                    
+                    // Publish HTML report
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'reports',
+                        reportFiles: "consolidated-security-report-${BUILD_ID}.html",
+                        reportName: 'APILeak Security Report'
+                    ])
+                    
+                    // Archive all reports
+                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                }
+            }
+        }
+        
+        stage('Security Gate') {
+            when {
+                expression { params.API_TARGET_URL != '' }
+            }
+            steps {
+                script {
+                    // Parse results and determine if pipeline should fail
+                    def shouldFail = false
+                    def criticalCount = 0
+                    def highCount = 0
+                    
+                    // Check all JSON reports for critical/high findings
+                    sh '''
+                        CRITICAL_TOTAL=0
+                        HIGH_TOTAL=0
+                        
+                        for report in reports/apileak-*-${BUILD_ID}.json; do
+                            if [ -f "$report" ]; then
+                                CRITICAL=$(python -c "import json; data=json.load(open('$report')); print(data.get('statistics', {}).get('critical_findings', 0))")
+                                HIGH=$(python -c "import json; data=json.load(open('$report')); print(data.get('statistics', {}).get('high_findings', 0))")
+                                CRITICAL_TOTAL=$((CRITICAL_TOTAL + CRITICAL))
+                                HIGH_TOTAL=$((HIGH_TOTAL + HIGH))
+                            fi
+                        done
+                        
+                        echo "Total Critical Findings: $CRITICAL_TOTAL"
+                        echo "Total High Findings: $HIGH_TOTAL"
+                        
+                        # Write results to file for Jenkins to read
+                        echo "CRITICAL_TOTAL=$CRITICAL_TOTAL" > security_results.env
+                        echo "HIGH_TOTAL=$HIGH_TOTAL" >> security_results.env
+                    '''
+                    
+                    // Read results and determine action
+                    def props = readProperties file: 'security_results.env'
+                    criticalCount = props.CRITICAL_TOTAL as Integer
+                    highCount = props.HIGH_TOTAL as Integer
+                    
+                    echo "Security Gate Analysis:"
+                    echo "- Critical findings: ${criticalCount}"
+                    echo "- High findings: ${highCount}"
+                    echo "- Critical threshold: ${env.CRITICAL_THRESHOLD}"
+                    echo "- High threshold: ${env.HIGH_THRESHOLD}"
+                    
+                    if (criticalCount > env.CRITICAL_THRESHOLD as Integer) {
+                        currentBuild.result = 'FAILURE'
+                        error("Security Gate FAILED: ${criticalCount} critical vulnerabilities found (threshold: ${env.CRITICAL_THRESHOLD})")
+                    } else if (params.FAIL_ON_HIGH && highCount > env.HIGH_THRESHOLD as Integer) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo "Security Gate WARNING: ${highCount} high severity vulnerabilities found (threshold: ${env.HIGH_THRESHOLD})"
+                    } else {
+                        echo "Security Gate PASSED: No critical security issues found"
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Clean up Docker resources
+            sh '''
+                docker system prune -f || true
+                docker buildx rm apileak-builder || true
+            '''
+        }
+        
+        success {
+            echo "✅ APILeak security scan completed successfully"
+            
+            // Send success notification
+            script {
+                if (params.API_TARGET_URL != '') {
+                    emailext (
+                        subject: "✅ APILeak Security Scan Passed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                        APILeak security scan completed successfully!
+                        
+                        Target: ${params.API_TARGET_URL}
+                        Scan Type: ${params.SCAN_TYPE}
+                        Build: ${env.BUILD_URL}
+                        
+                        No critical security vulnerabilities were found.
+                        
+                        View detailed results: ${env.BUILD_URL}APILeak_Security_Report/
+                        """,
+                        to: "${env.CHANGE_AUTHOR_EMAIL ?: env.BUILD_USER_EMAIL}"
+                    )
+                }
+            }
+        }
+        
+        failure {
+            echo "❌ APILeak security scan failed"
+            
+            // Send failure notification
+            script {
+                if (params.API_TARGET_URL != '') {
+                    emailext (
+                        subject: "❌ APILeak Security Scan Failed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                        APILeak security scan failed!
+                        
+                        Target: ${params.API_TARGET_URL}
+                        Scan Type: ${params.SCAN_TYPE}
+                        Build: ${env.BUILD_URL}
+                        
+                        Critical security vulnerabilities were found that require immediate attention.
+                        
+                        View detailed results: ${env.BUILD_URL}APILeak_Security_Report/
+                        """,
+                        to: "${env.CHANGE_AUTHOR_EMAIL ?: env.BUILD_USER_EMAIL}"
+                    )
+                }
+            }
+        }
+        
+        unstable {
+            echo "⚠️ APILeak security scan completed with warnings"
+            
+            // Send warning notification
+            script {
+                if (params.API_TARGET_URL != '') {
+                    emailext (
+                        subject: "⚠️ APILeak Security Scan Warning - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                        APILeak security scan completed with warnings!
+                        
+                        Target: ${params.API_TARGET_URL}
+                        Scan Type: ${params.SCAN_TYPE}
+                        Build: ${env.BUILD_URL}
+                        
+                        High severity vulnerabilities were found that should be reviewed.
+                        
+                        View detailed results: ${env.BUILD_URL}APILeak_Security_Report/
+                        """,
+                        to: "${env.CHANGE_AUTHOR_EMAIL ?: env.BUILD_USER_EMAIL}"
+                    )
+                }
+            }
+        }
+    }
+}

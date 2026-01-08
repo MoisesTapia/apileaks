@@ -1,0 +1,44 @@
+# Configuración solo para Advanced Discovery
+target:
+  base_url: "https://api.example.com"
+
+# Solo Advanced Discovery habilitado
+advanced_discovery:
+  enabled: true
+  subdomain_discovery: true
+  cors_analysis: true
+  security_headers: true
+  subdomain_wordlist:
+    - "api"
+    - "www" 
+    - "dev"
+    - "staging"
+    - "admin"
+  cors_test_origins:
+    - "https://evil.com"
+    - "https://attacker.com"
+    - "*"
+  max_concurrent: 5
+  timeout: 10.0
+
+# Deshabilitar fuzzing tradicional
+fuzzing:
+  endpoints:
+    enabled: false
+  parameters:
+    enabled: false
+  headers:
+    enabled: false
+
+# Deshabilitar módulos OWASP
+owasp_testing:
+  enabled_modules: []
+
+rate_limiting:
+  requests_per_second: 5
+  burst_size: 10
+
+reporting:
+  formats: ["json", "html"]
+  output_dir: "reports"
+  output_filename: "subdomain_cors_security_scan"

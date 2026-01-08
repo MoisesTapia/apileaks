@@ -1,0 +1,142 @@
+# API Version Patterns
+# Common patterns used for API versioning
+
+# Standard version patterns
+/v1
+/v2
+/v3
+/v4
+/v5
+/v1.0
+/v1.1
+/v2.0
+/v2.1
+/v3.0
+
+# API prefix with versions
+/api/v1
+/api/v2
+/api/v3
+/api/v4
+/api/v5
+/api/v1.0
+/api/v1.1
+/api/v2.0
+/api/v2.1
+/api/v3.0
+
+# REST API versions
+/rest/v1
+/rest/v2
+/rest/v3
+/rest/v1.0
+/rest/v2.0
+
+# Version in path
+/version1
+/version2
+/version3
+/ver1
+/ver2
+/ver3
+
+# Dated versions
+/2023
+/2024
+/2025
+/api/2023
+/api/2024
+/api/2025
+/v2023
+/v2024
+/v2025
+
+# Beta and alpha versions
+/beta
+/alpha
+/preview
+/dev
+/development
+/staging
+/test
+/api/beta
+/api/alpha
+/api/preview
+/api/dev
+/v1-beta
+/v2-beta
+/v1-alpha
+/v2-alpha
+
+# Legacy versions
+/legacy
+/old
+/deprecated
+/api/legacy
+/api/old
+/api/deprecated
+
+# Mobile API versions
+/mobile/v1
+/mobile/v2
+/m/v1
+/m/v2
+/app/v1
+/app/v2
+
+# Internal versions
+/internal/v1
+/internal/v2
+/private/v1
+/private/v2
+
+# GraphQL versions
+/graphql/v1
+/graphql/v2
+/gql/v1
+/gql/v2
+
+# Microservice versions
+/users/v1
+/users/v2
+/orders/v1
+/orders/v2
+/payments/v1
+/payments/v2
+/auth/v1
+/auth/v2
+
+# Platform-specific versions
+/web/v1
+/web/v2
+/ios/v1
+/ios/v2
+/android/v1
+/android/v2
+
+# Partner/External API versions
+/partner/v1
+/partner/v2
+/external/v1
+/external/v2
+/public/v1
+/public/v2
+
+# Subdomain versions (for testing)
+# v1.api.example.com
+# v2.api.example.com
+# api-v1.example.com
+# api-v2.example.com
+
+# Query parameter versions (for testing)
+# ?version=1
+# ?version=2
+# ?v=1
+# ?v=2
+# ?api_version=1
+# ?api_version=2
+
+# Header versions (for testing)
+# Accept: application/vnd.api+json;version=1
+# API-Version: 1
+# Version: 1

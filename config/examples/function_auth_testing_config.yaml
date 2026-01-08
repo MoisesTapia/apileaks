@@ -1,0 +1,78 @@
+# Configuración específica para Function Level Authorization Testing (API5)
+# Broken Function Level Authorization
+
+target:
+  base_url: "https://api.example.com"
+  timeout: 30
+  verify_ssl: true
+
+# Solo ejecutar Function Level Authorization testing
+owasp_testing:
+  enabled_modules: ["function_auth"]
+  
+  function_auth_testing:
+    enabled: true
+    # Endpoints administrativos a probar
+    admin_endpoints: 
+      - "/admin"
+      - "/api/admin"
+      - "/management"
+      - "/dashboard"
+      - "/api/v1/admin"
+      - "/api/v2/admin"
+      - "/control-panel"
+      - "/backend"
+      - "/system"
+    
+    # Métodos HTTP peligrosos que requieren autorización
+    dangerous_methods: ["DELETE", "PUT", "PATCH", "POST"]
+
+# Contextos de autenticación con diferentes niveles de privilegios
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    - name: "basic_user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIiwicm9sZSI6InVzZXIifQ.example_signature"
+      privilege_level: 1
+    
+    - name: "moderator"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtb2QxMjMiLCJyb2xlIjoibW9kZXJhdG9yIn0.example_signature"
+      privilege_level: 2
+    
+    - name: "admin"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9.example_signature"
+      privilege_level: 3
+
+# Rate limiting bajo para function auth testing (endpoints sensibles)
+rate_limiting:
+  requests_per_second: 3
+  burst_size: 8
+  adaptive: true
+  respect_retry_after: true
+
+# Configuración de reportes
+reporting:
+  formats: ["json", "html", "txt"]
+  output_dir: "reports"
+  output_filename: "function_auth_test"
+
+# Fuzzing para descubrir endpoints administrativos
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/admin_endpoints.txt"  # Wordlist específica para endpoints admin
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+  parameters:
+    enabled: false  # No necesario para function auth
+  headers:
+    enabled: true
+    custom_headers:
+      User-Agent: "APILeak/0.1.0"
+      Accept: "application/json"

@@ -1,0 +1,103 @@
+# BOLA (Broken Object Level Authorization) Specific Endpoints
+# These endpoints commonly contain object IDs that can be enumerated
+
+# User-related endpoints
+/users/{id}
+/user/{id}
+/profile/{id}
+/profiles/{id}
+/account/{id}
+/accounts/{id}
+/customer/{id}
+/customers/{id}
+/member/{id}
+/members/{id}
+
+# Document and file endpoints
+/documents/{id}
+/document/{id}
+/files/{id}
+/file/{id}
+/uploads/{id}
+/upload/{id}
+/attachments/{id}
+/attachment/{id}
+/media/{id}
+/images/{id}
+/photos/{id}
+
+# Business object endpoints
+/orders/{id}
+/order/{id}
+/invoices/{id}
+/invoice/{id}
+/transactions/{id}
+/transaction/{id}
+/payments/{id}
+/payment/{id}
+/receipts/{id}
+/receipt/{id}
+
+# Content endpoints
+/posts/{id}
+/post/{id}
+/articles/{id}
+/article/{id}
+/comments/{id}
+/comment/{id}
+/messages/{id}
+/message/{id}
+/notifications/{id}
+/notification/{id}
+
+# Administrative endpoints
+/admin/users/{id}
+/admin/accounts/{id}
+/admin/orders/{id}
+/admin/reports/{id}
+/management/users/{id}
+/management/accounts/{id}
+
+# API versioned endpoints
+/api/v1/users/{id}
+/api/v1/orders/{id}
+/api/v1/documents/{id}
+/api/v2/users/{id}
+/api/v2/orders/{id}
+/api/v2/documents/{id}
+
+# Resource-specific endpoints
+/projects/{id}
+/project/{id}
+/tasks/{id}
+/task/{id}
+/tickets/{id}
+/ticket/{id}
+/issues/{id}
+/issue/{id}
+
+# Financial endpoints
+/wallets/{id}
+/wallet/{id}
+/cards/{id}
+/card/{id}
+/subscriptions/{id}
+/subscription/{id}
+/billing/{id}
+
+# Healthcare/Personal data endpoints
+/patients/{id}
+/patient/{id}
+/records/{id}
+/record/{id}
+/reports/{id}
+/report/{id}
+
+# Common ID patterns to test
+# Sequential: 1, 2, 3, 4, 5
+# GUID: 550e8400-e29b-41d4-a716-446655440000
+# UUID: 123e4567-e89b-12d3-a456-426614174000
+# Short UUID: abc123def456
+# Base64 ID: dXNlcjEyMw==
+# Numeric string: "12345"
+# Alphanumeric: user123, order456

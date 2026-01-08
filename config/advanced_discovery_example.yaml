@@ -1,0 +1,82 @@
+# Configuración de ejemplo para Advanced Discovery
+target:
+  base_url: "https://api.example.com"
+  timeout: 10
+  verify_ssl: true
+
+# Configuración de Advanced Discovery
+advanced_discovery:
+  enabled: true
+  subdomain_discovery: true
+  cors_analysis: true
+  security_headers: true
+  
+  # Lista personalizada de subdominios a probar
+  subdomain_wordlist:
+    - "api"
+    - "www"
+    - "dev"
+    - "staging"
+    - "test"
+    - "qa"
+    - "uat"
+    - "prod"
+    - "production"
+    - "admin"
+    - "management"
+    - "dashboard"
+    - "portal"
+    - "app"
+    - "mobile"
+    - "v1"
+    - "v2"
+    - "v3"
+    - "beta"
+    - "alpha"
+    - "demo"
+    - "sandbox"
+    - "internal"
+  
+  # Orígenes para probar CORS
+  cors_test_origins:
+    - "https://evil.com"
+    - "https://attacker.com"
+    - "http://localhost:3000"
+    - "https://example.com"
+    - "null"
+    - "*"
+  
+  # Configuración de concurrencia y timeouts
+  max_concurrent: 10
+  timeout: 10.0
+
+# Configuración de fuzzing tradicional (opcional)
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+  headers:
+    enabled: true
+
+# Módulos OWASP (opcional)
+owasp_testing:
+  enabled_modules:
+    - "bola"
+    - "auth"
+    - "property"
+    - "function_auth"
+
+# Configuración de rate limiting
+rate_limiting:
+  requests_per_second: 10
+  burst_size: 20
+  adaptive: true
+
+# Configuración de reportes
+reporting:
+  formats: ["json", "html", "txt"]
+  output_dir: "reports"
+  output_filename: "advanced_discovery_scan"

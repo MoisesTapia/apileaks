@@ -1,0 +1,307 @@
+# WAF Protected API Configuration Example
+# Specialized configuration for testing APIs behind Web Application Firewalls
+
+target:
+  base_url: "https://api.example.com"
+  api_version: "v1"
+  default_method: "GET"
+  timeout: 30  # Longer timeout for WAF processing delays
+  verify_ssl: true
+  headers:
+    Accept: "application/json, text/html, */*"
+    Accept-Language: "en-US,en;q=0.9"
+    Accept-Encoding: "gzip, deflate"
+    Cache-Control: "no-cache"
+
+# Authentication with WAF evasion considerations
+authentication:
+  contexts:
+    # Anonymous with legitimate user agent
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    
+    # User with search engine crawler identity
+    - name: "user_crawler"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxMjMsInJvbGUiOiJ1c2VyIn0.example"
+      privilege_level: 1
+      headers:
+        User-Agent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+    
+    # Admin with legitimate browser identity
+    - name: "admin_browser"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjo3ODksInJvbGUiOiJhZG1pbiJ9.example"
+      privilege_level: 3
+      headers:
+        User-Agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        Referer: "https://example.com/admin/login"
+  
+  default_context: "user_crawler"
+
+# WAF-aware fuzzing configuration
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]  # Reduced methods to avoid WAF triggers
+    follow_redirects: true
+    max_redirects: 3
+    
+    # Legitimate-looking endpoint patterns
+    custom_patterns:
+      - "/api/{version}/users"
+      - "/api/{version}/search"
+      - "/api/{version}/health"
+      - "/{resource}/list"
+      - "/{resource}/info"
+  
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: false  # Disabled to avoid WAF detection
+    
+    # Safe parameter values for initial testing
+    safe_parameter_values:
+      - "test"
+      - "1"
+      - "true"
+      - "example"
+      - "search"
+  
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    
+    # WAF Evasion - Rotate through legitimate user agents
+    user_agent_rotation: true
+    user_agent_list:
+      # Desktop browsers
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+      - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      
+      # Search engine crawlers (often whitelisted)
+      - "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+      - "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)"
+      
+      # API tools (sometimes whitelisted)
+      - "curl/8.4.0"
+      - "Postman/10.20.0"
+      - "HTTPie/3.2.2"
+    
+    # Legitimate headers to avoid WAF detection
+    legitimate_headers:
+      Accept: "application/json, text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8"
+      Accept-Language: "en-US,en;q=0.5"
+      Accept-Encoding: "gzip, deflate"
+      DNT: "1"
+      Connection: "keep-alive"
+      Upgrade-Insecure-Requests: "1"
+      Sec-Fetch-Dest: "document"
+      Sec-Fetch-Mode: "navigate"
+      Sec-Fetch-Site: "none"
+      Sec-Fetch-User: "?1"
+  
+  recursive: true
+  max_depth: 2  # Reduced depth to avoid excessive requests
+
+# Conservative OWASP testing for WAF environments
+owasp_testing:
+  enabled_modules: ["bola", "auth", "property"]  # Start with less aggressive modules
+  
+  # BOLA testing with WAF considerations
+  bola_testing:
+    enabled: true
+    id_patterns: ["sequential", "guid"]  # Avoid suspicious patterns initially
+    test_contexts: ["anonymous", "user_crawler", "admin_browser"]
+    enumeration_range: 5  # Very small range to avoid detection
+    max_objects_per_endpoint: 25
+    delay_between_requests: 2.0  # Add delay to avoid rate limiting
+  
+  # Authentication testing (less aggressive)
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    test_logout_invalidation: false  # Disabled to avoid suspicious behavior
+    test_token_expiration: false
+    weak_secrets_wordlist: "wordlists/jwt_secrets.txt"
+    conservative_testing: true
+  
+  # Property testing with safe payloads
+  property_testing:
+    enabled: true
+    sensitive_fields:
+      - "password"
+      - "api_key"
+      - "secret"
+      - "token"
+    mass_assignment_fields:
+      - "is_admin"
+      - "role"
+    test_readonly_fields: false  # Disabled initially
+    detect_undocumented_fields: true
+    use_safe_payloads: true
+
+# Very conservative rate limiting for WAF environments
+rate_limiting:
+  requests_per_second: 1  # Very slow to avoid WAF detection
+  burst_size: 3
+  adaptive: true
+  respect_retry_after: true
+  backoff_factor: 3.0
+  max_backoff: 300.0  # 5 minutes max backoff
+  jitter: true
+  jitter_factor: 0.3  # 30% random variation
+  
+  # WAF-specific rate limiting
+  waf_aware_limiting:
+    enabled: true
+    detect_429_responses: true
+    detect_403_patterns: true
+    detect_captcha_responses: true
+    auto_adjust_on_blocking: true
+
+# Advanced WAF evasion and detection
+advanced:
+  # WAF detection and evasion
+  waf_detection:
+    enabled: true
+    auto_detect: true
+    
+    # Known WAF signatures
+    waf_signatures:
+      cloudflare:
+        headers: ["cf-ray", "cf-cache-status"]
+        error_patterns: ["cloudflare", "ray id"]
+      
+      aws_waf:
+        headers: ["x-amzn-requestid", "x-amz-cf-id"]
+        error_patterns: ["aws", "forbidden"]
+      
+      akamai:
+        headers: ["akamai-ghost-ip", "akamai-edgescape"]
+        error_patterns: ["akamai", "reference #"]
+      
+      incapsula:
+        headers: ["x-iinfo"]
+        error_patterns: ["incapsula", "incident id"]
+    
+    # Evasion techniques
+    evasion_techniques:
+      enabled: true
+      techniques:
+        - "user_agent_rotation"
+        - "header_case_variation"
+        - "request_spacing"
+        - "payload_encoding"
+        - "ip_rotation"  # If proxy available
+  
+  # Payload encoding for WAF bypass
+  payload_encoding:
+    enabled: true
+    conservative_encoding: true
+    
+    encodings:
+      - "url"
+      - "double_url"
+      - "unicode"
+      - "html"
+    
+    # Avoid aggressive obfuscation initially
+    obfuscation_techniques: []
+    injection_payloads: false  # Disabled for initial testing
+  
+  # Framework detection (passive)
+  framework_detection:
+    enabled: true
+    passive_detection: true  # Only use response analysis, no active probing
+    adapt_payloads: false  # Disabled to avoid WAF triggers
+  
+  # Security analysis
+  security_analysis:
+    cors_testing: true
+    security_headers: true
+    waf_detection: true
+    adaptive_throttling: true
+
+# Specialized reporting for WAF environments
+reporting:
+  formats: ["json", "html"]
+  output_dir: "reports"
+  output_filename: "waf_protected_api_scan"
+  include_statistics: true
+  include_waf_analysis: true
+  include_evasion_summary: true
+  
+  # WAF-specific reporting sections
+  waf_report_sections:
+    - "waf_detection_results"
+    - "evasion_technique_effectiveness"
+    - "blocked_request_analysis"
+    - "successful_bypass_summary"
+    - "rate_limiting_analysis"
+
+# Enhanced logging for WAF analysis
+logging:
+  level: "INFO"
+  format: "structured"
+  file: "waf_protected_scan.log"
+  
+  # WAF-specific logging
+  waf_logging:
+    log_waf_responses: true
+    log_evasion_attempts: true
+    log_rate_limit_hits: true
+    log_successful_bypasses: true
+    log_blocked_requests: true
+
+# Performance tuning for WAF environments
+performance:
+  http:
+    connection_pool_size: 10  # Small pool to avoid connection limits
+    connection_timeout: 20
+    read_timeout: 60  # Longer timeout for WAF processing
+    max_redirects: 3
+  
+  async:
+    max_concurrent_requests: 3  # Very low concurrency
+    semaphore_limit: 2
+  
+  # WAF-specific performance settings
+  waf_performance:
+    connection_reuse: true
+    keep_alive: true
+    respect_server_timing: true
+    adaptive_delays: true
+
+# Proxy configuration (if available for IP rotation)
+proxy:
+  enabled: false  # Set to true if proxy available
+  http_proxy: null
+  https_proxy: null
+  rotate_proxies: false
+  proxy_list: []
+
+# Monitoring and alerting for WAF blocking
+monitoring:
+  enabled: true
+  
+  # Alert conditions
+  alerts:
+    high_403_rate: 0.3  # Alert if >30% requests return 403
+    captcha_detected: true
+    rate_limit_hit: true
+    waf_signature_detected: true
+  
+  # Auto-adjustment triggers
+  auto_adjust:
+    on_high_block_rate: true
+    on_captcha: true
+    on_rate_limit: true
+    adjustment_factor: 0.5  # Reduce rate by 50% when triggered

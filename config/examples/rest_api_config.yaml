@@ -1,0 +1,251 @@
+# REST API Configuration Example
+# Comprehensive configuration for testing standard REST APIs
+
+target:
+  base_url: "https://api.example.com"
+  api_version: "v1"  # Will result in https://api.example.com/v1
+  default_method: "GET"
+  timeout: 15
+  verify_ssl: true
+  headers:
+    Accept: "application/json"
+    Content-Type: "application/json"
+
+# Authentication contexts for different user levels
+authentication:
+  contexts:
+    # Anonymous user (no authentication)
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    # Regular user
+    - name: "user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxMjMsInJvbGUiOiJ1c2VyIn0.example"
+      privilege_level: 1
+    
+    # Moderator
+    - name: "moderator"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjo0NTYsInJvbGUiOiJtb2RlcmF0b3IifQ.example"
+      privilege_level: 2
+    
+    # Administrator
+    - name: "admin"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjo3ODksInJvbGUiOiJhZG1pbiJ9.example"
+      privilege_level: 3
+      headers:
+        X-Admin-Token: "admin-secret-token"
+  
+  default_context: "user"
+
+# Fuzzing configuration for REST API discovery
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+    follow_redirects: true
+    max_redirects: 5
+    custom_patterns:
+      - "/api/{version}/users"
+      - "/api/{version}/orders"
+      - "/api/{version}/products"
+      - "/{resource}/search"
+      - "/{resource}/export"
+  
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: true
+    boundary_values:
+      integers: [-1, 0, 1, 999999, -999999, 2147483647, -2147483648]
+      strings: ["", "a", "A" * 1000, "null", "undefined", "<script>", "'; DROP TABLE"]
+      booleans: [true, false, "true", "false", 1, 0, "1", "0"]
+  
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    random_user_agent: true
+    custom_headers:
+      X-Forwarded-For: "127.0.0.1"
+      X-Real-IP: "127.0.0.1"
+      Accept-Language: "en-US,en;q=0.9"
+  
+  recursive: true
+  max_depth: 3
+
+# OWASP API Security Top 10 testing
+owasp_testing:
+  enabled_modules: ["bola", "auth", "property", "resource", "function_auth"]
+  
+  # API1 - Broken Object Level Authorization
+  bola_testing:
+    enabled: true
+    id_patterns: ["sequential", "guid", "uuid", "short_uuid", "base64_id"]
+    test_contexts: ["anonymous", "user", "moderator", "admin"]
+    enumeration_range: 20
+    max_objects_per_endpoint: 100
+    custom_id_wordlist: "wordlists/bola_endpoints.txt"
+  
+  # API2 - Broken Authentication
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    weak_secrets_wordlist: "wordlists/jwt_secrets.txt"
+    test_logout_invalidation: true
+    test_token_expiration: true
+    weak_algorithms: ["none", "HS256"]
+    algorithm_confusion_testing: true
+  
+  # API3 - Broken Object Property Level Authorization
+  property_testing:
+    enabled: true
+    sensitive_fields:
+      - "password"
+      - "api_key"
+      - "secret"
+      - "token"
+      - "ssn"
+      - "credit_card"
+      - "phone"
+      - "email"
+      - "address"
+      - "salary"
+      - "balance"
+    mass_assignment_fields:
+      - "is_admin"
+      - "role"
+      - "permissions"
+      - "user_id"
+      - "account_id"
+      - "balance"
+      - "credit"
+      - "status"
+      - "active"
+      - "verified"
+    test_readonly_fields: true
+    detect_undocumented_fields: true
+    sensitive_wordlist: "wordlists/sensitive_parameters.txt"
+  
+  # API4 - Unrestricted Resource Consumption
+  resource_testing:
+    enabled: true
+    burst_size: 100
+    burst_delay: 0.01
+    large_payload_sizes: [1048576, 10485760, 104857600]  # 1MB, 10MB, 100MB
+    json_depth_limit: 1000
+    large_array_sizes: [1000, 10000, 100000]
+    redos_patterns:
+      - "^(a+)+$"
+      - "^(a|a)*$"
+      - "^([a-zA-Z]+)*$"
+  
+  # API5 - Broken Function Level Authorization
+  function_auth_testing:
+    enabled: true
+    admin_endpoints:
+      - "/admin"
+      - "/api/admin"
+      - "/management"
+      - "/dashboard"
+      - "/config"
+      - "/settings"
+    dangerous_methods: ["DELETE", "PUT", "PATCH"]
+    test_parameter_bypass: true
+    bypass_parameters:
+      - "admin=true"
+      - "role=admin"
+      - "is_admin=1"
+      - "privilege=admin"
+    test_header_bypass: true
+    bypass_headers:
+      - "X-Admin: true"
+      - "X-Role: admin"
+      - "X-Privilege: admin"
+    admin_wordlist: "wordlists/admin_endpoints.txt"
+
+# Rate limiting configuration
+rate_limiting:
+  requests_per_second: 10
+  burst_size: 25
+  adaptive: true
+  respect_retry_after: true
+  backoff_factor: 2.0
+  max_backoff: 60.0
+  jitter: true
+  jitter_factor: 0.1
+
+# Advanced features
+advanced:
+  # Payload generation and encoding
+  payload_encoding:
+    enabled: true
+    encodings: ["url", "base64", "html", "unicode"]
+    obfuscation_techniques: ["case_variation", "mutation"]
+    injection_payloads: true
+  
+  # Framework detection
+  framework_detection:
+    enabled: true
+    adapt_payloads: true
+    framework_signatures: "signatures/frameworks.yaml"
+    framework_wordlist: "wordlists/framework_endpoints.txt"
+  
+  # API version fuzzing
+  version_fuzzing:
+    enabled: true
+    version_patterns: ["/v1", "/v2", "/v3", "/api/v1", "/api/v2", "/api/v3"]
+    version_wordlist: "wordlists/api_versions.txt"
+  
+  # Security analysis
+  security_analysis:
+    cors_testing: true
+    security_headers: true
+    waf_detection: true
+    adaptive_throttling: true
+
+# Reporting configuration
+reporting:
+  formats: ["json", "html", "xml", "txt"]
+  output_dir: "reports"
+  output_filename: "rest_api_security_scan"
+  include_statistics: true
+  include_owasp_coverage: true
+  include_recommendations: true
+  include_raw_requests: false
+  include_raw_responses: false
+  
+  # Report filtering
+  min_severity: "LOW"
+  exclude_categories: []
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "structured"
+  file: "rest_api_scan.log"
+  rotate: true
+  max_size: "10MB"
+  backup_count: 5
+
+# Performance tuning
+performance:
+  http:
+    connection_pool_size: 50
+    connection_timeout: 10
+    read_timeout: 30
+    max_redirects: 5
+  
+  async:
+    max_concurrent_requests: 25
+    semaphore_limit: 15
+  
+  memory:
+    max_response_size: "10MB"
+    cache_size: 500
+    gc_threshold: 5000

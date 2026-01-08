@@ -1,0 +1,173 @@
+# Administrative and Privileged Endpoints
+# Endpoints that typically require elevated privileges
+
+# General admin interfaces
+/admin
+/admin/
+/admin/login
+/admin/dashboard
+/admin/panel
+/admin/console
+/administrator
+/administration
+/management
+/manager
+/control
+/controlpanel
+/cp
+
+# API admin endpoints
+/api/admin
+/api/admin/
+/api/management
+/api/manager
+/api/control
+/admin/api
+/management/api
+
+# Versioned admin endpoints
+/v1/admin
+/v2/admin
+/api/v1/admin
+/api/v2/admin
+/admin/v1
+/admin/v2
+
+# User management
+/admin/users
+/admin/user
+/admin/accounts
+/admin/account
+/admin/customers
+/admin/customer
+/admin/members
+/admin/member
+/management/users
+/management/accounts
+
+# System configuration
+/admin/config
+/admin/configuration
+/admin/settings
+/admin/system
+/admin/setup
+/config
+/configuration
+/settings
+/system
+/setup
+
+# Database and data management
+/admin/database
+/admin/db
+/admin/data
+/admin/backup
+/admin/restore
+/admin/export
+/admin/import
+/phpmyadmin
+/adminer
+/database
+
+# Monitoring and logs
+/admin/logs
+/admin/log
+/admin/monitoring
+/admin/metrics
+/admin/analytics
+/admin/reports
+/admin/statistics
+/logs
+/log
+/monitoring
+/metrics
+
+# Security and permissions
+/admin/security
+/admin/permissions
+/admin/roles
+/admin/access
+/admin/auth
+/security
+/permissions
+/roles
+/access
+
+# File and media management
+/admin/files
+/admin/media
+/admin/uploads
+/admin/assets
+/filemanager
+/files
+/media
+/uploads
+
+# Content management
+/admin/content
+/admin/pages
+/admin/posts
+/admin/articles
+/cms
+/content
+/editor
+
+# E-commerce admin
+/admin/orders
+/admin/products
+/admin/inventory
+/admin/payments
+/admin/shipping
+/admin/customers
+
+# Debug and development
+/debug
+/dev
+/development
+/test
+/testing
+/staging
+/internal
+/private
+
+# Framework-specific admin
+/django-admin/
+/wp-admin/
+/admin.php
+/administrator/
+/backend/
+/panel/
+
+# Hidden admin paths
+/.admin
+/_admin
+/hidden/admin
+/secret/admin
+/private/admin
+/internal/admin
+
+# Mobile admin
+/mobile/admin
+/m/admin
+/app/admin
+
+# API keys and tokens
+/admin/apikeys
+/admin/tokens
+/admin/credentials
+/admin/secrets
+
+# Webhooks and integrations
+/admin/webhooks
+/admin/integrations
+/admin/plugins
+/admin/extensions
+
+# Backup and maintenance
+/admin/maintenance
+/admin/backup
+/admin/restore
+/admin/update
+/admin/upgrade
+/maintenance
+/backup

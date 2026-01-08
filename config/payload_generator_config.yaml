@@ -1,0 +1,258 @@
+# APILeak Payload Generator Configuration
+# This configuration demonstrates advanced payload generation settings
+
+payload_generation:
+  # Enable/disable payload generation
+  enabled: true
+  
+  # Encoding settings
+  encodings:
+    enabled: true
+    types:
+      - "url"           # URL encoding (%20, %27, etc.)
+      - "base64"        # Base64 encoding
+      - "html"          # HTML entity encoding (&lt;, &gt;, etc.)
+      - "unicode"       # Unicode encoding (\u0027, etc.)
+      - "double_url"    # Double URL encoding
+      - "hex"           # Hexadecimal encoding
+    
+    # Include original payload in results
+    include_original: true
+    
+    # Maximum encoded variations per payload
+    max_variations: 10
+
+  # Obfuscation settings
+  obfuscation:
+    enabled: true
+    techniques:
+      - "case_variation"      # Upper/lower/mixed case
+      - "mutation"            # Character substitutions
+      - "whitespace_insertion" # Insert whitespace characters
+      - "comment_insertion"   # Insert SQL/code comments
+      - "concatenation"       # String concatenation techniques
+    
+    # Maximum obfuscated variations per payload
+    max_variations: 8
+
+  # Vulnerability-specific payload generation
+  vulnerability_payloads:
+    enabled: true
+    
+    # SQL Injection payloads
+    sql_injection:
+      enabled: true
+      include_time_based: true
+      include_error_based: true
+      include_union_based: true
+      include_boolean_based: true
+    
+    # XSS payloads
+    xss:
+      enabled: true
+      include_reflected: true
+      include_stored: true
+      include_dom_based: true
+      include_filter_evasion: true
+    
+    # Command Injection payloads
+    command_injection:
+      enabled: true
+      include_linux_commands: true
+      include_windows_commands: true
+      include_time_based: true
+    
+    # Path Traversal payloads
+    path_traversal:
+      enabled: true
+      include_linux_paths: true
+      include_windows_paths: true
+      include_encoded_variants: true
+    
+    # Server-Side Template Injection
+    ssti:
+      enabled: true
+      include_jinja2: true
+      include_django: true
+      include_flask: true
+      include_twig: true
+    
+    # NoSQL Injection payloads
+    nosql_injection:
+      enabled: true
+      include_mongodb: true
+      include_javascript: true
+
+  # Framework-specific payload adaptation
+  framework_adaptation:
+    enabled: true
+    
+    # Automatically adapt payloads based on detected framework
+    auto_adapt: true
+    
+    # Framework-specific configurations
+    frameworks:
+      fastapi:
+        enabled: true
+        focus_vulnerabilities: ["sql_injection", "xss", "command_injection"]
+      
+      django:
+        enabled: true
+        focus_vulnerabilities: ["sql_injection", "ssti", "path_traversal"]
+      
+      express:
+        enabled: true
+        focus_vulnerabilities: ["xss", "command_injection", "path_traversal"]
+      
+      flask:
+        enabled: true
+        focus_vulnerabilities: ["ssti", "xss", "sql_injection"]
+
+  # Wordlist expansion settings
+  wordlist_expansion:
+    enabled: true
+    
+    # Common prefixes for API endpoints
+    prefixes:
+      - "v1/"
+      - "v2/"
+      - "v3/"
+      - "api/"
+      - "api/v1/"
+      - "api/v2/"
+      - "admin/"
+      - "internal/"
+      - "private/"
+      - "test/"
+      - "dev/"
+      - "staging/"
+    
+    # Common suffixes for API endpoints
+    suffixes:
+      - "/list"
+      - "/create"
+      - "/read"
+      - "/update"
+      - "/delete"
+      - "/search"
+      - "/filter"
+      - "/export"
+      - "/import"
+      - "/backup"
+      - "/restore"
+      - "/admin"
+      - "/config"
+      - "/settings"
+      - "/status"
+      - "/health"
+    
+    # Maximum expanded wordlist size
+    max_size: 10000
+
+  # Custom template settings
+  custom_templates:
+    enabled: true
+    
+    # Directory containing custom YAML templates
+    templates_directory: "templates/payloads"
+    
+    # Load custom templates on startup
+    auto_load: true
+    
+    # Validate templates on load
+    validate_templates: true
+
+  # Performance settings
+  performance:
+    # Maximum payload variations to generate per vulnerability type
+    max_payloads_per_type: 100
+    
+    # Enable payload caching to improve performance
+    enable_caching: true
+    
+    # Cache size (number of payload sets to cache)
+    cache_size: 50
+    
+    # Parallel payload generation
+    parallel_generation: true
+    
+    # Number of worker threads for payload generation
+    worker_threads: 4
+
+  # WAF Evasion settings
+  waf_evasion:
+    enabled: true
+    
+    # Automatically apply evasion techniques when WAF is detected
+    auto_apply: true
+    
+    # Evasion techniques to use
+    techniques:
+      - "encoding_chains"      # Multiple encoding layers
+      - "case_manipulation"    # Mixed case variations
+      - "whitespace_variations" # Different whitespace characters
+      - "comment_insertion"    # Insert comments to break patterns
+      - "string_concatenation" # Break strings into parts
+      - "unicode_normalization" # Unicode normalization attacks
+    
+    # WAF-specific evasion profiles
+    profiles:
+      cloudflare:
+        enabled: true
+        techniques: ["encoding_chains", "unicode_normalization"]
+      
+      aws_waf:
+        enabled: true
+        techniques: ["case_manipulation", "comment_insertion"]
+      
+      akamai:
+        enabled: true
+        techniques: ["whitespace_variations", "string_concatenation"]
+
+# Integration with other APILeak modules
+integration:
+  # Use payload generator in fuzzing modules
+  fuzzing_integration:
+    enabled: true
+    
+    # Apply payload generation to parameter fuzzing
+    parameter_fuzzing: true
+    
+    # Apply payload generation to header fuzzing
+    header_fuzzing: true
+    
+    # Apply payload generation to body fuzzing
+    body_fuzzing: true
+  
+  # Use payload generator in OWASP modules
+  owasp_integration:
+    enabled: true
+    
+    # Generate payloads for BOLA testing
+    bola_testing: true
+    
+    # Generate payloads for authentication testing
+    auth_testing: true
+    
+    # Generate payloads for property-level authorization testing
+    property_auth_testing: true
+    
+    # Generate payloads for function-level authorization testing
+    function_auth_testing: true
+
+# Logging and debugging
+logging:
+  # Log payload generation activities
+  log_generation: false
+  
+  # Log payload encoding/obfuscation
+  log_transformations: false
+  
+  # Log template loading
+  log_template_loading: true
+  
+  # Log performance metrics
+  log_performance: true
+  
+  # Debug mode (verbose logging)
+  debug_mode: false

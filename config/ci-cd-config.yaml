@@ -1,0 +1,170 @@
+# APILeak CI/CD Configuration Example
+# Optimized configuration for automated security testing in CI/CD pipelines
+
+target:
+  base_url: "${APILEAK_TARGET}"  # Set via environment variable
+  default_method: "GET"
+  timeout: 30  # Increased timeout for CI/CD environments
+  verify_ssl: true
+
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+    follow_redirects: true
+    max_redirects: 3
+  
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: false  # Disabled for faster CI/CD execution
+    max_parameters_per_endpoint: 50
+  
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    custom_headers:
+      User-Agent: "APILeak-CI/0.1.0"
+      Accept: "application/json"
+      X-Forwarded-For: "127.0.0.1"
+    random_user_agent: false
+  
+  recursive: true
+  max_depth: 2  # Reduced depth for faster execution
+  response_filter: [200, 201, 202, 204, 301, 302, 401, 403, 404, 500]
+
+owasp_testing:
+  enabled_modules: ["bola", "auth", "property", "function_auth"]  # Core P0 modules
+  
+  bola_testing:
+    enabled: true
+    id_enumeration_range: 100  # Reduced for CI/CD
+    guid_testing: true
+    sequential_testing: true
+    privilege_escalation_testing: true
+  
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    token_expiration_testing: true
+    weak_secrets_testing: true
+    algorithm_confusion_testing: true
+  
+  property_testing:
+    enabled: true
+    sensitive_data_detection: true
+    mass_assignment_testing: true
+    readonly_property_testing: true
+    undocumented_field_detection: true
+  
+  function_auth_testing:
+    enabled: true
+    admin_endpoint_testing: true
+    method_bypass_testing: true
+    parameter_bypass_testing: true
+    header_bypass_testing: true
+
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    - name: "user"
+      type: "bearer"
+      token: "${APILEAK_JWT_TOKEN}"  # Set via environment variable
+      privilege_level: 1
+  
+  default_context: "anonymous"
+
+rate_limiting:
+  requests_per_second: 20  # Higher rate for CI/CD efficiency
+  burst_size: 50
+  adaptive: true
+  respect_retry_after: true
+  backoff_factor: 1.5
+  max_retries: 3
+
+reporting:
+  formats: ["json", "html", "txt"]
+  output_dir: "reports"
+  output_filename: "apileak-ci-${CI_PIPELINE_ID}"
+  include_screenshots: false
+  template_dir: "templates"
+  
+  # CI/CD specific reporting options
+  generate_junit_xml: true
+  generate_sarif: true
+  include_performance_metrics: true
+  include_coverage_stats: true
+
+advanced:
+  payload_encoding:
+    enabled: false  # Disabled for faster CI/CD execution
+    encodings: ["url", "base64"]
+    obfuscation_techniques: []
+    injection_payloads: false
+  
+  framework_detection:
+    enabled: true
+    adapt_payloads: false  # Disabled for consistent CI/CD results
+    framework_signatures: "signatures/frameworks.yaml"
+  
+  version_fuzzing:
+    enabled: false  # Disabled for faster execution
+    version_patterns: ["/v1", "/v2", "/api/v1", "/api/v2"]
+  
+  subdomain_discovery:
+    enabled: false  # Disabled for CI/CD focus on main target
+    subdomain_wordlist: "wordlists/subdomains.txt"
+  
+  security_analysis:
+    cors_testing: true
+    security_headers: true
+    waf_detection: true
+    adaptive_throttling: true
+  
+  waf_detection:
+    enabled: true
+    detection_patterns: "signatures/waf.yaml"
+    evasion_techniques: []  # Disabled for CI/CD compliance
+
+# CI/CD specific settings
+ci_cd:
+  enabled: true
+  pipeline_integration: true
+  fail_on_critical: true
+  fail_on_high: false
+  warning_on_medium: true
+  
+  thresholds:
+    critical: 0
+    high: 5
+    medium: 20
+    low: 100
+  
+  notifications:
+    enabled: false  # Handled by CI/CD platform
+    email: []
+    slack: []
+    teams: []
+  
+  artifacts:
+    retention_days: 30
+    compress_reports: true
+    include_raw_data: false
+
+# Performance optimizations for CI/CD
+performance:
+  max_concurrent_requests: 10
+  connection_pool_size: 20
+  timeout_multiplier: 1.5
+  memory_limit: "256MB"
+  
+  # Caching for faster subsequent runs
+  cache_enabled: false  # Disabled for consistent results
+  cache_ttl: 3600
+  cache_directory: "/tmp/apileak-cache"

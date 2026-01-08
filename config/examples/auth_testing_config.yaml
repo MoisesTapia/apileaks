@@ -1,0 +1,64 @@
+# Configuración específica para Authentication Testing (API2)
+# Broken Authentication - JWT Testing
+
+target:
+  base_url: "https://api.example.com"
+  timeout: 30
+  verify_ssl: true
+
+# Solo ejecutar Authentication testing
+owasp_testing:
+  enabled_modules: ["auth"]
+  
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    # Wordlist personalizada para secretos JWT débiles
+    weak_secrets_wordlist: "wordlists/jwt_secrets.txt"
+    # Probar invalidación de logout
+    test_logout_invalidation: true
+
+# Contextos de autenticación para testing
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    - name: "valid_user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIiwicm9sZSI6InVzZXIiLCJleHAiOjE3MDQ2NzIwMDB9.example_signature"
+      privilege_level: 1
+    
+    - name: "expired_token"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIiwicm9sZSI6InVzZXIiLCJleHAiOjE2MDQ2NzIwMDB9.expired_signature"
+      privilege_level: 1
+
+# Rate limiting moderado para auth testing
+rate_limiting:
+  requests_per_second: 8
+  burst_size: 15
+  adaptive: true
+  respect_retry_after: true
+
+# Configuración de reportes
+reporting:
+  formats: ["json", "html", "txt"]
+  output_dir: "reports"
+  output_filename: "auth_security_test"
+
+# Fuzzing básico para descubrir endpoints de autenticación
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/auth_endpoints.txt"  # Endpoints específicos de auth
+    methods: ["GET", "POST", "PUT", "DELETE"]
+  parameters:
+    enabled: false
+  headers:
+    enabled: true
+    custom_headers:
+      User-Agent: "APILeak/0.1.0"
+      Accept: "application/json"

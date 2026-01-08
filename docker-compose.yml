@@ -1,0 +1,115 @@
+# Docker Compose para APILeak OWASP Enhancement
+# Enterprise-grade API fuzzing and OWASP testing tool
+version: '3.8'
+
+services:
+  apileak:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: apileak:latest
+    container_name: apileak-scanner
+    
+    # Configuración de recursos optimizada
+    mem_limit: 256m
+    cpus: 0.5
+    
+    # Variables de entorno para configuración (Requirements 13.3)
+    environment:
+      - APILEAK_LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+      - APILEAK_TARGET=${APILEAK_TARGET:-}
+      - APILEAK_CONFIG_FILE=${APILEAK_CONFIG_FILE:-}
+      - APILEAK_OUTPUT_FILE=${APILEAK_OUTPUT_FILE:-}
+      - APILEAK_RATE_LIMIT=${APILEAK_RATE_LIMIT:-10}
+      - APILEAK_MODULES=${APILEAK_MODULES:-}
+      - APILEAK_JWT_TOKEN=${APILEAK_JWT_TOKEN:-}
+      - APILEAK_USER_AGENT=${APILEAK_USER_AGENT:-}
+      - APILEAK_TIMEOUT=${APILEAK_TIMEOUT:-10}
+      - APILEAK_MAX_DEPTH=${APILEAK_MAX_DEPTH:-3}
+      - APILEAK_VERIFY_SSL=${APILEAK_VERIFY_SSL:-true}
+    
+    # Volúmenes para configuración y reportes (Requirements 13.3)
+    volumes:
+      - ./config:/app/config:ro
+      - ./reports:/app/reports:rw
+      - ./logs:/app/logs:rw
+      - ./wordlists:/app/wordlists:ro
+      - ./output:/app/output:rw
+    
+    # Configuración de red
+    network_mode: "host"
+    
+    # Comando por defecto (puede ser sobrescrito)
+    command: ["full"]
+    
+    # Reinicio automático
+    restart: unless-stopped
+    
+    # Health check mejorado (Requirements 13.4)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; from core import APILeakCore; print('APILeak container healthy'); sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Servicio para escaneo de directorios
+  apileak-dir:
+    extends: apileak
+    container_name: apileak-dir-scanner
+    command: ["dir", "--target", "${APILEAK_TARGET}", "--wordlist", "wordlists/endpoints.txt"]
+    profiles:
+      - dir
+
+  # Servicio para escaneo de parámetros
+  apileak-param:
+    extends: apileak
+    container_name: apileak-param-scanner
+    command: ["par", "--target", "${APILEAK_TARGET}", "--wordlist", "wordlists/parameters.txt"]
+    profiles:
+      - param
+
+  # Servicio para desarrollo con hot reload
+  apileak-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: apileak:latest
+    container_name: apileak-dev
+    
+    environment:
+      - APILEAK_LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+    
+    volumes:
+      - .:/app:rw
+      - ./reports:/app/reports:rw
+      - ./logs:/app/logs:rw
+    
+    network_mode: "host"
+    
+    # Comando para desarrollo
+    command: ["tail", "-f", "/dev/null"]
+    
+    profiles:
+      - dev
+
+  # Servicio para CI/CD testing
+  apileak-ci:
+    extends: apileak
+    container_name: apileak-ci
+    
+    environment:
+      - APILEAK_LOG_LEVEL=WARNING
+      - PYTHONUNBUFFERED=1
+      - CI=true
+    
+    # Sin restart para CI/CD
+    restart: "no"
+    
+    profiles:
+      - ci

@@ -1,0 +1,139 @@
+# SSRF (Server-Side Request Forgery) Parameters
+# Parameters that commonly accept URLs and are vulnerable to SSRF
+
+# URL parameters
+url
+uri
+link
+href
+src
+source
+target
+destination
+dest
+endpoint
+callback
+webhook
+redirect
+redirect_url
+redirectUrl
+redirect_uri
+redirectUri
+return_url
+returnUrl
+return_uri
+returnUri
+
+# File and resource parameters
+file
+path
+filepath
+filename
+resource
+document
+image
+img
+photo
+avatar
+thumbnail
+media
+attachment
+download
+upload
+
+# API and service parameters
+api_url
+apiUrl
+service_url
+serviceUrl
+service_endpoint
+serviceEndpoint
+external_url
+externalUrl
+remote_url
+remoteUrl
+proxy_url
+proxyUrl
+fetch_url
+fetchUrl
+
+# Configuration parameters
+config_url
+configUrl
+settings_url
+settingsUrl
+template_url
+templateUrl
+schema_url
+schemaUrl
+manifest_url
+manifestUrl
+
+# Import/Export parameters
+import_url
+importUrl
+export_url
+exportUrl
+backup_url
+backupUrl
+restore_url
+restoreUrl
+sync_url
+syncUrl
+
+# Webhook parameters
+webhook_url
+webhookUrl
+notification_url
+notificationUrl
+callback_url
+callbackUrl
+ping_url
+pingUrl
+health_check_url
+healthCheckUrl
+
+# Feed and content parameters
+feed_url
+feedUrl
+rss_url
+rssUrl
+xml_url
+xmlUrl
+json_url
+jsonUrl
+data_url
+dataUrl
+content_url
+contentUrl
+
+# Proxy and gateway parameters
+proxy
+gateway
+upstream
+backend
+forward
+forward_to
+forwardTo
+pass_through
+passThrough
+
+# Cloud metadata parameters (for testing)
+metadata_url
+metadataUrl
+instance_data
+instanceData
+user_data
+userData
+
+# Common SSRF payloads to test with these parameters:
+# http://127.0.0.1/
+# http://localhost/
+# http://169.254.169.254/ (AWS metadata)
+# http://metadata.google.internal/ (GCP metadata)
+# file:///etc/passwd
+# file:///etc/hosts
+# file:///proc/version
+# gopher://127.0.0.1:22/
+# dict://127.0.0.1:11211/
+# ftp://127.0.0.1/

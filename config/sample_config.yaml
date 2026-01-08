@@ -1,0 +1,146 @@
+# APILeak Sample Configuration
+# Enterprise-grade API fuzzing and OWASP testing configuration
+
+target:
+  base_url: "https://api.example.com"
+  api_version: "v1"
+  default_method: "GET"
+  timeout: 10
+  verify_ssl: true
+
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+    follow_redirects: true
+  
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: true
+  
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    
+    # WAF Evasion - User Agent Configuration
+    # Option 1: Use random user agents from built-in list
+    random_user_agent: false
+    
+    # Option 2: Use custom user agent list with rotation
+    user_agent_rotation: false
+    user_agent_list: []
+    # Example user agent list:
+    # user_agent_list:
+    #   - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    #   - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    #   - "curl/8.4.0"
+    #   - "Postman/10.20.0"
+    
+    # Option 3: Use single custom user agent
+    custom_headers:
+      User-Agent: "APILeak/0.1.0"
+      Accept: "application/json"
+      # Additional evasion headers (uncomment if needed):
+      # X-Forwarded-For: "127.0.0.1"
+      # X-Real-IP: "127.0.0.1"
+      # Accept-Language: "en-US,en;q=0.9"
+  
+  recursive: true
+  max_depth: 3
+
+owasp_testing:
+  enabled_modules:
+    - "bola"
+    - "auth"
+    - "property"
+    - "resource"
+    - "function_auth"
+    - "ssrf"
+  
+  bola_testing:
+    enabled: true
+    id_patterns: ["sequential", "guid", "uuid"]
+    test_contexts: ["anonymous", "user", "admin"]
+  
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    weak_secrets_wordlist: "wordlists/jwt_secrets.txt"
+    test_logout_invalidation: true
+  
+  property_testing:
+    enabled: true
+    sensitive_fields:
+      - "password"
+      - "api_key"
+      - "secret"
+      - "token"
+      - "ssn"
+      - "credit_card"
+    mass_assignment_fields:
+      - "is_admin"
+      - "role"
+      - "permissions"
+      - "user_id"
+  
+  resource_testing:
+    enabled: true
+    burst_size: 100
+    large_payload_sizes: [1048576, 10485760]  # 1MB, 10MB
+    json_depth_limit: 1000
+  
+  function_auth_testing:
+    enabled: true
+    admin_endpoints:
+      - "/admin"
+      - "/api/admin"
+      - "/management"
+      - "/dashboard"
+    dangerous_methods: ["DELETE", "PUT", "PATCH"]
+  
+  ssrf_testing:
+    enabled: true
+    internal_targets:
+      - "127.0.0.1"
+      - "localhost"
+      - "169.254.169.254"
+      - "metadata.google.internal"
+    file_protocols: ["file://", "ftp://"]
+
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    - name: "user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+      privilege_level: 1
+    
+    - name: "admin"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+      privilege_level: 3
+      headers:
+        X-Admin-Token: "admin-secret-token"
+  
+  default_context: "user"
+
+rate_limiting:
+  requests_per_second: 10
+  burst_size: 20
+  adaptive: true
+  respect_retry_after: true
+  backoff_factor: 2.0
+
+reporting:
+  formats: ["json", "html", "txt", "xml"]
+  output_dir: "reports"
+  output_filename: null  # Custom filename (without extension) - leave null for timestamp-based naming
+  include_screenshots: false
+  template_dir: "templates"

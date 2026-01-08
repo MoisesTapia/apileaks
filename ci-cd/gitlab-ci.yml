@@ -1,0 +1,303 @@
+# GitLab CI/CD Template for APILeak OWASP Enhancement
+# Enterprise-grade API security testing in CI/CD pipelines
+
+stages:
+  - build
+  - test
+  - security-scan
+  - report
+
+variables:
+  # Docker configuration
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  
+  # APILeak configuration
+  APILEAK_IMAGE: "apileak:latest"
+  APILEAK_LOG_LEVEL: "WARNING"
+  APILEAK_RATE_LIMIT: "20"
+  APILEAK_TIMEOUT: "30"
+  
+  # Security thresholds (Requirements 9.4)
+  CRITICAL_THRESHOLD: "0"  # Fail pipeline if any critical vulnerabilities found
+  HIGH_THRESHOLD: "5"      # Fail pipeline if more than 5 high vulnerabilities found
+  MEDIUM_THRESHOLD: "20"   # Fail pipeline if more than 20 medium vulnerabilities found
+
+# Build APILeak Docker image
+build-apileak:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  before_script:
+    - docker info
+  script:
+    - docker build -t $APILEAK_IMAGE .
+    - docker images
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Unit tests for APILeak
+test-apileak:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov
+  script:
+    - python -m pytest tests/ -v --cov=core --cov=modules --cov=utils
+    - python -c "from core import APILeakCore; print('APILeak modules import successfully')"
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - htmlcov/
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# API Security Scan - Directory Fuzzing
+security-scan-endpoints:
+  stage: security-scan
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    SCAN_TYPE: "dir"
+    APILEAK_TARGET: "${API_TARGET_URL}"  # Set this in GitLab CI/CD variables
+  before_script:
+    - docker build -t $APILEAK_IMAGE .
+  script:
+    - |
+      # Run directory fuzzing scan
+      docker run --rm \
+        -e APILEAK_LOG_LEVEL=$APILEAK_LOG_LEVEL \
+        -e APILEAK_RATE_LIMIT=$APILEAK_RATE_LIMIT \
+        -e APILEAK_TARGET=$APILEAK_TARGET \
+        -v $(pwd)/reports:/app/reports \
+        $APILEAK_IMAGE dir \
+        --target $APILEAK_TARGET \
+        --wordlist wordlists/endpoints.txt \
+        --output apileak-endpoints-$CI_PIPELINE_ID \
+        --log-level $APILEAK_LOG_LEVEL \
+        --rate-limit $APILEAK_RATE_LIMIT
+    - |
+      # Check exit code and thresholds
+      EXIT_CODE=$?
+      echo "APILeak directory scan exit code: $EXIT_CODE"
+      
+      # Parse results and check thresholds
+      if [ -f "reports/apileak-endpoints-$CI_PIPELINE_ID.json" ]; then
+        python ci-cd/scripts/check_thresholds.py \
+          --report "reports/apileak-endpoints-$CI_PIPELINE_ID.json" \
+          --critical-threshold $CRITICAL_THRESHOLD \
+          --high-threshold $HIGH_THRESHOLD \
+          --medium-threshold $MEDIUM_THRESHOLD
+      fi
+      
+      exit $EXIT_CODE
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    reports:
+      junit: reports/apileak-endpoints-$CI_PIPELINE_ID-junit.xml
+    expire_in: 1 week
+  allow_failure: false
+  rules:
+    - if: $API_TARGET_URL && $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $API_TARGET_URL && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# API Security Scan - Parameter Fuzzing
+security-scan-parameters:
+  stage: security-scan
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    SCAN_TYPE: "par"
+    APILEAK_TARGET: "${API_TARGET_URL}"
+  before_script:
+    - docker build -t $APILEAK_IMAGE .
+  script:
+    - |
+      # Run parameter fuzzing scan
+      docker run --rm \
+        -e APILEAK_LOG_LEVEL=$APILEAK_LOG_LEVEL \
+        -e APILEAK_RATE_LIMIT=$APILEAK_RATE_LIMIT \
+        -e APILEAK_TARGET=$APILEAK_TARGET \
+        -e APILEAK_JWT_TOKEN="${API_JWT_TOKEN}" \
+        -v $(pwd)/reports:/app/reports \
+        $APILEAK_IMAGE par \
+        --target $APILEAK_TARGET \
+        --wordlist wordlists/parameters.txt \
+        --output apileak-parameters-$CI_PIPELINE_ID \
+        --log-level $APILEAK_LOG_LEVEL \
+        --rate-limit $APILEAK_RATE_LIMIT \
+        ${API_JWT_TOKEN:+--jwt $API_JWT_TOKEN}
+    - |
+      # Check exit code and thresholds
+      EXIT_CODE=$?
+      echo "APILeak parameter scan exit code: $EXIT_CODE"
+      
+      if [ -f "reports/apileak-parameters-$CI_PIPELINE_ID.json" ]; then
+        python ci-cd/scripts/check_thresholds.py \
+          --report "reports/apileak-parameters-$CI_PIPELINE_ID.json" \
+          --critical-threshold $CRITICAL_THRESHOLD \
+          --high-threshold $HIGH_THRESHOLD \
+          --medium-threshold $MEDIUM_THRESHOLD
+      fi
+      
+      exit $EXIT_CODE
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    reports:
+      junit: reports/apileak-parameters-$CI_PIPELINE_ID-junit.xml
+    expire_in: 1 week
+  allow_failure: false
+  rules:
+    - if: $API_TARGET_URL && $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $API_TARGET_URL && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Full OWASP Security Scan
+security-scan-full:
+  stage: security-scan
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    SCAN_TYPE: "full"
+    APILEAK_TARGET: "${API_TARGET_URL}"
+  before_script:
+    - docker build -t $APILEAK_IMAGE .
+  script:
+    - |
+      # Run full OWASP security scan
+      docker run --rm \
+        -e APILEAK_LOG_LEVEL=$APILEAK_LOG_LEVEL \
+        -e APILEAK_RATE_LIMIT=$APILEAK_RATE_LIMIT \
+        -e APILEAK_TARGET=$APILEAK_TARGET \
+        -e APILEAK_JWT_TOKEN="${API_JWT_TOKEN}" \
+        -e APILEAK_MODULES="${OWASP_MODULES:-bola,auth,property,function_auth}" \
+        -v $(pwd)/reports:/app/reports \
+        -v $(pwd)/config:/app/config:ro \
+        $APILEAK_IMAGE full \
+        --target $APILEAK_TARGET \
+        --output apileak-full-$CI_PIPELINE_ID \
+        --log-level $APILEAK_LOG_LEVEL \
+        --rate-limit $APILEAK_RATE_LIMIT \
+        --modules "${OWASP_MODULES:-bola,auth,property,function_auth}" \
+        ${API_JWT_TOKEN:+--jwt $API_JWT_TOKEN} \
+        ${API_CONFIG_FILE:+--config $API_CONFIG_FILE}
+    - |
+      # Check exit code and thresholds
+      EXIT_CODE=$?
+      echo "APILeak full scan exit code: $EXIT_CODE"
+      
+      if [ -f "reports/apileak-full-$CI_PIPELINE_ID.json" ]; then
+        python ci-cd/scripts/check_thresholds.py \
+          --report "reports/apileak-full-$CI_PIPELINE_ID.json" \
+          --critical-threshold $CRITICAL_THRESHOLD \
+          --high-threshold $HIGH_THRESHOLD \
+          --medium-threshold $MEDIUM_THRESHOLD
+      fi
+      
+      exit $EXIT_CODE
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    reports:
+      junit: reports/apileak-full-$CI_PIPELINE_ID-junit.xml
+    expire_in: 1 week
+  allow_failure: false
+  rules:
+    - if: $API_TARGET_URL && $ENABLE_FULL_SCAN == "true"
+  when: manual
+
+# Generate consolidated security report
+generate-security-report:
+  stage: report
+  image: python:3.11-slim
+  before_script:
+    - pip install jinja2 lxml
+  script:
+    - |
+      # Generate consolidated report from all scan results
+      python ci-cd/scripts/generate_consolidated_report.py \
+        --input-dir reports/ \
+        --output reports/consolidated-security-report-$CI_PIPELINE_ID.html \
+        --pipeline-id $CI_PIPELINE_ID \
+        --project-name "$CI_PROJECT_NAME" \
+        --commit-sha "$CI_COMMIT_SHA"
+    - |
+      # Generate GitLab security report format
+      python ci-cd/scripts/generate_gitlab_security_report.py \
+        --input-dir reports/ \
+        --output gl-sast-report.json
+  artifacts:
+    when: always
+    paths:
+      - reports/consolidated-security-report-$CI_PIPELINE_ID.html
+    reports:
+      sast: gl-sast-report.json
+    expire_in: 1 month
+  rules:
+    - if: $API_TARGET_URL
+      when: always
+
+# Security scan for merge requests (lightweight)
+security-scan-mr:
+  stage: security-scan
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    APILEAK_TARGET: "${API_TARGET_URL}"
+    APILEAK_RATE_LIMIT: "30"  # Higher rate limit for faster MR scans
+  before_script:
+    - docker build -t $APILEAK_IMAGE .
+  script:
+    - |
+      # Quick security scan for merge requests
+      docker run --rm \
+        -e APILEAK_LOG_LEVEL=ERROR \
+        -e APILEAK_RATE_LIMIT=$APILEAK_RATE_LIMIT \
+        -e APILEAK_TARGET=$APILEAK_TARGET \
+        -v $(pwd)/reports:/app/reports \
+        $APILEAK_IMAGE dir \
+        --target $APILEAK_TARGET \
+        --wordlist wordlists/endpoints.txt \
+        --output apileak-mr-$CI_MERGE_REQUEST_IID \
+        --log-level ERROR \
+        --rate-limit $APILEAK_RATE_LIMIT \
+        --response 200,201,202,204,301,302,401,403
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    expire_in: 3 days
+  rules:
+    - if: $API_TARGET_URL && $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Cleanup old artifacts
+cleanup-artifacts:
+  stage: report
+  image: alpine:latest
+  script:
+    - echo "Cleaning up old artifacts and reports"
+    - find reports/ -name "*.json" -mtime +7 -delete || true
+    - find reports/ -name "*.html" -mtime +7 -delete || true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  when: manual

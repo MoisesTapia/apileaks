@@ -1,0 +1,167 @@
+# Framework-Specific Endpoints for Detection
+# Endpoints that help identify specific API frameworks
+
+# FastAPI Framework
+/docs
+/redoc
+/openapi.json
+/openapi
+/swagger
+/swagger.json
+/swagger-ui
+/api/docs
+/api/redoc
+/api/openapi.json
+
+# Django Framework
+/admin/
+/admin/login/
+/admin/logout/
+/static/admin/
+/django-admin/
+/api-auth/
+/api-auth/login/
+/api-auth/logout/
+/__debug__/
+/debug/
+/accounts/login/
+/accounts/logout/
+
+# Flask Framework
+/static/
+/_debug_toolbar/
+/debug/
+/flask-admin/
+/admin/
+/api/
+/health
+/healthcheck
+
+# Express.js Framework
+/api/
+/health
+/healthcheck
+/status
+/ping
+/metrics
+/debug
+/admin
+/swagger
+/api-docs
+
+# Spring Boot Framework
+/actuator
+/actuator/health
+/actuator/info
+/actuator/metrics
+/actuator/env
+/actuator/configprops
+/actuator/mappings
+/actuator/beans
+/actuator/trace
+/actuator/dump
+/actuator/autoconfig
+/management/
+/management/health
+/management/info
+/swagger-ui.html
+/swagger-ui/
+/v2/api-docs
+/v3/api-docs
+
+# ASP.NET Framework
+/swagger/
+/swagger/ui/
+/swagger/v1/swagger.json
+/api/swagger/
+/health
+/healthcheck
+/status
+/diagnostics
+/trace.axd
+/elmah.axd
+
+# Laravel Framework
+/api/
+/api/documentation
+/docs/
+/telescope/
+/horizon/
+/nova/
+/admin/
+/laravel-admin/
+/_debugbar/
+/debug/
+
+# Ruby on Rails Framework
+/rails/
+/rails/info
+/rails/mailers
+/admin/
+/api/
+/swagger/
+/api-docs/
+/health
+/status
+
+# Symfony Framework
+/api/
+/api/doc
+/api/docs
+/admin/
+/_profiler/
+/_wdt/
+/app_dev.php/
+/app.php/
+
+# Koa.js Framework
+/api/
+/health
+/status
+/metrics
+/debug
+
+# Nest.js Framework
+/api/
+/swagger/
+/docs/
+/health
+/metrics
+/graphql
+
+# Gin (Go) Framework
+/api/
+/health
+/ping
+/metrics
+/debug/pprof/
+/swagger/
+
+# Echo (Go) Framework
+/api/
+/health
+/metrics
+/debug/
+/swagger/
+
+# Fiber (Go) Framework
+/api/
+/health
+/metrics
+/monitor
+/swagger/
+
+# Phoenix (Elixir) Framework
+/api/
+/health
+/metrics
+/dashboard/
+/live_dashboard/
+
+# Common framework detection patterns:
+# - Error pages with framework signatures
+# - Default admin interfaces
+# - Health check endpoints
+# - Documentation endpoints
+# - Debug/profiler endpoints
+# - Static file serving patterns

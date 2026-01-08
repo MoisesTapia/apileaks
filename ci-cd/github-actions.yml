@@ -1,0 +1,430 @@
+# GitHub Actions Workflow for APILeak OWASP Enhancement
+# Enterprise-grade API security testing in CI/CD pipelines
+
+name: APILeak Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly security scans
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target API URL to scan'
+        required: true
+        type: string
+      scan_type:
+        description: 'Type of scan to perform'
+        required: true
+        default: 'dir'
+        type: choice
+        options:
+        - dir
+        - par
+        - full
+      rate_limit:
+        description: 'Requests per second limit'
+        required: false
+        default: '10'
+        type: string
+
+env:
+  # Docker configuration
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/apileak
+  
+  # APILeak configuration
+  APILEAK_LOG_LEVEL: WARNING
+  APILEAK_RATE_LIMIT: 20
+  APILEAK_TIMEOUT: 30
+  
+  # Security thresholds (Requirements 9.4)
+  CRITICAL_THRESHOLD: 0   # Fail pipeline if any critical vulnerabilities found
+  HIGH_THRESHOLD: 5       # Fail pipeline if more than 5 high vulnerabilities found
+  MEDIUM_THRESHOLD: 20    # Fail pipeline if more than 20 medium vulnerabilities found
+
+jobs:
+  # Build and test APILeak
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+    
+    - name: Run unit tests
+      run: |
+        python -m pytest tests/ -v --cov=core --cov=modules --cov=utils --cov-report=xml
+        python -c "from core import APILeakCore; print('APILeak modules import successfully')"
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    outputs:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  # API Security Scan - Directory Fuzzing
+  security-scan-endpoints:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: vars.API_TARGET_URL != ''
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Create reports directory
+      run: mkdir -p reports
+    
+    - name: Run APILeak directory scan
+      run: |
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=${{ env.APILEAK_LOG_LEVEL }} \
+          -e APILEAK_RATE_LIMIT=${{ env.APILEAK_RATE_LIMIT }} \
+          -e APILEAK_TARGET=${{ vars.API_TARGET_URL }} \
+          -v $(pwd)/reports:/app/reports \
+          ${{ needs.build-and-test.outputs.image }} dir \
+          --target ${{ vars.API_TARGET_URL }} \
+          --wordlist wordlists/endpoints.txt \
+          --output apileak-endpoints-${{ github.run_id }} \
+          --log-level ${{ env.APILEAK_LOG_LEVEL }} \
+          --rate-limit ${{ env.APILEAK_RATE_LIMIT }}
+    
+    - name: Check security thresholds
+      run: |
+        if [ -f "reports/apileak-endpoints-${{ github.run_id }}.json" ]; then
+          python ci-cd/scripts/check_thresholds.py \
+            --report "reports/apileak-endpoints-${{ github.run_id }}.json" \
+            --critical-threshold ${{ env.CRITICAL_THRESHOLD }} \
+            --high-threshold ${{ env.HIGH_THRESHOLD }} \
+            --medium-threshold ${{ env.MEDIUM_THRESHOLD }}
+        fi
+    
+    - name: Upload scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-endpoints-results
+        path: reports/
+        retention-days: 7
+
+  # API Security Scan - Parameter Fuzzing
+  security-scan-parameters:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: vars.API_TARGET_URL != ''
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Create reports directory
+      run: mkdir -p reports
+    
+    - name: Run APILeak parameter scan
+      run: |
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=${{ env.APILEAK_LOG_LEVEL }} \
+          -e APILEAK_RATE_LIMIT=${{ env.APILEAK_RATE_LIMIT }} \
+          -e APILEAK_TARGET=${{ vars.API_TARGET_URL }} \
+          -e APILEAK_JWT_TOKEN="${{ secrets.API_JWT_TOKEN }}" \
+          -v $(pwd)/reports:/app/reports \
+          ${{ needs.build-and-test.outputs.image }} par \
+          --target ${{ vars.API_TARGET_URL }} \
+          --wordlist wordlists/parameters.txt \
+          --output apileak-parameters-${{ github.run_id }} \
+          --log-level ${{ env.APILEAK_LOG_LEVEL }} \
+          --rate-limit ${{ env.APILEAK_RATE_LIMIT }} \
+          ${{ secrets.API_JWT_TOKEN && '--jwt' }} ${{ secrets.API_JWT_TOKEN }}
+    
+    - name: Check security thresholds
+      run: |
+        if [ -f "reports/apileak-parameters-${{ github.run_id }}.json" ]; then
+          python ci-cd/scripts/check_thresholds.py \
+            --report "reports/apileak-parameters-${{ github.run_id }}.json" \
+            --critical-threshold ${{ env.CRITICAL_THRESHOLD }} \
+            --high-threshold ${{ env.HIGH_THRESHOLD }} \
+            --medium-threshold ${{ env.MEDIUM_THRESHOLD }}
+        fi
+    
+    - name: Upload scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-parameters-results
+        path: reports/
+        retention-days: 7
+
+  # Full OWASP Security Scan
+  security-scan-full:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: vars.API_TARGET_URL != '' && vars.ENABLE_FULL_SCAN == 'true'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Create reports directory
+      run: mkdir -p reports
+    
+    - name: Run APILeak full scan
+      run: |
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=${{ env.APILEAK_LOG_LEVEL }} \
+          -e APILEAK_RATE_LIMIT=${{ env.APILEAK_RATE_LIMIT }} \
+          -e APILEAK_TARGET=${{ vars.API_TARGET_URL }} \
+          -e APILEAK_JWT_TOKEN="${{ secrets.API_JWT_TOKEN }}" \
+          -e APILEAK_MODULES="${{ vars.OWASP_MODULES || 'bola,auth,property,function_auth' }}" \
+          -v $(pwd)/reports:/app/reports \
+          -v $(pwd)/config:/app/config:ro \
+          ${{ needs.build-and-test.outputs.image }} full \
+          --target ${{ vars.API_TARGET_URL }} \
+          --output apileak-full-${{ github.run_id }} \
+          --log-level ${{ env.APILEAK_LOG_LEVEL }} \
+          --rate-limit ${{ env.APILEAK_RATE_LIMIT }} \
+          --modules "${{ vars.OWASP_MODULES || 'bola,auth,property,function_auth' }}" \
+          ${{ secrets.API_JWT_TOKEN && '--jwt' }} ${{ secrets.API_JWT_TOKEN }} \
+          ${{ vars.API_CONFIG_FILE && '--config' }} ${{ vars.API_CONFIG_FILE }}
+    
+    - name: Check security thresholds
+      run: |
+        if [ -f "reports/apileak-full-${{ github.run_id }}.json" ]; then
+          python ci-cd/scripts/check_thresholds.py \
+            --report "reports/apileak-full-${{ github.run_id }}.json" \
+            --critical-threshold ${{ env.CRITICAL_THRESHOLD }} \
+            --high-threshold ${{ env.HIGH_THRESHOLD }} \
+            --medium-threshold ${{ env.MEDIUM_THRESHOLD }}
+        fi
+    
+    - name: Upload scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-full-results
+        path: reports/
+        retention-days: 30
+
+  # Manual workflow dispatch scan
+  manual-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    needs: build-and-test
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Create reports directory
+      run: mkdir -p reports
+    
+    - name: Run APILeak scan
+      run: |
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=${{ env.APILEAK_LOG_LEVEL }} \
+          -e APILEAK_RATE_LIMIT=${{ github.event.inputs.rate_limit || env.APILEAK_RATE_LIMIT }} \
+          -e APILEAK_TARGET=${{ github.event.inputs.target_url }} \
+          -v $(pwd)/reports:/app/reports \
+          ${{ needs.build-and-test.outputs.image }} ${{ github.event.inputs.scan_type }} \
+          --target ${{ github.event.inputs.target_url }} \
+          --output apileak-manual-${{ github.run_id }} \
+          --log-level ${{ env.APILEAK_LOG_LEVEL }} \
+          --rate-limit ${{ github.event.inputs.rate_limit || env.APILEAK_RATE_LIMIT }}
+    
+    - name: Upload scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-manual-results
+        path: reports/
+        retention-days: 7
+
+  # Generate consolidated security report
+  generate-security-report:
+    needs: [security-scan-endpoints, security-scan-parameters]
+    runs-on: ubuntu-latest
+    if: always() && vars.API_TARGET_URL != ''
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install jinja2 lxml
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: reports/
+    
+    - name: Generate consolidated report
+      run: |
+        python ci-cd/scripts/generate_consolidated_report.py \
+          --input-dir reports/ \
+          --output reports/consolidated-security-report-${{ github.run_id }}.html \
+          --pipeline-id ${{ github.run_id }} \
+          --project-name "${{ github.repository }}" \
+          --commit-sha "${{ github.sha }}"
+    
+    - name: Generate SARIF report
+      run: |
+        python ci-cd/scripts/generate_sarif_report.py \
+          --input-dir reports/ \
+          --output apileak-results.sarif
+    
+    - name: Upload SARIF to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: apileak-results.sarif
+        category: apileak-security-scan
+    
+    - name: Upload consolidated report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: consolidated-security-report
+        path: reports/consolidated-security-report-${{ github.run_id }}.html
+        retention-days: 30
+
+  # Pull Request Security Scan (lightweight)
+  pr-security-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && vars.API_TARGET_URL != ''
+    needs: build-and-test
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Create reports directory
+      run: mkdir -p reports
+    
+    - name: Run quick security scan
+      run: |
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=ERROR \
+          -e APILEAK_RATE_LIMIT=30 \
+          -e APILEAK_TARGET=${{ vars.API_TARGET_URL }} \
+          -v $(pwd)/reports:/app/reports \
+          ${{ needs.build-and-test.outputs.image }} dir \
+          --target ${{ vars.API_TARGET_URL }} \
+          --wordlist wordlists/endpoints.txt \
+          --output apileak-pr-${{ github.event.number }} \
+          --log-level ERROR \
+          --rate-limit 30 \
+          --response 200,201,202,204,301,302,401,403
+    
+    - name: Comment PR with results
+      uses: actions/github-script@v6
+      if: always()
+      with:
+        script: |
+          const fs = require('fs');
+          const path = 'reports/apileak-pr-${{ github.event.number }}.json';
+          
+          if (fs.existsSync(path)) {
+            const results = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const stats = results.statistics || {};
+            
+            const comment = `## 🔒 APILeak Security Scan Results
+            
+            **Scan Type:** Quick Directory Fuzzing
+            **Target:** ${{ vars.API_TARGET_URL }}
+            **Scan ID:** apileak-pr-${{ github.event.number }}
+            
+            ### Results Summary
+            - **Total Findings:** ${stats.findings_count || 0}
+            - **Critical:** ${stats.critical_findings || 0}
+            - **High:** ${stats.high_findings || 0}
+            - **Medium:** ${stats.medium_findings || 0}
+            - **Low:** ${stats.low_findings || 0}
+            - **Info:** ${stats.info_findings || 0}
+            
+            ${stats.critical_findings > 0 ? '⚠️ **Critical vulnerabilities found! Please review before merging.**' : '✅ No critical vulnerabilities detected.'}
+            
+            Full scan results are available in the workflow artifacts.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          }
+    
+    - name: Upload PR scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-pr-results
+        path: reports/
+        retention-days: 3

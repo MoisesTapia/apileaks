@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- APILeak XML Report Template -->
+<apileak_report version="1.0" xmlns="http://apileak.security/schema/v1" generated_by="APILeak v0.1.0">
+    <scan_info>
+        <scan_id>{{ scan_id }}</scan_id>
+        <timestamp>{{ timestamp }}</timestamp>
+        <target>{{ target }}</target>
+        <duration_seconds>{{ duration }}</duration_seconds>
+        <tool_version>APILeak v0.1.0</tool_version>
+        <scan_type>API Security Assessment</scan_type>
+    </scan_info>
+    
+    <statistics>
+        <total_findings>{{ total_findings }}</total_findings>
+        <critical_findings>{{ critical_findings }}</critical_findings>
+        <high_findings>{{ high_findings }}</high_findings>
+        <medium_findings>{{ medium_findings }}</medium_findings>
+        <low_findings>{{ low_findings }}</low_findings>
+        <info_findings>{{ info_findings }}</info_findings>
+        <total_requests>{{ total_requests }}</total_requests>
+        <endpoints_discovered>{{ endpoints_discovered }}</endpoints_discovered>
+    </statistics>
+    
+    <findings>
+        <!-- Findings will be populated here -->
+    </findings>
+</apileak_report>

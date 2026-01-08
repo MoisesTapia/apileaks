@@ -1,0 +1,93 @@
+# APILeak WAF Evasion Configuration
+# Optimized for bypassing Web Application Firewalls
+
+target:
+  base_url: "https://api.example.com"
+  timeout: 30  # Longer timeout for WAF processing
+  verify_ssl: true
+
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST"]  # Conservative method selection
+    follow_redirects: true
+  
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: false  # Disabled to reduce aggressive patterns
+  
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    
+    # WAF Evasion: Random user agent rotation
+    random_user_agent: true
+    
+    # Additional evasion headers
+    custom_headers:
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+      Accept-Language: "en-US,en;q=0.5"
+      Accept-Encoding: "gzip, deflate"
+      DNT: "1"
+      Connection: "keep-alive"
+      Upgrade-Insecure-Requests: "1"
+      # IP spoofing headers (may help with IP-based blocking)
+      X-Forwarded-For: "127.0.0.1"
+      X-Real-IP: "127.0.0.1"
+      X-Originating-IP: "127.0.0.1"
+      X-Client-IP: "127.0.0.1"
+  
+  recursive: false  # Disabled for stealth
+  max_depth: 1
+
+# Conservative OWASP testing
+owasp_testing:
+  enabled_modules:
+    - "bola"
+    - "auth"
+  
+  bola_testing:
+    enabled: true
+    id_patterns: ["sequential"]  # Less aggressive patterns
+    test_contexts: ["anonymous", "user"]
+    enumeration_range: 3  # Smaller range
+    max_objects_per_endpoint: 25
+  
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    weak_secrets_wordlist: "wordlists/jwt_secrets.txt"
+    test_logout_invalidation: false  # Less aggressive
+
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    - name: "user"
+      type: "bearer"
+      token: "${USER_TOKEN}"  # Use environment variable
+      privilege_level: 1
+  
+  default_context: "user"
+
+# Very conservative rate limiting
+rate_limiting:
+  requests_per_second: 1  # Very slow
+  burst_size: 3           # Small bursts
+  adaptive: true          # Slow down on errors
+  respect_retry_after: true
+  backoff_factor: 3.0     # Aggressive backoff
+  jitter: true            # Add randomness
+  jitter_factor: 0.3      # 30% variation
+
+reporting:
+  formats: ["json", "txt"]
+  output_dir: "reports"
+  output_filename: "waf_evasion_scan"
+  include_screenshots: false

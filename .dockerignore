@@ -1,0 +1,58 @@
+# Docker ignore file for APILeak
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Reports and logs (will be mounted as volumes)
+reports/
+logs/
+
+# Development files
+Makefile
+.editorconfig
+.pre-commit-config.yaml
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+Jenkinsfile

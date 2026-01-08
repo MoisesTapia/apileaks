@@ -1,0 +1,302 @@
+# Versioned API Configuration Example
+# Specialized configuration for testing APIs with multiple versions
+
+target:
+  base_url: "https://api.example.com"
+  # Note: No api_version set here as we'll test multiple versions
+  default_method: "GET"
+  timeout: 20
+  verify_ssl: true
+  headers:
+    Accept: "application/json, application/vnd.api+json"
+    Content-Type: "application/json"
+
+# Authentication for versioned API testing
+authentication:
+  contexts:
+    # Anonymous access
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    # API v1 user token
+    - name: "v1_user"
+      type: "bearer"
+      token: "v1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ2ZXJzaW9uIjoidjEiLCJ1c2VyX2lkIjoxMjN9.example"
+      privilege_level: 1
+      headers:
+        API-Version: "1"
+    
+    # API v2 user token
+    - name: "v2_user"
+      type: "bearer"
+      token: "v2_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ2ZXJzaW9uIjoidjIiLCJ1c2VyX2lkIjoxMjN9.example"
+      privilege_level: 1
+      headers:
+        API-Version: "2"
+    
+    # Legacy API admin token
+    - name: "legacy_admin"
+      type: "bearer"
+      token: "legacy_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ2ZXJzaW9uIjoibGVnYWN5IiwidXNlcl9pZCI6Nzg5LCJyb2xlIjoiYWRtaW4ifQ.example"
+      privilege_level: 3
+      headers:
+        API-Version: "legacy"
+  
+  default_context: "v2_user"
+
+# Enhanced fuzzing for version discovery
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+    follow_redirects: true
+    max_redirects: 5
+    
+    # Version-specific endpoint patterns
+    custom_patterns:
+      # Standard versioning
+      - "/v1/{resource}"
+      - "/v2/{resource}"
+      - "/v3/{resource}"
+      - "/api/v1/{resource}"
+      - "/api/v2/{resource}"
+      - "/api/v3/{resource}"
+      
+      # Date-based versioning
+      - "/2023/{resource}"
+      - "/2024/{resource}"
+      - "/api/2023/{resource}"
+      - "/api/2024/{resource}"
+      
+      # Named versions
+      - "/legacy/{resource}"
+      - "/beta/{resource}"
+      - "/alpha/{resource}"
+      - "/preview/{resource}"
+      
+      # Mobile/Platform versions
+      - "/mobile/v1/{resource}"
+      - "/mobile/v2/{resource}"
+      - "/web/v1/{resource}"
+      - "/web/v2/{resource}"
+  
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: true
+    
+    # Version-specific parameters
+    version_parameters:
+      - "version"
+      - "v"
+      - "api_version"
+      - "apiVersion"
+      - "ver"
+      - "revision"
+      - "release"
+  
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    random_user_agent: true
+    
+    # Version-specific headers
+    version_headers:
+      API-Version: ["1", "2", "3", "v1", "v2", "v3", "2023", "2024", "legacy", "beta"]
+      Accept: 
+        - "application/vnd.api+json;version=1"
+        - "application/vnd.api+json;version=2"
+        - "application/vnd.api+json;version=3"
+        - "application/json;version=1"
+        - "application/json;version=2"
+      Version: ["1", "2", "3", "v1", "v2", "v3"]
+      X-API-Version: ["1", "2", "3", "v1", "v2", "v3"]
+  
+  recursive: true
+  max_depth: 4  # Deeper for version discovery
+
+# OWASP testing with version awareness
+owasp_testing:
+  enabled_modules: ["bola", "auth", "property", "function_auth"]
+  
+  # BOLA testing across versions
+  bola_testing:
+    enabled: true
+    id_patterns: ["sequential", "guid", "uuid"]
+    test_contexts: ["anonymous", "v1_user", "v2_user", "legacy_admin"]
+    enumeration_range: 15
+    max_objects_per_endpoint: 75
+    
+    # Version-specific BOLA endpoints
+    version_specific_endpoints:
+      - "/v1/users/{id}"
+      - "/v2/users/{id}"
+      - "/legacy/users/{id}"
+      - "/api/v1/orders/{id}"
+      - "/api/v2/orders/{id}"
+  
+  # Authentication testing for version differences
+  auth_testing:
+    enabled: true
+    jwt_testing: true
+    test_version_confusion: true  # Test if v1 tokens work on v2 endpoints
+    test_legacy_auth: true
+    weak_secrets_wordlist: "wordlists/jwt_secrets.txt"
+  
+  # Property testing for version differences
+  property_testing:
+    enabled: true
+    test_version_differences: true  # Compare field exposure between versions
+    sensitive_fields:
+      - "password"
+      - "api_key"
+      - "secret"
+      - "internal_id"
+      - "legacy_field"
+      - "deprecated_field"
+    mass_assignment_fields:
+      - "is_admin"
+      - "role"
+      - "version"
+      - "api_version"
+  
+  # Function auth testing across versions
+  function_auth_testing:
+    enabled: true
+    admin_endpoints:
+      - "/v1/admin"
+      - "/v2/admin"
+      - "/legacy/admin"
+      - "/api/v1/admin"
+      - "/api/v2/admin"
+    test_version_bypass: true  # Test if admin endpoints exist in older versions
+
+# Advanced version discovery and analysis
+advanced:
+  # Enhanced version fuzzing
+  version_fuzzing:
+    enabled: true
+    comprehensive_testing: true
+    
+    # Version patterns to test
+    version_patterns:
+      # Numeric versions
+      - "/v1"
+      - "/v2"
+      - "/v3"
+      - "/v4"
+      - "/v5"
+      - "/v1.0"
+      - "/v1.1"
+      - "/v2.0"
+      - "/v2.1"
+      
+      # API prefixed versions
+      - "/api/v1"
+      - "/api/v2"
+      - "/api/v3"
+      - "/api/v1.0"
+      - "/api/v2.0"
+      
+      # Date-based versions
+      - "/2020"
+      - "/2021"
+      - "/2022"
+      - "/2023"
+      - "/2024"
+      - "/api/2023"
+      - "/api/2024"
+      
+      # Named versions
+      - "/legacy"
+      - "/old"
+      - "/deprecated"
+      - "/beta"
+      - "/alpha"
+      - "/preview"
+      - "/dev"
+      - "/staging"
+      - "/test"
+    
+    # Version comparison analysis
+    compare_versions: true
+    identify_deprecated: true
+    test_version_leakage: true
+    
+    # Custom version wordlist
+    version_wordlist: "wordlists/api_versions.txt"
+  
+  # Framework detection with version awareness
+  framework_detection:
+    enabled: true
+    detect_version_patterns: true
+    framework_wordlist: "wordlists/framework_endpoints.txt"
+  
+  # Security analysis for version differences
+  security_analysis:
+    cors_testing: true
+    security_headers: true
+    version_security_comparison: true
+    deprecated_version_analysis: true
+
+# Rate limiting (conservative for version discovery)
+rate_limiting:
+  requests_per_second: 8
+  burst_size: 20
+  adaptive: true
+  respect_retry_after: true
+  backoff_factor: 2.5
+  max_backoff: 120.0
+
+# Comprehensive reporting for version analysis
+reporting:
+  formats: ["json", "html", "xml"]
+  output_dir: "reports"
+  output_filename: "versioned_api_security_scan"
+  include_statistics: true
+  include_owasp_coverage: true
+  include_version_analysis: true
+  include_version_comparison: true
+  include_deprecated_warnings: true
+  
+  # Version-specific reporting
+  version_report_sections:
+    - "version_discovery_summary"
+    - "version_security_comparison"
+    - "deprecated_version_risks"
+    - "version_consistency_analysis"
+    - "cross_version_vulnerabilities"
+
+# Logging with version tracking
+logging:
+  level: "INFO"
+  format: "structured"
+  file: "versioned_api_scan.log"
+  include_version_info: true
+  
+  # Version-specific log sections
+  version_logging:
+    log_version_discovery: true
+    log_version_differences: true
+    log_cross_version_tests: true
+
+# Performance optimization for multiple version testing
+performance:
+  http:
+    connection_pool_size: 75
+    connection_timeout: 15
+    read_timeout: 45
+  
+  async:
+    max_concurrent_requests: 30
+    semaphore_limit: 20
+  
+  # Version testing optimization
+  version_testing:
+    parallel_version_discovery: true
+    cache_version_responses: true
+    optimize_cross_version_tests: true

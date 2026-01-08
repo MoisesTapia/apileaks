@@ -1,0 +1,39 @@
+# Configuración de ejemplo para Resource Consumption Testing
+target:
+  base_url: "https://api.example.com"
+  timeout: 30
+  verify_ssl: true
+
+# Configuración específica para Resource Consumption
+owasp_testing:
+  enabled_modules: ["resource"]  # Solo ejecutar Resource Consumption
+  resource_testing:
+    enabled: true
+    burst_size: 100              # Número de requests para rate limiting test
+    large_payload_sizes: [1048576, 10485760, 104857600]  # 1MB, 10MB, 100MB
+    json_depth_limit: 1000       # Profundidad máxima para JSON anidado
+
+# Rate limiting para no sobrecargar el servidor
+rate_limiting:
+  requests_per_second: 10
+  burst_size: 20
+  adaptive: true
+  respect_retry_after: true
+
+# Autenticación (opcional)
+authentication:
+  contexts:
+    - name: "user"
+      type: "bearer"
+      token: "tu_jwt_token_aqui"
+      privilege_level: 1
+    - name: "admin"
+      type: "bearer"
+      token: "admin_jwt_token_aqui"
+      privilege_level: 3
+
+# Configuración de reportes
+reporting:
+  formats: ["json", "html", "txt"]
+  output_dir: "reports"
+  output_filename: "resource_consumption_test"

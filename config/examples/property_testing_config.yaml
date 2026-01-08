@@ -1,0 +1,85 @@
+# Configuración específica para Property Level Authorization Testing (API3)
+# Broken Object Property Level Authorization
+
+target:
+  base_url: "https://api.example.com"
+  timeout: 30
+  verify_ssl: true
+
+# Solo ejecutar Property Level Authorization testing
+owasp_testing:
+  enabled_modules: ["property"]
+  
+  property_testing:
+    enabled: true
+    # Campos sensibles a detectar en respuestas
+    sensitive_fields: 
+      - "password"
+      - "api_key"
+      - "secret"
+      - "ssn"
+      - "credit_card"
+      - "bank_account"
+      - "private_key"
+      - "access_token"
+      - "refresh_token"
+    
+    # Campos para probar mass assignment
+    mass_assignment_fields:
+      - "is_admin"
+      - "role"
+      - "permissions"
+      - "user_id"
+      - "account_type"
+      - "privilege_level"
+      - "is_verified"
+      - "status"
+
+# Múltiples contextos para probar diferentes niveles de acceso
+authentication:
+  contexts:
+    - name: "anonymous"
+      type: "bearer"
+      token: ""
+      privilege_level: 0
+    
+    - name: "basic_user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIiwicm9sZSI6InVzZXIifQ.example_signature"
+      privilege_level: 1
+    
+    - name: "premium_user"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyNDU2Iiwicm9sZSI6InByZW1pdW0ifQ.example_signature"
+      privilege_level: 2
+    
+    - name: "admin"
+      type: "bearer"
+      token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9.example_signature"
+      privilege_level: 3
+
+# Rate limiting conservador para property testing
+rate_limiting:
+  requests_per_second: 6
+  burst_size: 12
+  adaptive: true
+  respect_retry_after: true
+
+# Configuración de reportes
+reporting:
+  formats: ["json", "html", "txt"]
+  output_dir: "reports"
+  output_filename: "property_auth_test"
+
+# Fuzzing para descubrir endpoints con datos sensibles
+fuzzing:
+  endpoints:
+    enabled: true
+    wordlist: "wordlists/endpoints.txt"
+    methods: ["GET", "POST", "PUT", "PATCH"]
+  parameters:
+    enabled: true
+    query_wordlist: "wordlists/parameters.txt"
+    body_wordlist: "wordlists/parameters.txt"
+  headers:
+    enabled: false
