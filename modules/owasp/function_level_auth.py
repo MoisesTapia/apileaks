@@ -238,18 +238,23 @@ class FunctionLevelAuthModule(OWASPModule):
                     severity = self._determine_severity(response.status_code, admin_endpoint.confidence)
                     
                     finding = Finding(
-                        title="Anonymous Access to Administrative Function",
-                        description=f"Administrative endpoint '{admin_endpoint.url}' is accessible without authentication",
+                        id="",
+                        scan_id="",
+                        category="ADMIN_ACCESS_ANONYMOUS",
+                        owasp_category="API5",
                         severity=severity,
-                        confidence=admin_endpoint.confidence,
-                        owasp_category="API5:2023",
-                        cwe_id="CWE-862",
                         endpoint=admin_endpoint.url,
                         method=admin_endpoint.method,
-                        evidence=f"HTTP {response.status_code} response received for admin endpoint",
+                        status_code=response.status_code,
+                        response_size=len(response.content) if getattr(response, 'content', None) is not None else 0,
+                        response_time=getattr(response, 'elapsed', 0.0),
+                        evidence=f"Administrative endpoint '{admin_endpoint.url}' is accessible "
+                                 f"without authentication (HTTP {response.status_code} received "
+                                 f"for {admin_endpoint.method}).",
+                        recommendation="Implement proper function-level authorization checks for "
+                                       "administrative endpoints.",
                         payload=f"{admin_endpoint.method} {admin_endpoint.url}",
-                        response_snippet=response.text[:500] if hasattr(response, 'text') else "",
-                        remediation="Implement proper function-level authorization checks for administrative endpoints"
+                        response_snippet=response.text[:500] if getattr(response, 'text', None) else None
                     )
                     
                     findings.append(finding)
@@ -313,18 +318,24 @@ class FunctionLevelAuthModule(OWASPModule):
                         test_response.status_code not in [401, 403, 404, 405]):
                         
                         finding = Finding(
-                            title="HTTP Method Authorization Bypass",
-                            description=f"Endpoint '{url}' allows access via {test_method} method bypassing authorization",
+                            id="",
+                            scan_id="",
+                            category="HTTP_METHOD_BYPASS",
+                            owasp_category="API5",
                             severity=Severity.HIGH,
-                            confidence=0.8,
-                            owasp_category="API5:2023",
-                            cwe_id="CWE-862",
                             endpoint=url,
                             method=test_method,
-                            evidence=f"Baseline {original_method} returned {baseline_response.status_code}, {test_method} returned {test_response.status_code}",
+                            status_code=test_response.status_code,
+                            response_size=len(test_response.content) if getattr(test_response, 'content', None) is not None else 0,
+                            response_time=getattr(test_response, 'elapsed', 0.0),
+                            evidence=f"Endpoint '{url}' allows access via {test_method} bypassing "
+                                     f"authorization. Baseline {original_method} returned "
+                                     f"{baseline_response.status_code}, {test_method} returned "
+                                     f"{test_response.status_code}.",
+                            recommendation="Implement consistent authorization checks across all "
+                                           "HTTP methods.",
                             payload=f"{test_method} {url}",
-                            response_snippet=test_response.text[:500] if hasattr(test_response, 'text') else "",
-                            remediation="Implement consistent authorization checks across all HTTP methods"
+                            response_snippet=test_response.text[:500] if getattr(test_response, 'text', None) else None
                         )
                         
                         findings.append(finding)
@@ -401,18 +412,24 @@ class FunctionLevelAuthModule(OWASPModule):
                         param_value = list(bypass_param.values())[0]
                         
                         finding = Finding(
-                            title="Parameter-Based Authorization Bypass",
-                            description=f"Endpoint '{url}' allows authorization bypass using parameter '{param_name}={param_value}'",
+                            id="",
+                            scan_id="",
+                            category="FUNCTION_LEVEL_BYPASS",
+                            owasp_category="API5",
                             severity=Severity.HIGH,
-                            confidence=0.9,
-                            owasp_category="API5:2023",
-                            cwe_id="CWE-862",
                             endpoint=url,
                             method=method,
-                            evidence=f"Baseline returned {baseline_response.status_code}, with {param_name}={param_value} returned {test_response.status_code}",
+                            status_code=test_response.status_code,
+                            response_size=len(test_response.content) if getattr(test_response, 'content', None) is not None else 0,
+                            response_time=getattr(test_response, 'elapsed', 0.0),
+                            evidence=f"Endpoint '{url}' allows authorization bypass using parameter "
+                                     f"'{param_name}={param_value}'. Baseline returned "
+                                     f"{baseline_response.status_code}, with {param_name}={param_value} "
+                                     f"returned {test_response.status_code}.",
+                            recommendation="Remove or properly validate authorization bypass "
+                                           "parameters.",
                             payload=f"{method} {url} with {param_name}={param_value}",
-                            response_snippet=test_response.text[:500] if hasattr(test_response, 'text') else "",
-                            remediation="Remove or properly validate authorization bypass parameters"
+                            response_snippet=test_response.text[:500] if getattr(test_response, 'text', None) else None
                         )
                         
                         findings.append(finding)
@@ -483,18 +500,24 @@ class FunctionLevelAuthModule(OWASPModule):
                         header_value = list(bypass_header.values())[0]
                         
                         finding = Finding(
-                            title="Header-Based Authorization Bypass",
-                            description=f"Endpoint '{url}' allows authorization bypass using header '{header_name}: {header_value}'",
+                            id="",
+                            scan_id="",
+                            category="FUNCTION_LEVEL_BYPASS",
+                            owasp_category="API5",
                             severity=Severity.HIGH,
-                            confidence=0.9,
-                            owasp_category="API5:2023",
-                            cwe_id="CWE-862",
                             endpoint=url,
                             method=method,
-                            evidence=f"Baseline returned {baseline_response.status_code}, with {header_name}: {header_value} returned {test_response.status_code}",
+                            status_code=test_response.status_code,
+                            response_size=len(test_response.content) if getattr(test_response, 'content', None) is not None else 0,
+                            response_time=getattr(test_response, 'elapsed', 0.0),
+                            evidence=f"Endpoint '{url}' allows authorization bypass using header "
+                                     f"'{header_name}: {header_value}'. Baseline returned "
+                                     f"{baseline_response.status_code}, with {header_name}: "
+                                     f"{header_value} returned {test_response.status_code}.",
+                            recommendation="Remove or properly validate authorization bypass "
+                                           "headers.",
                             payload=f"{method} {url} with header {header_name}: {header_value}",
-                            response_snippet=test_response.text[:500] if hasattr(test_response, 'text') else "",
-                            remediation="Remove or properly validate authorization bypass headers"
+                            response_snippet=test_response.text[:500] if getattr(test_response, 'text', None) else None
                         )
                         
                         findings.append(finding)

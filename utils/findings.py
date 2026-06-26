@@ -72,6 +72,7 @@ class FindingsCollector:
         "SSRF_INTERNAL_ACCESS": Severity.CRITICAL,
         "ADMIN_ACCESS_ANONYMOUS": Severity.CRITICAL,
         "SENSITIVE_DATA_EXPOSURE": Severity.CRITICAL,
+        "FILE_PROTOCOL_ACCESS": Severity.CRITICAL,
         
         # High severity - significant security risk
         "WEAK_JWT_ALGORITHM": Severity.HIGH,
@@ -79,6 +80,8 @@ class FindingsCollector:
         "MASS_ASSIGNMENT": Severity.HIGH,
         "FUNCTION_LEVEL_BYPASS": Severity.HIGH,
         "CORS_MISCONFIGURATION": Severity.HIGH,
+        "BUSINESS_FLOW_NO_LIMIT": Severity.HIGH,
+        "UNSAFE_UPSTREAM_DATA": Severity.HIGH,
         
         # Medium severity - moderate security risk
         "MISSING_RATE_LIMITING": Severity.MEDIUM,
@@ -91,6 +94,7 @@ class FindingsCollector:
         "INFORMATION_DISCLOSURE": Severity.LOW,
         "VERBOSE_ERROR_MESSAGES": Severity.LOW,
         "DEPRECATED_API_VERSION": Severity.LOW,
+        "UNDOCUMENTED_API_VERSION": Severity.LOW,
         
         # Info - informational findings
         "ENDPOINT_DISCOVERED": Severity.INFO,
@@ -115,6 +119,7 @@ class FindingsCollector:
         "ADMIN_ACCESS_ANONYMOUS": "API5",
         "FUNCTION_LEVEL_BYPASS": "API5",
         "HTTP_METHOD_BYPASS": "API5",
+        "BUSINESS_FLOW_NO_LIMIT": "API6",
         "SSRF_INTERNAL_ACCESS": "API7",
         "SSRF_BLIND": "API7",
         "FILE_PROTOCOL_ACCESS": "API7",
@@ -122,7 +127,9 @@ class FindingsCollector:
         "MISSING_SECURITY_HEADERS": "API8",
         "ENDPOINT_DISCOVERED": "API9",
         "FRAMEWORK_DETECTED": "API9",
-        "DEPRECATED_API_VERSION": "API9"
+        "DEPRECATED_API_VERSION": "API9",
+        "UNDOCUMENTED_API_VERSION": "API9",
+        "UNSAFE_UPSTREAM_DATA": "API10"
     }
     
     def __init__(self, scan_id: str):

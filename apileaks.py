@@ -8,13 +8,25 @@ import asyncio
 import sys
 import json
 import copy
+from datetime import datetime, timezone
 from pathlib import Path
 import click
 import os
 
 from core import APILeakCore, ConfigurationManager, setup_logging
+from core import __version__ as APILEAK_VERSION
 from core.logging import get_logger
 from utils.jwt_utils import decode_jwt, encode_jwt, print_jwt_info
+from utils.discovery_session import (
+    DiscoveryResult,
+    DiscoverySession,
+    DiscoverySessionError,
+    apply_status_filter,
+    group_by_status_class,
+    parse_status_filter,
+)
+from utils.discovery_export import DiscoveryExportError, write_discovery_export
+from utils.triage_table import render_triage_table
 
 
 def parse_response_codes(response_filter: str) -> list:
@@ -140,7 +152,7 @@ APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical"):
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False):
     """Create an enhanced configuration with all advanced features integrated"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -303,7 +315,8 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
                 'medium': 0,
                 'low': 0
             }
-        }
+        },
+        'safe_mode': safe_mode
     }
     
     # For parameter fuzzing, disable endpoint discovery and use the target directly
@@ -535,8 +548,16 @@ def cli(ctx, no_banner):
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during directory fuzzing')
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing during directory discovery')
+@click.option('--save-session', 'save_session', type=click.Path(), help='Save discovery results to a JSON session file (source of truth for reload)')
+@click.option('--load-session', 'load_session', type=click.Path(), help='Reload discovery results exclusively from a JSON session file (skips discovery)')
+@click.option('--export', 'export_format', type=click.Choice(['md', 'txt']), help='Write a human-readable discovery export in the selected format (md or txt)')
+@click.option('--export-file', 'export_file', type=click.Path(), help='Destination path for the human-readable export (extension selects the format)')
+@click.option('--interactive', '--triage', 'interactive', is_flag=True, help='Enable interactive triage mode (opt-in; auto-disabled in CI mode)')
+@click.option('--ci-mode', 'ci_mode', is_flag=True, help='Enable CI mode (disables the interactive triage prompt so it never blocks a pipeline)')
+@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
+@click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
 @click.pass_context
-def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, fuzz_versions):
+def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, fuzz_versions, save_session, load_session, export_format, export_file, interactive, ci_mode, proxy, proxy_verify_ssl):
     """Directory/endpoint fuzzing - discover hidden endpoints and directories
     
     \b
@@ -544,6 +565,11 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
       python apileaks.py dir --target https://api.example.com
       python apileaks.py dir --target URL --wordlist custom.txt --rate-limit 5
       python apileaks.py dir --target URL --user-agent-random --detect-framework
+      python apileaks.py dir --target URL --save-session session.json --export md --export-file results.md
+      python apileaks.py dir --target URL --load-session session.json --status-code 2xx
+      python apileaks.py dir --target URL --load-session session.json --interactive
+      python apileaks.py dir --target URL --interactive --ci-mode --save-session session.json
+      python apileaks.py dir --target URL --proxy http://127.0.0.1:8080 --jwt TOKEN
     """
     
     # Validate user agent options
@@ -554,7 +580,41 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
     logger = get_logger("dir")
     
     logger.info("APILeak directory fuzzing starting", version="0.1.0", target=target)
-    
+
+    # Discovery triage is an additive workflow layered on top of discovery. It is
+    # only engaged when the user opts in via a triage flag; otherwise the command
+    # behaves exactly as before and runs the standard enhanced scan.
+    triage_requested = bool(
+        save_session or load_session or export_format or export_file or interactive
+    )
+
+    if triage_requested:
+        _run_dir_triage(
+            target=target,
+            wordlist=wordlist,
+            output=output,
+            rate_limit=rate_limit,
+            methods=methods,
+            user_agent_random=user_agent_random,
+            user_agent_custom=user_agent_custom,
+            user_agent_file=user_agent_file,
+            jwt=jwt,
+            response=response,
+            status_code=status_code,
+            detect_framework=detect_framework,
+            fuzz_versions=fuzz_versions,
+            save_session=save_session,
+            load_session=load_session,
+            export_format=export_format,
+            export_file=export_file,
+            interactive=interactive,
+            ci_mode=ci_mode,
+            proxy=proxy,
+            proxy_verify_ssl=proxy_verify_ssl,
+            logger=logger,
+        )
+        return
+
     try:
         # Prepare user agent configuration
         user_agent_config = None
@@ -581,6 +641,8 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         
         # Create default configuration for directory fuzzing
         config_dict = create_default_config(target, wordlist, "dir", user_agent_config, output_filename, advanced_config, status_code_filter)
+        config_dict['proxy'] = proxy
+        config_dict['proxy_verify_ssl'] = proxy_verify_ssl
         
         # Apply CLI overrides
         if rate_limit:
@@ -614,6 +676,439 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         sys.exit(1)
 
 
+async def _discover_endpoints_for_triage(apileak_config):
+    """Run discovery for the triage workflow and return the discovered endpoints.
+
+    Builds an :class:`APILeakCore`, executes a scan against the configured target
+    (in ``dir`` mode no OWASP modules are enabled, so this is effectively the
+    endpoint discovery phase), and returns the discovered ``Endpoint`` objects so
+    the caller can project them into :class:`DiscoveryResult` records.
+
+    Args:
+        apileak_config: The loaded APILeak configuration.
+
+    Returns:
+        The list of discovered ``Endpoint`` objects.
+    """
+    core = APILeakCore(apileak_config)
+
+    health_status = await core.health_check()
+    if health_status.get("status") != "healthy":
+        get_logger("dir").warning(
+            "Health check indicates issues", status=health_status
+        )
+
+    await core.run_scan(apileak_config.target.base_url)
+    return core.get_discovered_endpoints()
+
+
+def _run_dir_triage(
+    *,
+    target,
+    wordlist,
+    output,
+    rate_limit,
+    methods,
+    user_agent_random,
+    user_agent_custom,
+    user_agent_file,
+    jwt,
+    response,
+    status_code,
+    detect_framework,
+    fuzz_versions,
+    save_session,
+    load_session,
+    export_format,
+    export_file,
+    interactive,
+    ci_mode,
+    proxy,
+    proxy_verify_ssl,
+    logger,
+):
+    """Run the discovery triage workflow for the ``dir`` command.
+
+    Sources :class:`DiscoveryResult` records either from a reloaded
+    ``Discovery_Session_File`` (``--load-session``; the session file is the sole
+    source of truth, Requirements 14.6, 14.7) or from a fresh discovery whose
+    ``Endpoint`` objects are projected into records. It then parses the optional
+    status filter (Requirement 13.5), renders the triage table grouped by status
+    class (Requirements 15.1-15.7), saves the full record set to a session file
+    when requested (Requirements 14.1, 14.2), and writes a human-readable export
+    grouped by status class when requested (Requirements 14.3-14.5).
+
+    Filter, persistence, and export failures are surfaced as CLI errors.
+    """
+    from rich.console import Console
+
+    console = Console()
+
+    try:
+        # Parse the optional status filter up front so an out-of-range explicit
+        # code is reported before any discovery or I/O (Requirements 13.5, 13.6).
+        status_filter = parse_status_filter(status_code) if status_code else None
+
+        # Source the Discovery_Result records: reload is the source of truth and
+        # skips discovery entirely (Requirements 14.6, 14.7, 15.6, 16.5).
+        if load_session:
+            session = DiscoverySession.load(load_session)
+            records = list(session.results)
+            logger.info(
+                "Loaded discovery session", path=load_session, records=len(records)
+            )
+        else:
+            # Build the discovery configuration exactly as the standard dir path.
+            user_agent_config = None
+            if user_agent_random:
+                user_agent_config = {'random': True}
+            elif user_agent_custom:
+                user_agent_config = {'custom': user_agent_custom}
+            elif user_agent_file:
+                user_agents = load_user_agents_from_file(user_agent_file)
+                user_agent_config = {'file_list': user_agents}
+
+            output_filename = prepare_output_filename(output)
+
+            advanced_config = {
+                'detect_framework': detect_framework,
+                'fuzz_versions': fuzz_versions,
+                'framework_confidence': 0.6,
+            }
+
+            status_code_filter = parse_status_codes(status_code) if status_code else None
+
+            config_dict = create_default_config(
+                target, wordlist, "dir", user_agent_config, output_filename,
+                advanced_config, status_code_filter,
+            )
+            config_dict['proxy'] = proxy
+            config_dict['proxy_verify_ssl'] = proxy_verify_ssl
+
+            if rate_limit:
+                config_dict['rate_limiting']['requests_per_second'] = rate_limit
+            if methods:
+                config_dict['fuzzing']['endpoints']['methods'] = [
+                    m.strip() for m in methods.split(',')
+                ]
+            if jwt:
+                config_dict['authentication']['contexts'][0]['token'] = jwt
+                config_dict['authentication']['contexts'][0]['type'] = 'bearer'
+            if response:
+                config_dict['fuzzing']['response_filter'] = parse_response_codes(response)
+
+            config_manager = ConfigurationManager()
+            apileak_config = config_manager.load_config_from_dict(config_dict)
+
+            validation_errors = config_manager.validate_configuration()
+            if validation_errors:
+                logger.error("Configuration validation failed", errors=validation_errors)
+                for error in validation_errors:
+                    click.echo(f"Error: {error}", err=True)
+                sys.exit(1)
+
+            endpoints = asyncio.run(_discover_endpoints_for_triage(apileak_config))
+            records = [DiscoveryResult.from_endpoint(endpoint) for endpoint in endpoints]
+            logger.info("Projected discovery results", records=len(records))
+
+        # Render the triage table from in-memory records, applying the filter to
+        # the displayed rows (Requirements 15.1-15.5, 15.7).
+        table = render_triage_table(records, status_filter)
+        console.print(table)
+
+        # Persist the full record set as the source-of-truth session file. Every
+        # record is written, with none omitted (Requirements 14.1, 14.2).
+        if save_session:
+            session = DiscoverySession(
+                target=target,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                tool_version=APILEAK_VERSION,
+                results=records,
+            )
+            session.save(save_session)
+            click.echo(f"💾 Discovery session saved: {save_session}")
+
+        # Write the human-readable export grouped by status class. The export path
+        # extension selects the format and an unsupported format is rejected
+        # without writing anything (Requirements 14.3-14.5).
+        if export_format or export_file:
+            if export_file:
+                export_path = export_file
+            else:
+                output_dir = "reports"
+                os.makedirs(output_dir, exist_ok=True)
+                export_path = os.path.join(output_dir, f"discovery_export.{export_format}")
+            write_discovery_export(records, export_path)
+            click.echo(f"📄 Discovery export written: {export_path}")
+
+        # Interactive triage selection (opt-in). The helper enforces the full
+        # contract: it is disabled by default, never prompts in CI mode, skips an
+        # empty (filtered) table, bounds invalid selections to 3 consecutive
+        # attempts, and launches exactly one Targeted_Follow_Up_Scan on a valid
+        # selection (Requirements 16.1-16.4, 16.6-16.8).
+        def _follow_up(selected):
+            _run_targeted_follow_up_scan(
+                selected,
+                rate_limit=rate_limit,
+                user_agent_random=user_agent_random,
+                user_agent_custom=user_agent_custom,
+                user_agent_file=user_agent_file,
+                jwt=jwt,
+                response=response,
+                output=output,
+                detect_framework=detect_framework,
+                fuzz_versions=fuzz_versions,
+                proxy=proxy,
+                proxy_verify_ssl=proxy_verify_ssl,
+                logger=logger,
+            )
+
+        run_interactive_triage(
+            records,
+            ci_mode,
+            interactive,
+            status_filter=status_filter,
+            follow_up=_follow_up,
+        )
+
+    except ValueError as exc:
+        # Invalid status filter (e.g. an out-of-range explicit code) — Req 13.6.
+        logger.error("Discovery triage filter error", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except DiscoverySessionError as exc:
+        # Session persistence/reload failures — Requirements 14.2, 14.9, 14.10.
+        logger.error("Discovery session error", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except DiscoveryExportError as exc:
+        # Unsupported/failed human-readable export — Requirement 14.4.
+        logger.error("Discovery export error", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 - surface any other failure as a CLI error
+        logger.error("Directory triage failed", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+def run_interactive_triage(
+    records,
+    ci_mode,
+    interactive_flag,
+    *,
+    status_filter=None,
+    follow_up=None,
+    prompt_func=None,
+    echo=None,
+    max_invalid_attempts=3,
+):
+    """Run the opt-in interactive triage selection prompt (Requirement 16).
+
+    Interactive triage is **disabled by default** and is engaged only when the
+    caller explicitly opts in via ``interactive_flag`` (Requirement 16.4). It is
+    **automatically disabled while CI_Mode is active** so no prompt is ever shown
+    and execution continues without blocking a pipeline (Requirement 16.3). When
+    the (filtered) record set is empty the prompt is skipped and no follow-up
+    scan is initiated (Requirement 16.8).
+
+    Otherwise the function presents the filtered records (in the same ascending
+    status-class order as the triage table) and prompts for exactly one endpoint
+    selection (Requirement 16.1). A valid selection invokes ``follow_up`` exactly
+    once with the chosen :class:`DiscoveryResult`, launching a single
+    ``Targeted_Follow_Up_Scan`` scoped to that endpoint (Requirement 16.2). An
+    invalid selection re-prompts without starting a scan, up to a maximum of 3
+    consecutive invalid attempts; after the 3rd the function exits interactive
+    mode without a scan and prints a "selection abandoned" message
+    (Requirements 16.6, 16.7).
+
+    Args:
+        records: The in-memory discovery records (already the reload source of
+            truth when ``--load-session`` was used, Requirement 16.5).
+        ci_mode: Whether CI_Mode is active; ``True`` disables the prompt.
+        interactive_flag: The explicit opt-in flag; ``False`` disables the prompt.
+        status_filter: The parsed status filter so the selectable set matches the
+            displayed (filtered) table.
+        follow_up: Callable invoked with the selected record to launch the
+            targeted follow-up scan. Optional so the selection logic stays
+            testable in isolation.
+        prompt_func: Callable taking a prompt message and returning the raw user
+            input; defaults to a ``click.prompt`` wrapper. Injectable for tests.
+        echo: Callable used for output; defaults to :func:`click.echo`.
+        max_invalid_attempts: Maximum consecutive invalid selections before the
+            prompt is abandoned (defaults to 3, Requirement 16.6).
+
+    Returns:
+        The selected :class:`DiscoveryResult` when a valid selection is made,
+        otherwise ``None`` (disabled, CI mode, empty table, or abandoned).
+    """
+    log = get_logger("dir")
+    echo = echo or click.echo
+
+    # Opt-in: disabled by default (Requirement 16.4).
+    if not interactive_flag:
+        return None
+
+    # Automatically disabled in CI mode — no prompt, never blocks (Req 16.3).
+    if ci_mode:
+        log.info("Interactive triage disabled in CI mode")
+        return None
+
+    # Build the displayed record list in the same filtered, ascending
+    # status-class order used by the triage table so selection indices line up
+    # with what the user sees (Requirements 16.1, 15.4, 15.5).
+    filtered = apply_status_filter(records, status_filter)
+    grouped = group_by_status_class(filtered)
+    displayed = [record for class_records in grouped.values() for record in class_records]
+
+    # Empty (filtered) table: skip the prompt, initiate no scan (Req 16.8).
+    if not displayed:
+        log.info("Interactive triage skipped: no records to display")
+        return None
+
+    if prompt_func is None:
+        def prompt_func(message):
+            return click.prompt(message, default="", show_default=False)
+
+    echo("\nSelect an endpoint for a targeted follow-up scan:")
+    for index, record in enumerate(displayed, start=1):
+        echo(f"  {index}. [{record.status_code}] {record.method} {record.url}")
+
+    invalid_attempts = 0
+    while invalid_attempts < max_invalid_attempts:
+        try:
+            raw = prompt_func(f"Enter selection (1-{len(displayed)})")
+        except (EOFError, click.Abort):
+            raw = ""
+
+        selection = (raw or "").strip()
+        selected = None
+        if selection.isdigit():
+            index = int(selection)
+            if 1 <= index <= len(displayed):
+                selected = displayed[index - 1]
+
+        if selected is None:
+            # Invalid selection: re-prompt without launching a scan (Req 16.6).
+            invalid_attempts += 1
+            remaining = max_invalid_attempts - invalid_attempts
+            if remaining > 0:
+                echo(
+                    f"Invalid selection. Please try again "
+                    f"({remaining} attempt(s) remaining).",
+                    err=True,
+                )
+            continue
+
+        # Valid selection: launch exactly one Targeted_Follow_Up_Scan (Req 16.2).
+        log.info(
+            "Interactive triage selection",
+            url=selected.url,
+            method=selected.method,
+        )
+        if follow_up is not None:
+            follow_up(selected)
+        return selected
+
+    # 3 consecutive invalid selections: abandon without a scan (Req 16.6, 16.7).
+    echo(
+        "Selection abandoned after 3 invalid attempts. "
+        "No follow-up scan was started.",
+        err=True,
+    )
+    log.info("Interactive triage abandoned after invalid selections")
+    return None
+
+
+def _run_targeted_follow_up_scan(
+    selected,
+    *,
+    rate_limit,
+    user_agent_random,
+    user_agent_custom,
+    user_agent_file,
+    jwt,
+    response,
+    output,
+    detect_framework,
+    fuzz_versions,
+    proxy=None,
+    proxy_verify_ssl=False,
+    logger,
+):
+    """Launch one ``Targeted_Follow_Up_Scan`` scoped to ``selected`` (Req 16.2).
+
+    Reuses the existing discovery/scan path (:func:`run_enhanced_apileak`) but
+    scopes it to the single selected endpoint by using the record's URL as the
+    scan target and restricting the tested methods to the selected method.
+
+    Args:
+        selected: The :class:`DiscoveryResult` chosen by the user.
+        rate_limit, user_agent_*, jwt, response, output, detect_framework,
+        fuzz_versions: The same discovery options passed to the ``dir`` command,
+            so the follow-up honors the user's original settings.
+        logger: The command logger.
+    """
+    logger.info(
+        "Targeted follow-up scan starting",
+        url=selected.url,
+        method=selected.method,
+    )
+    click.echo(
+        f"🎯 Starting targeted follow-up scan: {selected.method} {selected.url}"
+    )
+
+    user_agent_config = None
+    if user_agent_random:
+        user_agent_config = {'random': True}
+    elif user_agent_custom:
+        user_agent_config = {'custom': user_agent_custom}
+    elif user_agent_file:
+        user_agents = load_user_agents_from_file(user_agent_file)
+        user_agent_config = {'file_list': user_agents}
+
+    output_filename = prepare_output_filename(output)
+
+    advanced_config = {
+        'detect_framework': detect_framework,
+        'fuzz_versions': fuzz_versions,
+        'framework_confidence': 0.6,
+    }
+
+    # Scope the scan to the single selected endpoint URL (no wordlist expansion).
+    config_dict = create_default_config(
+        selected.url, None, "dir", user_agent_config, output_filename,
+        advanced_config, None,
+    )
+    config_dict['proxy'] = proxy
+    config_dict['proxy_verify_ssl'] = proxy_verify_ssl
+
+    if rate_limit:
+        config_dict['rate_limiting']['requests_per_second'] = rate_limit
+    # Restrict to the selected endpoint's method so the follow-up stays scoped.
+    config_dict['fuzzing']['endpoints']['methods'] = [selected.method]
+    if jwt:
+        config_dict['authentication']['contexts'][0]['token'] = jwt
+        config_dict['authentication']['contexts'][0]['type'] = 'bearer'
+    if response:
+        config_dict['fuzzing']['response_filter'] = parse_response_codes(response)
+
+    config_manager = ConfigurationManager()
+    apileak_config = config_manager.load_config_from_dict(config_dict)
+
+    validation_errors = config_manager.validate_configuration()
+    if validation_errors:
+        logger.error(
+            "Targeted follow-up scan configuration invalid",
+            errors=validation_errors,
+        )
+        for error in validation_errors:
+            click.echo(f"Error: {error}", err=True)
+        return
+
+    asyncio.run(run_enhanced_apileak(apileak_config))
+
+
 @cli.command()
 @click.option('--target', '-t', required=True, help='Target URL to scan')
 @click.option('--wordlist', '-w', help='Wordlist file for parameter fuzzing')
@@ -632,8 +1127,10 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--response', help='Filter by response codes (e.g., 200,301,404 or 200-300)')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during parameter fuzzing')
+@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
+@click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
 @click.pass_context
-def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework):
+def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl):
     """Parameter fuzzing - discover hidden parameters in API endpoints
     
     \b
@@ -678,6 +1175,8 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         
         # Create default configuration for parameter fuzzing
         config_dict = create_default_config(target, wordlist, "par", user_agent_config, output_filename, advanced_config, status_code_filter)
+        config_dict['proxy'] = proxy
+        config_dict['proxy_verify_ssl'] = proxy_verify_ssl
         
         # Apply CLI overrides
         if rate_limit:
@@ -738,8 +1237,13 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--ci-mode', is_flag=True, help='Enable CI/CD mode with appropriate exit codes and artifact generation')
 @click.option('--fail-on', type=click.Choice(['critical', 'high', 'medium', 'low']), 
               default='critical', help='Fail CI pipeline on findings of this severity or higher')
+@click.option('--sarif', is_flag=True, help='Generate a SARIF 2.1.0 report (for code scanning / CI integration)')
+@click.option('--safe-mode', is_flag=True, help='Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)')
+@click.option('--baseline', type=click.Path(), help='Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.')
+@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
+@click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
 @click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on):
+def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl):
     """Full comprehensive scan - includes fuzzing and OWASP testing
     
     \b
@@ -804,8 +1308,26 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
             # Parse status code filter for HTTP output
             status_code_filter = parse_status_codes(status_code) if status_code else None
             
-            config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on)
+            config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on, safe_mode)
             apileak_config = config_manager.load_config_from_dict(config_dict)
+        
+        # When --safe-mode is requested, ensure it is honored even when the
+        # configuration was loaded from a file (CLI flag overrides config).
+        if safe_mode and hasattr(apileak_config, 'safe_mode'):
+            apileak_config.safe_mode = True
+
+        # When --proxy is requested, route all traffic through the intercepting
+        # proxy (Burp/Caido/Hetty). The CLI flag overrides any file config and
+        # applies whether the config came from a file or was built in-memory.
+        if proxy and hasattr(apileak_config, 'proxy'):
+            apileak_config.proxy = proxy
+            apileak_config.proxy_verify_ssl = proxy_verify_ssl
+        
+        # When --sarif is requested, ensure the SARIF format is included in the
+        # effective reporting formats so a *.sarif report is generated.
+        if sarif and hasattr(apileak_config, 'reporting'):
+            if 'sarif' not in apileak_config.reporting.formats:
+                apileak_config.reporting.formats.append('sarif')
         
         # Apply CLI overrides
         cli_overrides = {}
@@ -830,7 +1352,7 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
             sys.exit(1)
         
         # Run the enhanced scan
-        asyncio.run(run_enhanced_apileak(apileak_config, ci_mode, fail_on))
+        asyncio.run(run_enhanced_apileak(apileak_config, ci_mode, fail_on, baseline))
         
     except Exception as e:
         logger.error("Full scan failed", error=str(e))
@@ -2636,7 +3158,81 @@ def main(ctx, config, target, output, log_level, log_file, json_logs, modules, r
                log_file=log_file, json_logs=json_logs, modules=modules, rate_limit=rate_limit)
 
 
-async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical"):
+# Severity ladder for CI/CD gate evaluation, ordered from highest to lowest.
+SEVERITY_LADDER = ["critical", "high", "medium", "low"]
+
+
+def _count_by_severity(findings):
+    """Count findings by severity name for the CI severity gate.
+
+    Args:
+        findings: Iterable of Finding objects.
+
+    Returns:
+        A mapping of ``{"critical": int, "high": int, "medium": int, "low": int}``.
+    """
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for finding in findings:
+        severity = getattr(finding, 'severity', None)
+        name = getattr(severity, 'value', severity)
+        if isinstance(name, str):
+            name = name.lower()
+        if name in counts:
+            counts[name] += 1
+    return counts
+
+
+def evaluate_severity_gate(counts, fail_on):
+    """
+    Deterministically map finding counts and a fail-on threshold to a CI exit code.
+
+    This is a pure function (no I/O, no side effects) so the CI severity-gate
+    behavior is deterministic and independently testable.
+
+    Args:
+        counts: Mapping of severity name -> count, e.g.
+                ``{"critical": 1, "high": 0, "medium": 2, "low": 0}``.
+                Missing keys are treated as zero.
+        fail_on: Severity threshold, one of "critical", "high", "medium", "low".
+                 Unknown/empty values fall back to the strictest threshold
+                 ("critical").
+
+    Returns:
+        2 if at least one critical finding is present and the highest finding
+          present meets or exceeds the threshold (Requirement 9.2),
+        1 if the highest finding present meets or exceeds the threshold but no
+          critical finding is present,
+        0 if the highest finding present is below the threshold, or there are
+          no findings at all (Requirement 9.3).
+    """
+    fail_on = (fail_on or "critical").lower()
+    if fail_on not in SEVERITY_LADDER:
+        fail_on = "critical"
+
+    threshold_rank = SEVERITY_LADDER.index(fail_on)  # 0 = critical (strictest)
+
+    # Highest severity actually present is the lowest index in the ladder.
+    highest_present_rank = None
+    for rank, severity in enumerate(SEVERITY_LADDER):
+        if counts.get(severity, 0) > 0:
+            highest_present_rank = rank
+            break
+
+    # No findings present -> pass.
+    if highest_present_rank is None:
+        return 0
+
+    # Highest present severity is below the threshold -> pass (Requirement 9.3).
+    if highest_present_rank > threshold_rank:
+        return 0
+
+    # Threshold met or exceeded: critical present -> 2 (Requirement 9.2), else 1.
+    if counts.get("critical", 0) > 0:
+        return 2
+    return 1
+
+
+async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseline=None):
     """
     Run enhanced APILeak scan with full integration of all components
     
@@ -2644,6 +3240,9 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical"):
         config: APILeak configuration
         ci_mode: Whether running in CI/CD mode
         fail_on: Severity level to fail on in CI mode
+        baseline: Optional path to a baseline JSON report. When provided,
+                  findings are classified into new vs known and the CI severity
+                  gate evaluates only the New_Finding set (Requirements 11.1-11.5).
     """
     logger = get_logger("run_enhanced_apileak")
     
@@ -2695,6 +3294,9 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical"):
     
     click.echo(f"⚡ Rate Limit: {config.rate_limiting.requests_per_second} req/sec")
     
+    if getattr(config, 'safe_mode', False):
+        click.echo("🛟 Safe Mode: Enabled (state-changing probes skipped, safe methods only)")
+    
     if ci_mode:
         click.echo(f"🔄 CI/CD Mode: Enabled (fail on {fail_on}+ severity)")
     
@@ -2718,7 +3320,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical"):
         
         # Generate reports with custom names
         output_filename = getattr(config.reporting, 'output_filename', None)
-        report_files = report_generator.save_reports(results, config.reporting.output_dir, scan_type, output_filename)
+        report_files = report_generator.save_reports(results, config.reporting.output_dir, scan_type, output_filename, formats=getattr(config.reporting, 'formats', None))
         
         # Display enhanced summary with advanced features results
         click.echo("\n" + "="*60)
@@ -2786,30 +3388,55 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical"):
         for report_file in report_files:
             click.echo(f"  - {report_file}")
         
+        # Baseline comparison: classify findings into new vs known relative to a
+        # baseline JSON report (Requirements 11.1-11.3). A missing baseline path
+        # yields an empty baseline so every finding is treated as new (11.5).
+        new_findings = None
+        if baseline:
+            from utils.baseline import BaselineComparator
+
+            comparator = BaselineComparator()
+            baseline_keys = comparator.load(baseline)
+
+            if hasattr(results, 'findings_collector') and results.findings_collector:
+                all_findings = results.findings_collector.get_prioritized_findings()
+            else:
+                all_findings = list(getattr(results, 'findings', []) or [])
+
+            new_findings, known_findings = comparator.classify(all_findings, baseline_keys)
+
+            click.echo("\n📊 Baseline Comparison:")
+            click.echo(f"  - Baseline: {baseline}")
+            click.echo(f"  - New findings: {len(new_findings)}")
+            click.echo(f"  - Known findings: {len(known_findings)}")
+        
         # Enhanced CI/CD integration with configurable exit codes
         if ci_mode:
-            critical_count = getattr(results.statistics, 'critical_findings', 0)
-            high_count = getattr(results.statistics, 'high_findings', 0)
-            medium_count = getattr(results.statistics, 'medium_findings', 0)
-            low_count = getattr(results.statistics, 'low_findings', 0)
-            
-            # Determine exit code based on fail_on setting
-            exit_code = 0
-            exit_reason = "No significant findings"
-            
-            if fail_on == "critical" and critical_count > 0:
-                exit_code = 2
-                exit_reason = f"{critical_count} critical findings"
-            elif fail_on == "high" and (critical_count > 0 or high_count > 0):
-                exit_code = 2 if critical_count > 0 else 1
-                exit_reason = f"{critical_count} critical, {high_count} high findings"
-            elif fail_on == "medium" and (critical_count > 0 or high_count > 0 or medium_count > 0):
-                exit_code = 2 if critical_count > 0 else (1 if high_count > 0 else 1)
-                exit_reason = f"{critical_count} critical, {high_count} high, {medium_count} medium findings"
-            elif fail_on == "low" and (critical_count > 0 or high_count > 0 or medium_count > 0 or low_count > 0):
-                exit_code = 2 if critical_count > 0 else (1 if high_count > 0 else 1)
-                exit_reason = f"{critical_count} critical, {high_count} high, {medium_count} medium, {low_count} low findings"
-            
+            if new_findings is not None:
+                # With a baseline, the severity gate evaluates only the
+                # New_Finding set (Requirement 11.4).
+                counts = _count_by_severity(new_findings)
+            else:
+                counts = {
+                    "critical": getattr(results.statistics, 'critical_findings', 0),
+                    "high": getattr(results.statistics, 'high_findings', 0),
+                    "medium": getattr(results.statistics, 'medium_findings', 0),
+                    "low": getattr(results.statistics, 'low_findings', 0),
+                }
+
+            # Deterministic exit code derived from the highest severity present
+            # and the configured fail-on threshold (Requirements 9.1-9.3).
+            exit_code = evaluate_severity_gate(counts, fail_on)
+
+            if exit_code == 0:
+                exit_reason = "No findings at or above the configured threshold"
+            else:
+                exit_reason = (
+                    f"{counts['critical']} critical, {counts['high']} high, "
+                    f"{counts['medium']} medium, {counts['low']} low findings "
+                    f"(fail on {fail_on}+)"
+                )
+
             click.echo(f"\n🔄 CI/CD Result: Exit code {exit_code} - {exit_reason}")
             
             logger.info("CI/CD scan completed", exit_code=exit_code, reason=exit_reason)

@@ -337,10 +337,14 @@ class HTTPRequestEngine:
     
     def __init__(self, rate_limiter: RateLimiter, retry_config: RetryConfig, 
                  timeout: float = 30.0, verify_ssl: bool = True, user_agent_rotator: UserAgentRotator = None,
-                 status_code_filter: List[int] = None):
+                 status_code_filter: List[int] = None, proxy: Optional[str] = None):
         self.rate_limiter = rate_limiter
         self.retry_config = retry_config
         self.timeout = timeout
+        self.proxy = proxy
+        # When routing through an intercepting proxy (Burp/Caido/Hetty), the proxy
+        # terminates TLS with its own CA, so certificate verification must be
+        # disabled for HTTPS targets unless the user explicitly opts back in.
         self.verify_ssl = verify_ssl
         self.user_agent_rotator = user_agent_rotator or UserAgentRotator()
         self.status_code_filter = status_code_filter  # Filter for status codes to display
@@ -359,6 +363,7 @@ class HTTPRequestEngine:
         self.logger.info("HTTP Request Engine initialized",
                         timeout=timeout,
                         verify_ssl=verify_ssl,
+                        proxy=proxy or "none",
                         max_retries=retry_config.max_attempts,
                         user_agent_mode=self.user_agent_rotator.mode,
                         status_code_filter=status_code_filter)
@@ -385,13 +390,23 @@ class HTTPRequestEngine:
                 pool=5.0
             )
             
-            self.client = httpx.AsyncClient(
+            client_kwargs = dict(
                 limits=limits,
                 timeout=timeout,
                 verify=self.verify_ssl,
                 follow_redirects=False,  # We'll handle redirects manually
                 http2=False  # Disable HTTP/2 to avoid h2 dependency
             )
+
+            # Route all traffic through an intercepting proxy when configured
+            # (Burp Suite, Caido, Hetty, etc.), so requests and responses can be
+            # captured/inspected. httpx >= 0.26 uses the singular ``proxy`` kwarg.
+            if self.proxy:
+                client_kwargs["proxy"] = self.proxy
+                self.logger.info("Routing HTTP traffic through proxy",
+                                 proxy=self.proxy, verify_ssl=self.verify_ssl)
+
+            self.client = httpx.AsyncClient(**client_kwargs)
             
             self._client_initialized = True
             self.logger.debug("HTTP client initialized")

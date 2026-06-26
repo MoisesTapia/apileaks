@@ -6,10 +6,41 @@ Implements OWASP API4 - Unrestricted Resource Consumption testing
 import asyncio
 import json
 import re
+import sys
 import time
 import random
 import string
+from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Tuple
+
+
+@contextmanager
+def _raised_recursion_limit(minimum: int):
+    """Temporarily raise the interpreter recursion limit.
+
+    Deeply nested JSON payloads (used to probe for resource-consumption
+    vulnerabilities) can exceed Python's default recursion limit when
+    serialized with ``json.dumps``. This guard raises the limit for the
+    duration of the serialization and always restores the previous value.
+    """
+    previous = sys.getrecursionlimit()
+    if minimum > previous:
+        sys.setrecursionlimit(minimum)
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(previous)
+
+
+def _safe_json_size(payload: Any) -> int:
+    """Return the serialized byte length of ``payload`` tolerating deep nesting."""
+    if not payload:
+        return 0
+    # Allow enough recursion headroom for deeply nested structures. json's
+    # encoder recurses roughly a few frames per nesting level, so scale the
+    # limit generously relative to the serialized structure.
+    with _raised_recursion_limit(100000):
+        return len(json.dumps(payload))
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -586,11 +617,12 @@ class ResourceConsumptionModule(OWASPModule):
         start_time = time.time()
         
         try:
-            response = await self.http_client.request(
-                method, endpoint,
-                json=payload,
-                headers={'Content-Type': 'application/json'}
-            )
+            with _raised_recursion_limit(100000):
+                response = await self.http_client.request(
+                    method, endpoint,
+                    json=payload,
+                    headers={'Content-Type': 'application/json'}
+                )
             
             end_time = time.time()
             response_time = response.elapsed  # Use the response's elapsed time
@@ -604,7 +636,7 @@ class ResourceConsumptionModule(OWASPModule):
                 endpoint=endpoint,
                 method=method,
                 test_type=test_type,
-                payload_size=len(json.dumps(payload)),
+                payload_size=_safe_json_size(payload),
                 response_time=response_time,
                 status_code=response.status_code,
                 response_size=len(response.content),
@@ -620,7 +652,7 @@ class ResourceConsumptionModule(OWASPModule):
                 endpoint=endpoint,
                 method=method,
                 test_type=test_type,
-                payload_size=len(json.dumps(payload)) if payload else 0,
+                payload_size=_safe_json_size(payload) if payload else 0,
                 response_time=response_time,
                 status_code=0,
                 response_size=0,

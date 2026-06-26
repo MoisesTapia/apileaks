@@ -4,26 +4,29 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 
 ## Coverage Overview
 
-| Category | Module | Status | Description |
-|----------|--------|--------|-------------|
-| **API1** | BOLA Testing | ✅ | Broken Object Level Authorization |
-| **API2** | Auth Testing | ✅ | Broken Authentication |
-| **API3** | Property Auth | ✅ | Broken Object Property Level Authorization |
-| **API4** | Resource Testing | 🔄 | Unrestricted Resource Consumption |
-| **API5** | Function Auth | 🔄 | Broken Function Level Authorization |
-| **API6** | Business Flows | 📋 | Unrestricted Access to Sensitive Business Flows |
-| **API7** | SSRF Testing | 🔄 | Server Side Request Forgery |
-| **API8** | Security Config | 📋 | Security Misconfiguration |
-| **API9** | Inventory Mgmt | 📋 | Improper Inventory Management |
-| **API10** | Unsafe Consumption | 📋 | Unsafe Consumption of APIs |
+APILeak implements and registers all ten OWASP API Security Top 10 2023 categories. Every module is wired into the engine (`core/engine.py`) and enabled by default via `enabled_modules` (`core/config.py`).
 
-**Legend**: ✅ Complete | 🔄 In Progress | 📋 Planned
+| Category | Module | Status | Enable string | Module file | Description |
+|----------|--------|--------|---------------|-------------|-------------|
+| **API1** | BOLA Testing | ✅ | `bola` | `modules/owasp/bola_testing.py` | Broken Object Level Authorization |
+| **API2** | Auth Testing | ✅ | `auth` | `modules/owasp/auth_testing.py` | Broken Authentication |
+| **API3** | Property Auth | ✅ | `property` | `modules/owasp/property_level_auth.py` | Broken Object Property Level Authorization |
+| **API4** | Resource Consumption | ✅ | `resource` | `modules/owasp/resource_consumption.py` | Unrestricted Resource Consumption |
+| **API5** | Function Auth | ✅ | `function_auth` | `modules/owasp/function_level_auth.py` | Broken Function Level Authorization |
+| **API6** | Business Flows | ✅ | `business_flow` | `modules/owasp/business_flows.py` | Unrestricted Access to Sensitive Business Flows |
+| **API7** | SSRF Testing | ✅ | `ssrf` | `modules/owasp/ssrf_testing.py` | Server Side Request Forgery |
+| **API8** | Security Misconfiguration | ✅ | `security_misconfig` | `modules/owasp/security_misconfiguration.py` | Security Misconfiguration |
+| **API9** | Inventory Mgmt | ✅ | `inventory` | `modules/owasp/inventory_management.py` | Improper Inventory Management |
+| **API10** | Unsafe Consumption | ✅ | `unsafe_consumption` | `modules/owasp/unsafe_consumption.py` | Unsafe Consumption of APIs |
+
+**Legend**: ✅ Complete
 
 ## Detailed Module Information
 
 ### API1: Broken Object Level Authorization (BOLA) ✅
 **Status**: Complete  
-**Module**: `modules/owasp/bola_testing.py`
+**Module**: `modules/owasp/bola_testing.py`  
+**Enable string**: `bola`
 
 BOLA vulnerabilities occur when APIs fail to properly validate that users can only access objects they're authorized to view or modify.
 
@@ -41,7 +44,8 @@ python apileaks.py full --target https://api.example.com --modules bola
 
 ### API2: Broken Authentication ✅
 **Status**: Complete  
-**Module**: `modules/owasp/auth_testing.py`
+**Module**: `modules/owasp/auth_testing.py`  
+**Enable string**: `auth`
 
 Authentication vulnerabilities allow attackers to compromise authentication tokens or exploit implementation flaws.
 
@@ -59,7 +63,8 @@ python apileaks.py full --target https://api.example.com --modules auth --jwt "y
 
 ### API3: Broken Object Property Level Authorization ✅
 **Status**: Complete  
-**Module**: `modules/owasp/property_auth_testing.py`
+**Module**: `modules/owasp/property_level_auth.py`  
+**Enable string**: `property`
 
 Property-level authorization vulnerabilities occur when APIs expose sensitive object properties without proper authorization checks.
 
@@ -75,96 +80,97 @@ Property-level authorization vulnerabilities occur when APIs expose sensitive ob
 python apileaks.py full --target https://api.example.com --modules property
 ```
 
-### API4: Unrestricted Resource Consumption 🔄
-**Status**: In Progress  
-**Module**: `modules/owasp/resource_testing.py`
+### API4: Unrestricted Resource Consumption ✅
+**Status**: Complete  
+**Module**: `modules/owasp/resource_consumption.py`  
+**Enable string**: `resource`
 
 Resource consumption attacks exploit APIs that don't properly limit resource usage, leading to denial of service.
 
-**Planned Testing Capabilities**:
+**Testing Capabilities**:
 - Rate limiting bypass
 - Resource exhaustion attacks
 - Large payload handling
 - Concurrent request flooding
 - Memory consumption attacks
 
-### API5: Broken Function Level Authorization 🔄
-**Status**: In Progress  
-**Module**: `modules/owasp/function_auth_testing.py`
+### API5: Broken Function Level Authorization ✅
+**Status**: Complete  
+**Module**: `modules/owasp/function_level_auth.py`  
+**Enable string**: `function_auth`
 
 Function-level authorization vulnerabilities allow users to access administrative or privileged functions.
 
-**Planned Testing Capabilities**:
+**Testing Capabilities**:
 - Administrative function access
 - Privilege escalation detection
 - Role-based access control bypass
 - Function enumeration
 - Permission boundary testing
 
-### API6: Unrestricted Access to Sensitive Business Flows 📋
-**Status**: Planned  
-**Module**: `modules/owasp/business_flows_testing.py`
+### API6: Unrestricted Access to Sensitive Business Flows ✅
+**Status**: Complete  
+**Module**: `modules/owasp/business_flows.py`  
+**Enable string**: `business_flow`
 
-Business flow vulnerabilities occur when APIs don't properly protect sensitive business operations.
+Business flow vulnerabilities occur when APIs don't properly protect sensitive business operations against automated abuse.
 
-**Planned Testing Capabilities**:
-- Business logic bypass
-- Workflow manipulation
-- Transaction integrity testing
-- Process flow validation
-- Critical operation protection
+**Testing Capabilities**:
+- Sensitive business flow identification
+- Repeated-request (anti-automation) probing up to the configured repetition limit
+- Detection of missing rate limiting / anti-automation controls
+- Safe Mode honors non-state-changing methods only
 
-### API7: Server Side Request Forgery (SSRF) 🔄
-**Status**: In Progress  
-**Module**: `modules/owasp/ssrf_testing.py`
+### API7: Server Side Request Forgery (SSRF) ✅
+**Status**: Complete  
+**Module**: `modules/owasp/ssrf_testing.py`  
+**Enable string**: `ssrf`
 
 SSRF vulnerabilities allow attackers to make requests to internal systems through the API server.
 
-**Planned Testing Capabilities**:
-- Internal network scanning
-- Cloud metadata access
-- Local file system access
-- Port scanning through SSRF
-- Protocol smuggling attacks
+**Testing Capabilities**:
+- Internal target injection into parameters and SSRF-prone headers
+- Cloud metadata / internal-host access detection (`SSRF_INTERNAL_ACCESS`)
+- File-protocol access detection (`FILE_PROTOCOL_ACCESS`)
+- Safe Mode restricts injection to non-state-changing methods
 
-### API8: Security Misconfiguration 📋
-**Status**: Planned  
-**Module**: `modules/owasp/security_config_testing.py`
+### API8: Security Misconfiguration ✅
+**Status**: Complete  
+**Module**: `modules/owasp/security_misconfiguration.py`  
+**Enable string**: `security_misconfig`
 
-Security misconfigurations expose APIs to various attacks through improper setup.
+Security misconfigurations expose APIs to various attacks through improper setup. This module composes the existing `cors_analyzer` and `security_headers_analyzer`.
 
-**Planned Testing Capabilities**:
-- CORS misconfiguration detection
-- HTTP security headers validation
-- Debug mode detection
-- Default credential testing
-- Unnecessary HTTP methods
+**Testing Capabilities**:
+- CORS misconfiguration detection (`CORS_MISCONFIGURATION`)
+- Missing HTTP security headers detection (`MISSING_SECURITY_HEADERS`)
+- Read-only (GET/OPTIONS) probing, inherently Safe-Mode compatible
 
-### API9: Improper Inventory Management 📋
-**Status**: Planned  
-**Module**: `modules/owasp/inventory_mgmt_testing.py`
+### API9: Improper Inventory Management ✅
+**Status**: Complete  
+**Module**: `modules/owasp/inventory_management.py`  
+**Enable string**: `inventory`
 
-Inventory management issues occur when organizations lose track of their API endpoints and versions.
+Inventory management issues occur when organizations lose track of their API endpoints and versions. This module reuses the existing `version_fuzzer`.
 
-**Planned Testing Capabilities**:
+**Testing Capabilities**:
 - API version discovery
-- Deprecated endpoint detection
-- Shadow API identification
-- Documentation consistency validation
-- Endpoint lifecycle management
+- Deprecated API version detection (`DEPRECATED_API_VERSION`)
+- Undocumented / shadow version detection (`UNDOCUMENTED_API_VERSION`)
+- Non-current versions categorized under API9
 
-### API10: Unsafe Consumption of APIs 📋
-**Status**: Planned  
-**Module**: `modules/owasp/unsafe_consumption_testing.py`
+### API10: Unsafe Consumption of APIs ✅
+**Status**: Complete  
+**Module**: `modules/owasp/unsafe_consumption.py`  
+**Enable string**: `unsafe_consumption`
 
-Unsafe API consumption vulnerabilities occur when APIs blindly trust data from third-party APIs.
+Unsafe API consumption vulnerabilities occur when APIs blindly trust data from third-party/upstream APIs.
 
-**Planned Testing Capabilities**:
-- Third-party API validation
-- Data sanitization testing
-- Input validation bypass
-- Upstream dependency security
-- API chain attack detection
+**Testing Capabilities**:
+- Upstream-sourced data identification via configurable indicators
+- Malformed/unexpected payload submission
+- Reflected unvalidated upstream data detection (`UNSAFE_UPSTREAM_DATA`)
+- Safe Mode restricts probing to non-state-changing methods
 
 ## Configuration
 
@@ -188,7 +194,7 @@ python apileaks.py full --config config/owasp_config.yaml --target https://api.e
 ```yaml
 # config/owasp_config.yaml
 owasp_testing:
-  enabled_modules: ["bola", "auth", "property", "resource", "function"]
+  enabled_modules: ["bola", "auth", "property", "resource", "function_auth", "ssrf", "business_flow", "security_misconfig", "inventory", "unsafe_consumption"]
   
   bola_testing:
     enabled: true
@@ -273,21 +279,12 @@ python apileaks.py --no-banner full \
 
 ## Roadmap
 
-### Short Term (Next Release)
-- Complete API4 (Resource Testing) implementation
-- Complete API5 (Function Auth) implementation
-- Complete API7 (SSRF Testing) implementation
+All ten OWASP API Security Top 10 2023 categories (API1–API10) are implemented and registered. Future work focuses on depth and tooling rather than coverage gaps:
 
-### Medium Term (Next 2 Releases)
-- Implement API6 (Business Flows) testing
-- Implement API8 (Security Config) testing
 - Enhanced reporting with OWASP compliance scoring
-
-### Long Term (Future Releases)
-- Complete API9 (Inventory Management) implementation
-- Complete API10 (Unsafe Consumption) implementation
 - Advanced OWASP testing automation
-- Integration with OWASP API Security tools
+- Deeper detection heuristics per category
+- Integration with additional OWASP API Security tools
 
 ---
 

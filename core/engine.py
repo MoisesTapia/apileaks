@@ -22,6 +22,25 @@ def _get_status_code_filter(config):
     return None
 
 
+def _get_proxy_settings(config):
+    """Resolve the proxy URL and TLS verification flag from configuration.
+
+    When an intercepting proxy (Burp Suite, Caido, Hetty, ...) is configured,
+    TLS verification is disabled by default because the proxy terminates TLS
+    with its own CA. The user can opt back into verification via
+    ``proxy_verify_ssl`` (e.g. after installing the proxy CA).
+
+    Returns:
+        A ``(proxy, verify_ssl)`` tuple.
+    """
+    proxy = getattr(config, 'proxy', None)
+    if proxy:
+        verify_ssl = getattr(config, 'proxy_verify_ssl', False)
+    else:
+        verify_ssl = getattr(config.target, 'verify_ssl', True)
+    return proxy, verify_ssl
+
+
 @dataclass
 class ScanStatistics:
     """Scan execution statistics"""
@@ -218,8 +237,24 @@ class APILeakCore:
             # Get status code filter for HTTP output
             status_code_filter = _get_status_code_filter(self.config)
             
-            http_client = HTTPRequestEngine(rate_limiter, retry_config, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter)
-            
+            proxy, verify_ssl = _get_proxy_settings(self.config)
+            http_client = HTTPRequestEngine(rate_limiter, retry_config, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
+
+            # Wire configured authentication contexts into the discovery HTTP
+            # client so that --jwt (and other auth contexts) are applied to
+            # endpoint discovery requests, not just to OWASP modules. Without
+            # this, authenticated discovery would still hit protected endpoints
+            # anonymously and see 401/403.
+            auth_contexts = self.config.authentication.contexts
+            for auth_context in auth_contexts:
+                http_client.add_auth_context(auth_context.name, auth_context)
+            active_auth_context = next(
+                (ctx for ctx in auth_contexts if getattr(ctx, "token", None)),
+                auth_contexts[0] if auth_contexts else None,
+            )
+            if active_auth_context is not None:
+                http_client.set_auth_context(active_auth_context)
+
             # Create fuzzing orchestrator
             self.fuzzing_orchestrator = FuzzingOrchestrator(
                 self.config.fuzzing, 
@@ -396,7 +431,12 @@ class APILeakCore:
                 AuthenticationTestingModule, 
                 PropertyLevelAuthModule,
                 FunctionLevelAuthModule,
-                ResourceConsumptionModule
+                ResourceConsumptionModule,
+                SSRFTestingModule,
+                BusinessFlowsTestingModule,
+                SecurityMisconfigModule,
+                InventoryManagementModule,
+                UnsafeConsumptionModule
             )
             
             # Create HTTP client for OWASP modules
@@ -425,10 +465,31 @@ class APILeakCore:
             # Get status code filter for HTTP output
             status_code_filter = _get_status_code_filter(self.config)
             
-            http_client = HTTPRequestEngine(rate_limiter, retry_config, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter)
+            proxy, verify_ssl = _get_proxy_settings(self.config)
+            http_client = HTTPRequestEngine(rate_limiter, retry_config, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
             
             # Get authentication contexts
             auth_contexts = self.config.authentication.contexts
+            
+            # Propagate the global Safe Mode flag onto each OWASP module's
+            # configuration object so modules can honor it via self.config.
+            # When enabled, modules skip state-changing probes and restrict to
+            # safe methods (Requirements 10.1, 10.2).
+            safe_mode = getattr(self.config, 'safe_mode', False)
+            owasp_cfg = self.config.owasp_testing
+            for module_cfg in (
+                owasp_cfg.bola_testing,
+                owasp_cfg.auth_testing,
+                owasp_cfg.property_testing,
+                owasp_cfg.resource_testing,
+                owasp_cfg.function_auth_testing,
+                owasp_cfg.ssrf_testing,
+                owasp_cfg.business_flow_testing,
+                owasp_cfg.security_misconfig_testing,
+                owasp_cfg.inventory_testing,
+                owasp_cfg.unsafe_consumption_testing,
+            ):
+                setattr(module_cfg, 'safe_mode', safe_mode)
             
             # Initialize modules with their specific configurations
             if "bola" not in self.owasp_modules:
@@ -450,6 +511,26 @@ class APILeakCore:
             if "resource" not in self.owasp_modules:
                 resource_module = ResourceConsumptionModule(self.config.owasp_testing.resource_testing, http_client, auth_contexts)
                 self.register_owasp_module("resource", resource_module)
+            
+            if "ssrf" not in self.owasp_modules:
+                ssrf_module = SSRFTestingModule(self.config.owasp_testing.ssrf_testing, http_client, auth_contexts)
+                self.register_owasp_module("ssrf", ssrf_module)
+            
+            if "business_flow" not in self.owasp_modules:
+                business_flow_module = BusinessFlowsTestingModule(self.config.owasp_testing.business_flow_testing, http_client, auth_contexts)
+                self.register_owasp_module("business_flow", business_flow_module)
+            
+            if "security_misconfig" not in self.owasp_modules:
+                security_misconfig_module = SecurityMisconfigModule(self.config.owasp_testing.security_misconfig_testing, http_client, auth_contexts)
+                self.register_owasp_module("security_misconfig", security_misconfig_module)
+            
+            if "inventory" not in self.owasp_modules:
+                inventory_module = InventoryManagementModule(self.config.owasp_testing.inventory_testing, http_client, auth_contexts)
+                self.register_owasp_module("inventory", inventory_module)
+            
+            if "unsafe_consumption" not in self.owasp_modules:
+                unsafe_consumption_module = UnsafeConsumptionModule(self.config.owasp_testing.unsafe_consumption_testing, http_client, auth_contexts)
+                self.register_owasp_module("unsafe_consumption", unsafe_consumption_module)
             
             # Initialize Advanced Discovery Engine if enabled
             if self.config.advanced_discovery.enabled and not hasattr(self, 'advanced_discovery_engine'):
@@ -498,7 +579,8 @@ class APILeakCore:
             # Get status code filter for HTTP output
             status_code_filter = _get_status_code_filter(self.config)
             
-            http_client = HTTPRequestEngine(rate_limiter, retry_config, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter)
+            proxy, verify_ssl = _get_proxy_settings(self.config)
+            http_client = HTTPRequestEngine(rate_limiter, retry_config, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
             
             # Create advanced discovery configuration
             subdomain_config = SubdomainDiscoveryConfig(

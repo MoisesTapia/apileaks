@@ -35,6 +35,14 @@ python apileaks.py --config config/sample_config.yaml --target https://api.examp
 # Directory fuzzing
 python apileaks.py dir --target https://api.example.com
 
+# Directory fuzzing with triage: filter by status class, save a session, export Markdown
+python apileaks.py dir --target https://api.example.com \
+  --status-code 2xx --save-session session.json --export md --export-file results.md
+
+# Reload a saved session and triage interactively (opt-in prompt)
+python apileaks.py dir --target https://api.example.com \
+  --load-session session.json --interactive
+
 # Parameter fuzzing
 python apileaks.py par --target https://api.example.com
 

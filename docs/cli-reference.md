@@ -10,6 +10,7 @@ Complete command-line interface reference for APILeak v0.1.0 - Enterprise API se
 - [Parameter Fuzzing (`par`)](#parameter-fuzzing-par)
 - [Full Security Scan (`full`)](#full-security-scan-full)
 - [JWT Utilities](#jwt-utilities)
+- [Proxy Integration](#proxy-integration)
 - [Environment Variables](#environment-variables)
 - [Exit Codes](#exit-codes)
 - [Examples](#examples)
@@ -82,7 +83,7 @@ python apileaks.py dir [OPTIONS]
 | `--methods` | HTTP methods to test | `GET,POST,PUT,DELETE,PATCH` | `--methods GET,POST` |
 | `--jwt` | JWT token for authentication | - | `--jwt eyJ0eXAi...` |
 | `--response` | Filter by response codes | All codes | `--response 200,301,404` |
-| `--status-code` | Show only specific status codes | All codes | `--status-code 200-300` |
+| `--status-code` | Filter displayed results by status code or status class | All codes | `--status-code 2xx` |
 
 ### User Agent Options (Mutually Exclusive)
 
@@ -99,30 +100,219 @@ python apileaks.py dir [OPTIONS]
 | `--detect-framework`, `--df` | Enable framework detection | `false` | `--detect-framework` |
 | `--fuzz-versions`, `--fv` | Enable API version fuzzing | `false` | `--fuzz-versions` |
 
+### Proxy Options
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--proxy` | Route all HTTP traffic through an intercepting proxy (Burp/Caido/Hetty) | - | `--proxy http://127.0.0.1:8080` |
+| `--proxy-verify-ssl` | Keep TLS verification on when proxying (after installing the proxy CA) | `false` | `--proxy-verify-ssl` |
+
+See [Proxy Integration](#proxy-integration) for details.
+
+### Discovery Triage Options
+
+The triage workflow is an additive layer on top of discovery. It is engaged automatically when you pass any of the flags below; otherwise `dir` behaves exactly as before. Discovered endpoints are projected into `DiscoveryResult` records (URL, method, status code, EndpointStatus) that can be grouped/filtered by status class, rendered as a `rich` table, saved to a structured session file, exported in a human-readable form, and used to drive an opt-in follow-up scan.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--save-session` | Save all discovery results to a JSON session file (the source of truth for reload) | - | `--save-session session.json` |
+| `--load-session` | Reload discovery results exclusively from a JSON session file (skips discovery) | - | `--load-session session.json` |
+| `--export` | Write a human-readable export in the selected format (`md` or `txt`) | - | `--export md` |
+| `--export-file` | Destination path for the human-readable export (the extension selects the format) | `reports/discovery_export.<fmt>` | `--export-file results.md` |
+| `--interactive`, `--triage` | Enable interactive triage mode (opt-in; auto-disabled in CI mode) | `false` | `--interactive` |
+| `--ci-mode` | Enable CI mode; disables the interactive prompt so it never blocks a pipeline | `false` | `--ci-mode` |
+
+Key behaviors:
+
+- **Session file is the source of truth.** `--load-session` reads records only from the JSON session file; the human-readable export is never read back.
+- **Atomic session writes.** A failed `--save-session` never leaves a partially written file, and surfaces a descriptive error.
+- **Triage table.** Results render in a four-column table — URL, Method, Status, EndpointStatus — grouped by status class in ascending order (`2xx`, `3xx`, `4xx`, `5xx`). An empty/filtered-to-empty result set shows the header row with zero data rows.
+- **Export grouping.** The `.md`/`.txt` export groups records by status class in the same ascending order. Any format other than `.md`/`.txt` is rejected with a descriptive error and writes nothing.
+- **Interactive mode is opt-in and CI-safe.** It is off by default, prompts for exactly one endpoint when enabled, re-prompts on invalid input up to 3 consecutive attempts (then abandons without a scan), and is automatically disabled under `--ci-mode` so it never blocks.
+
+### Status Code Filtering
+
+The `--status-code` flag accepts three forms in triage mode (parsed by `parse_status_filter`):
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| Status class token | `2xx`, `3xx`, `4xx`, `5xx` (case-insensitive) | Keep records whose status code shares that leading digit |
+| Explicit codes | `200,404,500` | Keep records whose status code is exactly in the set |
+| Ranges | `200-299`, `400-403` | Keep records whose status code falls in the range |
+
+Notes:
+
+- A class token is single-valued — use `2xx` on its own, not `2xx,404`.
+- Explicit codes are validated to the inclusive range `100-599`; an out-of-range value (e.g. `700`) is rejected with an error naming the offending value and exits non-zero.
+- Records whose leading digit is not 2-5 (for example a `1xx`) are excluded from all status-class groups.
+
 ### Examples
+
+**Basic discovery**
 
 ```bash
 # Basic directory fuzzing
 python apileaks.py dir --target https://api.example.com
 
-# With custom wordlist and rate limiting
+# Custom wordlist and a gentler rate limit
 python apileaks.py dir \
   --target https://api.example.com \
   --wordlist custom_endpoints.txt \
   --rate-limit 5
 
-# With WAF evasion and framework detection
+# Restrict the HTTP methods that are tested
+python apileaks.py dir \
+  --target https://api.example.com \
+  --methods GET,POST
+
+# Authenticated discovery with a JWT
+python apileaks.py dir \
+  --target https://api.example.com \
+  --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
+```
+
+**Framework detection and version fuzzing**
+
+```bash
+# Detect the backend framework while fuzzing
+python apileaks.py dir \
+  --target https://api.example.com \
+  --detect-framework
+
+# Enumerate API versions (/v1, /v2, /api/v1, ...)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --fuzz-versions
+
+# Both, with random User-Agent rotation for WAF evasion
 python apileaks.py dir \
   --target https://api.example.com \
   --user-agent-random \
   --detect-framework \
   --fuzz-versions
+```
 
-# Focus on successful responses
+**Status-code filtering**
+
+```bash
+# Only successful responses (status class)
 python apileaks.py dir \
   --target https://api.example.com \
-  --status-code 200-299,401,403 \
-  --output successful-endpoints
+  --status-code 2xx \
+  --save-session session.json
+
+# Only redirects
+python apileaks.py dir \
+  --target https://api.example.com \
+  --status-code 3xx \
+  --save-session session.json
+
+# Explicit codes
+python apileaks.py dir \
+  --target https://api.example.com \
+  --status-code 200,401,403 \
+  --save-session session.json
+
+# A range of codes
+python apileaks.py dir \
+  --target https://api.example.com \
+  --status-code 400-403 \
+  --save-session session.json
+```
+
+**Session persistence and reload**
+
+```bash
+# Save the full result set to a session file (source of truth)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --save-session session.json
+
+# Reload a prior session (skips discovery entirely) and re-render the table
+python apileaks.py dir \
+  --target https://api.example.com \
+  --load-session session.json
+
+# Reload and filter to server errors only
+python apileaks.py dir \
+  --target https://api.example.com \
+  --load-session session.json \
+  --status-code 5xx
+```
+
+**Human-readable export**
+
+```bash
+# Markdown export (grouped by status class, ascending)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --export md \
+  --export-file results.md
+
+# Plain-text export
+python apileaks.py dir \
+  --target https://api.example.com \
+  --export txt \
+  --export-file results.txt
+
+# Save the session AND export a human-readable report in one run
+python apileaks.py dir \
+  --target https://api.example.com \
+  --save-session session.json \
+  --export md \
+  --export-file results.md
+```
+
+**Interactive triage and targeted follow-up**
+
+```bash
+# Enable the interactive selection prompt (opt-in)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --interactive
+
+# --triage is an alias for --interactive
+python apileaks.py dir \
+  --target https://api.example.com \
+  --triage
+
+# Reload a session, filter, and triage interactively
+python apileaks.py dir \
+  --target https://api.example.com \
+  --load-session session.json \
+  --status-code 2xx \
+  --interactive
+```
+
+**CI/CD-safe runs**
+
+```bash
+# CI mode disables the interactive prompt so it never blocks a pipeline,
+# even if --interactive is also passed
+python apileaks.py dir \
+  --target https://api.example.com \
+  --interactive \
+  --ci-mode \
+  --save-session session.json \
+  --export md \
+  --export-file results.md
+```
+
+**Full triage workflow**
+
+```bash
+# Discover, filter to successful endpoints, save a session, export Markdown,
+# and open the interactive prompt — all in one invocation
+python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist wordlists/endpoints.txt \
+  --rate-limit 10 \
+  --detect-framework \
+  --status-code 2xx \
+  --save-session session.json \
+  --export md \
+  --export-file discovery.md \
+  --interactive
 ```
 
 ## Parameter Fuzzing (`par`)
@@ -178,6 +368,22 @@ python apileaks.py par \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..." \
   --wordlist custom_parameters.txt
 
+# Test multiple HTTP methods
+python apileaks.py par \
+  --target https://api.example.com/api/v1/orders \
+  --methods GET,POST,PUT
+
+# WAF evasion with random user agents and a gentle rate limit
+python apileaks.py par \
+  --target https://api.example.com/search \
+  --user-agent-random \
+  --rate-limit 3
+
+# Framework detection while fuzzing parameters
+python apileaks.py par \
+  --target https://api.example.com/api/v1/products \
+  --detect-framework
+
 # Focus on error responses
 python apileaks.py par \
   --target https://api.example.com/search \
@@ -226,12 +432,16 @@ python apileaks.py full [OPTIONS]
 | `--modules` | Comma-separated OWASP modules | All modules | `--modules bola,auth,property` |
 
 Available modules:
-- `bola` - BOLA (Broken Object Level Authorization) testing
-- `auth` - Authentication testing (JWT vulnerabilities)
-- `property` - Property Level Authorization testing
-- `function_auth` - Function Level Authorization testing
-- `resource` - Resource Consumption testing
-- `ssrf` - Server-Side Request Forgery testing
+- `bola` - BOLA (Broken Object Level Authorization) testing — API1
+- `auth` - Authentication testing (JWT vulnerabilities) — API2
+- `property` - Property Level Authorization testing — API3
+- `resource` - Unrestricted Resource Consumption testing — API4
+- `function_auth` - Function Level Authorization testing — API5
+- `business_flow` - Unrestricted Access to Sensitive Business Flows — API6
+- `ssrf` - Server-Side Request Forgery testing — API7
+- `security_misconfig` - Security Misconfiguration (CORS, missing headers) — API8
+- `inventory` - Improper Inventory Management (deprecated/undocumented versions) — API9
+- `unsafe_consumption` - Unsafe Consumption of APIs — API10
 
 ### User Agent Options (Mutually Exclusive)
 
@@ -255,8 +465,11 @@ Same as directory fuzzing - see above.
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
-| `--ci-mode` | Enable CI/CD mode | `false` | `--ci-mode` |
-| `--fail-on` | Fail on severity level | `critical` | `--fail-on high` |
+| `--ci-mode` | Enable CI/CD mode with deterministic exit codes and artifact generation | `false` | `--ci-mode` |
+| `--fail-on` | Fail on findings of this severity or higher | `critical` | `--fail-on high` |
+| `--sarif` | Generate a SARIF 2.1.0 report (for code scanning / CI integration) | `false` | `--sarif` |
+| `--safe-mode` | Non-destructive scan: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict to safe methods | `false` | `--safe-mode` |
+| `--baseline` | Path to a baseline JSON report; only new findings drive the severity gate (missing path treats all findings as new) | - | `--baseline baseline.json` |
 
 Available severity levels: `critical`, `high`, `medium`, `low`
 
@@ -266,27 +479,60 @@ Available severity levels: `critical`, `high`, `medium`, `low`
 # Basic full scan
 python apileaks.py full --target https://api.example.com
 
-# With specific OWASP modules
+# With specific OWASP modules and a JWT
 python apileaks.py full \
   --target https://api.example.com \
   --modules bola,auth,property \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 
-# Advanced scan with all features
+# Run all ten OWASP API Security Top 10 modules
+python apileaks.py full \
+  --target https://api.example.com \
+  --modules bola,auth,property,resource,function_auth,business_flow,ssrf,security_misconfig,inventory,unsafe_consumption
+
+# Advanced scan with all discovery features
 python apileaks.py full \
   --target https://api.example.com \
   --enable-advanced \
   --user-agent-random \
   --output advanced-security-scan
 
-# CI/CD integration
+# Non-destructive scan against a shared/production-like environment
+python apileaks.py full \
+  --target https://api.example.com \
+  --safe-mode \
+  --modules bola,auth,security_misconfig
+
+# Generate a SARIF report for code-scanning dashboards
+python apileaks.py full \
+  --target https://api.example.com \
+  --sarif \
+  --output scan-results
+
+# CI/CD gate: fail on high+ findings and emit SARIF
 python apileaks.py full \
   --target https://api.example.com \
   --ci-mode \
   --fail-on high \
-  --modules bola,auth,function_auth
+  --sarif
 
-# Using configuration file
+# CI/CD with a baseline: only newly introduced findings fail the pipeline
+python apileaks.py full \
+  --target https://api.example.com \
+  --ci-mode \
+  --fail-on medium \
+  --baseline reports/previous-scan.json
+
+# CI/CD, non-destructive, baseline-gated, with SARIF artifact
+python apileaks.py full \
+  --target https://api.example.com \
+  --ci-mode \
+  --fail-on high \
+  --safe-mode \
+  --sarif \
+  --baseline reports/baseline.json
+
+# Using a configuration file
 python apileaks.py full \
   --config config/production_api.yaml \
   --target https://api.example.com
@@ -316,6 +562,18 @@ python apileaks.py jwt [SUBCOMMAND] [OPTIONS]
 | `test-kid-injection` | Key ID Injection | Test kid parameter injection |
 | `test-jwks-spoof` | JWKS Spoofing | Test JWKS URL spoofing |
 | `test-inline-jwks` | Inline JWKS | Test inline JWKS injection |
+| `attack-test` | Comprehensive Suite | Run all attack vectors against a live endpoint |
+
+#### Live-Endpoint Testing Options
+
+Every `test-*` subcommand (and `attack-test`) accepts the following options to validate an attack against a real endpoint:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `-u`, `--url` | Target URL to test the attack against | `--url https://api.example.com/protected` |
+| `-H`, `--header` | Custom header (repeatable) | `-H "X-API-Key: key123"` |
+| `-d`, `--data` | POST data for endpoint testing | `-d '{"action":"read"}'` |
+| `--timeout` | Request timeout in seconds | `--timeout 30` |
 
 ### JWT Decode (`jwt decode`)
 
@@ -392,23 +650,41 @@ Test if the server accepts unsigned tokens with `alg:none`.
 python apileaks.py jwt test-alg-none TOKEN [--payload CUSTOM_PAYLOAD]
 ```
 
-**Example:**
+**Examples:**
 ```bash
+# Basic alg:none test
 python apileaks.py jwt test-alg-none eyJ0eXAiOiJKV1Q...
+
+# Inject a custom admin payload
 python apileaks.py jwt test-alg-none TOKEN --payload '{"sub":"admin","role":"admin"}'
+
+# Validate the attack against a live endpoint
+python apileaks.py jwt test-alg-none TOKEN --url https://api.example.com/admin
 ```
 
 #### Null Signature Testing (`jwt test-null-signature`)
 
-Test various null signature bypass techniques.
+Test null/empty signature bypass techniques.
 
 ```bash
 python apileaks.py jwt test-null-signature TOKEN [--payload CUSTOM_PAYLOAD]
 ```
 
+**Examples:**
+```bash
+# Basic null signature test
+python apileaks.py jwt test-null-signature TOKEN
+
+# Inject a custom admin payload
+python apileaks.py jwt test-null-signature TOKEN --payload '{"sub":"admin","admin":true}'
+
+# Validate against a protected endpoint
+python apileaks.py jwt test-null-signature TOKEN --url https://api.example.com/protected
+```
+
 #### HMAC Secret Brute-force (`jwt brute-secret`)
 
-Attempt to crack weak HMAC secrets using wordlists.
+Attempt to crack weak HMAC secrets using wordlists, then forge a token.
 
 ```bash
 python apileaks.py jwt brute-secret TOKEN [OPTIONS]
@@ -417,44 +693,108 @@ python apileaks.py jwt brute-secret TOKEN [OPTIONS]
 **Options:**
 - `--wordlist`, `-w`: Wordlist file (default: `wordlists/jwt_secrets.txt`)
 - `--max-attempts`: Maximum attempts (default: `1000`)
+- `-u/--url`, `-H/--header`, `-d/--data`, `--timeout`: live-endpoint testing (see above)
 
-**Example:**
+**Examples:**
 ```bash
+# Basic secret brute-force
+python apileaks.py jwt brute-secret TOKEN
+
+# Use a custom secrets wordlist
 python apileaks.py jwt brute-secret TOKEN --wordlist custom_secrets.txt
+
+# Crack the secret and test the forged token against a real endpoint
+python apileaks.py jwt brute-secret TOKEN \
+  --url https://api.example.com/admin \
+  -H "X-API-Key: key123"
 ```
 
 #### Key ID Injection (`jwt test-kid-injection`)
 
-Test kid parameter injection vulnerabilities.
+Test `kid` parameter injection (path traversal, arbitrary keys, remote key fetch).
 
 ```bash
-python apileaks.py jwt test-kid-injection TOKEN [--kid-payload PAYLOAD]
+python apileaks.py jwt test-kid-injection TOKEN [--kid-payload PAYLOAD] [--payload JSON]
 ```
 
-**Example:**
+**Examples:**
 ```bash
+# Basic kid injection test
+python apileaks.py jwt test-kid-injection TOKEN
+
+# Path-traversal kid payload
 python apileaks.py jwt test-kid-injection TOKEN --kid-payload "../../etc/passwd"
+
+# Remote key fetch + custom payload against a live endpoint
+python apileaks.py jwt test-kid-injection TOKEN \
+  --kid-payload "http://attacker.com/key.pem" \
+  --payload '{"admin":true}' \
+  --url https://api.example.com/protected
 ```
 
 #### JWKS Spoofing (`jwt test-jwks-spoof`)
 
-Test JWKS URL spoofing vulnerabilities.
+Test JWKS URL (`jku`) spoofing vulnerabilities.
 
 ```bash
 python apileaks.py jwt test-jwks-spoof TOKEN [--jwks-url URL]
 ```
 
-**Example:**
+**Examples:**
 ```bash
+# Basic JWKS spoofing test
+python apileaks.py jwt test-jwks-spoof TOKEN
+
+# Custom malicious JWKS URL
 python apileaks.py jwt test-jwks-spoof TOKEN --jwks-url http://attacker.com/jwks.json
+
+# Validate against a live endpoint
+python apileaks.py jwt test-jwks-spoof TOKEN \
+  --jwks-url http://attacker.com/jwks.json \
+  --url https://api.example.com/protected
 ```
 
 #### Inline JWKS Injection (`jwt test-inline-jwks`)
 
-Test inline JWKS injection vulnerabilities.
+Test inline JWKS injection (embed an attacker-controlled public key in the header).
 
 ```bash
 python apileaks.py jwt test-inline-jwks TOKEN
+```
+
+**Examples:**
+```bash
+# Basic inline JWKS test
+python apileaks.py jwt test-inline-jwks TOKEN
+
+# Validate against a live endpoint with custom headers
+python apileaks.py jwt test-inline-jwks TOKEN \
+  --url https://api.example.com/admin \
+  -H "X-API-Key: key123"
+```
+
+#### Comprehensive Attack Testing (`jwt attack-test`)
+
+Run all attack vectors (algorithm confusion, secret attacks, injection, payload manipulation) against a live endpoint with baseline comparison and confidence scoring.
+
+```bash
+python apileaks.py jwt attack-test TOKEN --url URL [OPTIONS]
+```
+
+**Examples:**
+```bash
+# Full automated attack suite against a protected endpoint
+python apileaks.py jwt attack-test TOKEN --url https://api.example.com/protected
+
+# With custom headers
+python apileaks.py jwt attack-test TOKEN \
+  -u https://api.example.com/protected \
+  -H "X-API-Key: key123"
+
+# With POST data for the endpoint under test
+python apileaks.py jwt attack-test TOKEN \
+  -u https://api.example.com/protected \
+  -d '{"action":"read"}'
 ```
 
 ### JWT Security Testing Workflow
@@ -482,6 +822,71 @@ python apileaks.py jwt test-jwks-spoof $TOKEN
 
 # 7. Test inline JWKS
 python apileaks.py jwt test-inline-jwks $TOKEN
+
+# 8. Or run the full automated suite against a live endpoint in one shot
+python apileaks.py jwt attack-test $TOKEN --url https://api.example.com/protected
+```
+
+## Proxy Integration
+
+APILeak can route all of its HTTP traffic (discovery, parameter/header fuzzing, OWASP testing, and the targeted follow-up scan) through an intercepting proxy so that every request and response can be captured, inspected, and replayed in tools like **Burp Suite**, **Caido**, or **Hetty**.
+
+### Flags
+
+| Option | Description |
+|--------|-------------|
+| `--proxy URL` | Send all traffic through the proxy at `URL` (e.g. `http://127.0.0.1:8080`). Available on `dir`, `par`, and `full`. |
+| `--proxy-verify-ssl` | Keep TLS certificate verification enabled while proxying. |
+
+### TLS behavior
+
+Intercepting proxies terminate TLS with their own certificate authority. To avoid certificate errors against HTTPS targets, **TLS verification is automatically disabled when `--proxy` is set**. After installing the proxy's CA certificate in your trust store, pass `--proxy-verify-ssl` to re-enable verification.
+
+### Default proxy endpoints
+
+| Tool | Default proxy listener |
+|------|------------------------|
+| Burp Suite | `http://127.0.0.1:8080` |
+| Caido | `http://127.0.0.1:8080` |
+| Hetty | `http://127.0.0.1:8080` |
+
+### Examples
+
+```bash
+# Directory discovery through Burp Suite
+python apileaks.py dir \
+  --target https://api.example.com \
+  --proxy http://127.0.0.1:8080
+
+# Authenticated discovery through a proxy (JWT + proxy together)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --jwt "eyJ0eXAiOiJKV1Q..." \
+  --proxy http://127.0.0.1:8080
+
+# Parameter fuzzing through Caido
+python apileaks.py par \
+  --target https://api.example.com/users/123 \
+  --proxy http://127.0.0.1:8080
+
+# Full OWASP scan through Hetty
+python apileaks.py full \
+  --target https://api.example.com \
+  --modules bola,auth,ssrf \
+  --proxy http://127.0.0.1:8080
+
+# Proxy with TLS verification kept on (after installing the proxy CA)
+python apileaks.py full \
+  --target https://api.example.com \
+  --proxy http://127.0.0.1:8080 \
+  --proxy-verify-ssl
+
+# Triage discovery through a proxy, saving a session for later replay
+python apileaks.py dir \
+  --target https://api.example.com \
+  --proxy http://127.0.0.1:8080 \
+  --status-code 2xx \
+  --save-session session.json
 ```
 
 ## Environment Variables
@@ -587,20 +992,24 @@ python apileaks.py full \
 ### CI/CD Integration Examples
 
 ```bash
-# GitHub Actions
+# GitHub Actions - SARIF artifact for code scanning, baseline-gated
 python apileaks.py full \
   --target ${{ vars.API_TARGET_URL }} \
   --jwt ${{ secrets.API_JWT_TOKEN }} \
   --ci-mode \
   --fail-on critical \
+  --sarif \
+  --baseline reports/baseline.json \
   --output github-scan-${{ github.run_id }}
 
-# GitLab CI
+# GitLab CI - non-destructive scan that fails on high+ findings
 python apileaks.py full \
   --target $API_TARGET_URL \
   --jwt $API_JWT_TOKEN \
   --ci-mode \
   --fail-on high \
+  --safe-mode \
+  --sarif \
   --output gitlab-scan-$CI_PIPELINE_ID
 
 # Jenkins
@@ -610,6 +1019,16 @@ python apileaks.py full \
   --ci-mode \
   --fail-on critical \
   --output jenkins-scan-${BUILD_ID}
+
+# Non-blocking discovery triage in CI (publishes session + Markdown artifacts)
+python apileaks.py dir \
+  --target $API_TARGET_URL \
+  --status-code 2xx \
+  --save-session artifacts/session.json \
+  --export md \
+  --export-file artifacts/discovery.md \
+  --interactive \
+  --ci-mode
 ```
 
 ### Configuration File Examples
@@ -646,6 +1065,9 @@ python apileaks.py jwt encode \
 python apileaks.py jwt test-alg-none TOKEN
 python apileaks.py jwt brute-secret TOKEN --wordlist secrets.txt
 python apileaks.py jwt test-kid-injection TOKEN
+
+# Run the full automated JWT attack suite against a live endpoint
+python apileaks.py jwt attack-test TOKEN --url https://api.example.com/protected
 ```
 
 ### Output and Logging Examples

@@ -56,6 +56,71 @@ python apileaks.py dir \
   --output comprehensive_discovery
 ```
 
+### Discovery Triage Workflow
+
+The triage workflow layers status-code grouping/filtering, session persistence, a human-readable export, a `rich` results table, and an opt-in interactive follow-up on top of discovery. It activates automatically when any triage flag is present.
+
+```bash
+# Group/filter by status class and save a structured session (source of truth)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --status-code 2xx \
+  --save-session session.json
+
+# Save a session AND write a human-readable Markdown export
+python apileaks.py dir \
+  --target https://api.example.com \
+  --save-session session.json \
+  --export md \
+  --export-file discovery.md
+
+# Plain-text export instead of Markdown
+python apileaks.py dir \
+  --target https://api.example.com \
+  --export txt \
+  --export-file discovery.txt
+
+# Reload a prior session (no re-discovery) and re-render the triage table
+python apileaks.py dir \
+  --target https://api.example.com \
+  --load-session session.json
+
+# Reload a session and filter to server errors
+python apileaks.py dir \
+  --target https://api.example.com \
+  --load-session session.json \
+  --status-code 5xx
+
+# Interactive triage: pick one endpoint for a targeted follow-up scan (opt-in)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --load-session session.json \
+  --interactive
+
+# CI-safe: --ci-mode disables the interactive prompt so it never blocks a pipeline
+python apileaks.py dir \
+  --target https://api.example.com \
+  --interactive \
+  --ci-mode \
+  --save-session session.json \
+  --export md \
+  --export-file discovery.md
+
+# Full triage workflow in a single run
+python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist wordlists/endpoints.txt \
+  --rate-limit 10 \
+  --detect-framework \
+  --status-code 2xx \
+  --save-session session.json \
+  --export md \
+  --export-file discovery.md \
+  --interactive
+```
+
+**Status-code filter forms** (triage mode): a status class token (`2xx`, `3xx`, `4xx`, `5xx`), explicit codes (`200,401,403`), or a range (`400-403`). Class tokens are single-valued; explicit codes are validated to the `100-599` range.
+
 ## Parameter Fuzzing
 
 Parameter fuzzing identifies hidden parameters, injection points, and input validation issues.
@@ -454,6 +519,15 @@ python apileaks.py \
 - `--methods` - HTTP methods to test (default: GET,POST,PUT,DELETE,PATCH)
 - `--detect-framework, --df` - Enable framework detection during directory fuzzing
 - `--fuzz-versions, --fv` - Enable API version fuzzing during directory discovery
+
+### Directory Triage Options (dir command)
+- `--save-session PATH` - Save all discovery results to a JSON session file (source of truth for reload)
+- `--load-session PATH` - Reload discovery results exclusively from a JSON session file (skips discovery)
+- `--export md|txt` - Write a human-readable export in the selected format
+- `--export-file PATH` - Destination path for the human-readable export (extension selects the format)
+- `--interactive, --triage` - Enable the opt-in interactive triage prompt (auto-disabled in CI mode)
+- `--ci-mode` - Disable the interactive prompt so it never blocks a pipeline
+- `--status-code` accepts a status class token (`2xx`/`3xx`/`4xx`/`5xx`), explicit codes (`200,404`), or a range (`200-299`)
 
 ### Parameter Fuzzing Specific Options
 - `-w, --wordlist` - Wordlist file for parameter fuzzing

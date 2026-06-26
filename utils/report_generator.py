@@ -87,6 +87,9 @@ class ReportGenerator:
         )
         ET.SubElement(scan_info, "tool_version").text = "APILeak v0.1.0"
         ET.SubElement(scan_info, "scan_type").text = "API Security Assessment"
+        ET.SubElement(scan_info, "safe_mode").text = str(
+            getattr(getattr(results, 'configuration', None), 'safe_mode', False)
+        ).lower()
         
         # Statistics section
         statistics = ET.SubElement(root, "statistics")
@@ -311,7 +314,8 @@ class ReportGenerator:
                 "timestamp": results.timestamp.isoformat() + "Z",
                 "target": results.target_url,
                 "duration_seconds": results.performance_metrics.duration.total_seconds() if results.performance_metrics.duration else 0,
-                "scan_type": "API Security Assessment"
+                "scan_type": "API Security Assessment",
+                "safe_mode": getattr(getattr(results, 'configuration', None), 'safe_mode', False)
             },
             "statistics": {
                 "findings": {
@@ -349,6 +353,31 @@ class ReportGenerator:
         }
         
         return json.dumps(report_data, indent=2, ensure_ascii=False)
+    
+    def generate_sarif_report(self, results: Any) -> str:
+        """
+        Generate a SARIF 2.1.0 report for code scanning / CI integration.
+        
+        Extracts findings the same way as the JSON report generator and delegates
+        formatting to :class:`utils.sarif_formatter.SARIFFormatter`. Produces a
+        valid SARIF document even when there are zero findings.
+        
+        Args:
+            results: Scan results with findings (via findings_collector or findings)
+        
+        Returns:
+            SARIF 2.1.0 report content as a JSON string
+        """
+        self.logger.info("Generating SARIF 2.1.0 report for code scanning / CI integration")
+        
+        findings_list = []
+        if hasattr(results, 'findings_collector') and results.findings_collector:
+            findings_list = results.findings_collector.get_prioritized_findings()
+        elif hasattr(results, 'findings') and results.findings:
+            findings_list = results.findings
+        
+        from utils.sarif_formatter import SARIFFormatter
+        return SARIFFormatter().to_json(findings_list)
     
     def _calculate_risk_assessment(self, statistics) -> str:
         """Calculate overall risk assessment based on findings"""
@@ -1325,18 +1354,24 @@ For support and documentation: https://github.com/apileak/apileak
         
         return txt_content
     
-    def save_reports(self, results: Any, output_dir: str, scan_type: str = "full", output_filename: str = None) -> List[str]:
+    def save_reports(self, results: Any, output_dir: str, scan_type: str = "full", output_filename: str = None, formats: Optional[List[str]] = None) -> List[str]:
         """
         Save comprehensive reports in all configured formats with precise timestamps
         
         Generates and saves reports in XML (Nessus/Burp compatible), JSON (automation-ready),
-        HTML (interactive), and TXT (human-readable) formats with complete metadata
+        HTML (interactive), TXT (human-readable), and SARIF (CI/code scanning) formats
+        with complete metadata
         
         Args:
             results: Scan results with findings and statistics
             output_dir: Output directory for reports
             scan_type: Type of scan (dir, param, full) for naming
             output_filename: Custom filename (without extension) for reports
+            formats: Optional list of format names to generate. When None (default),
+                the original four formats (xml, json, html, txt) are generated for
+                backward compatibility. When provided, exactly those formats are
+                generated (intersected with the known formats map, which includes
+                "sarif").
             
         Returns:
             List of generated report file paths with metadata
@@ -1348,7 +1383,7 @@ For support and documentation: https://github.com/apileak/apileak
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Enhanced report generation with error handling and validation
-        formats = {
+        formats_all = {
             "xml": {
                 "generator": self.generate_xml_report,
                 "description": "XML report compatible with Nessus and Burp Suite",
@@ -1368,8 +1403,29 @@ For support and documentation: https://github.com/apileak/apileak
                 "generator": self.generate_txt_report,
                 "description": "Human-readable text report for technical teams",
                 "mime_type": "text/plain"
+            },
+            "sarif": {
+                "generator": self.generate_sarif_report,
+                "description": "SARIF 2.1.0 report for code scanning / CI integration",
+                "mime_type": "application/sarif+json"
             }
         }
+        
+        # Honor configured formats when provided. When `formats` is None,
+        # preserve the original behavior (xml, json, html, txt). When provided,
+        # generate exactly those formats that are known.
+        if formats is not None:
+            formats = {
+                name: info
+                for name, info in formats_all.items()
+                if name in formats
+            }
+        else:
+            formats = {
+                name: info
+                for name, info in formats_all.items()
+                if name in ("xml", "json", "html", "txt")
+            }
         
         # Generate metadata file
         metadata = {

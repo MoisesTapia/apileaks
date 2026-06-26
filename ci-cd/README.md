@@ -104,6 +104,30 @@ security-scan:
     - docker run --rm apileak:latest dir --target $API_TARGET_URL
 ```
 
+### Directory Triage in CI (non-blocking)
+
+`--ci-mode` disables the interactive triage prompt so the run never blocks a
+pipeline, even if `--interactive` is also passed. Pair it with `--save-session`
+and `--export` to publish discovery artifacts.
+
+```yaml
+# GitLab CI example - discovery with triage artifacts
+discovery-triage:
+  script:
+    - docker run --rm -v $(pwd)/artifacts:/app/artifacts apileak:latest dir
+        --target $API_TARGET_URL
+        --status-code 2xx
+        --save-session /app/artifacts/session.json
+        --export md
+        --export-file /app/artifacts/discovery.md
+        --interactive
+        --ci-mode
+  artifacts:
+    paths:
+      - artifacts/session.json
+      - artifacts/discovery.md
+```
+
 ### Authenticated Parameter Scanning
 
 ```yaml

@@ -143,10 +143,44 @@ class SSRFConfig:
 
 
 @dataclass
+class BusinessFlowConfig:
+    """Business flow (unrestricted access to sensitive flows) testing configuration"""
+    enabled: bool = True
+    sensitive_flow_patterns: List[str] = field(default_factory=lambda: [
+        "/checkout", "/purchase", "/order", "/transfer", "/register", "/coupon", "/payment"])
+    repetition_limit: int = 50
+
+
+@dataclass
+class SecurityMisconfigConfig:
+    """Security misconfiguration testing configuration"""
+    enabled: bool = True
+    required_headers: List[str] = field(default_factory=lambda: [
+        "Strict-Transport-Security", "X-Content-Type-Options",
+        "X-Frame-Options", "Content-Security-Policy"])
+
+
+@dataclass
+class InventoryConfig:
+    """Improper inventory management testing configuration"""
+    enabled: bool = True
+    detect_deprecated: bool = True
+
+
+@dataclass
+class UnsafeConsumptionConfig:
+    """Unsafe consumption of APIs testing configuration"""
+    enabled: bool = True
+    upstream_indicators: List[str] = field(default_factory=lambda: ["proxy", "upstream", "external", "aggregate"])
+    malformed_payloads: List[str] = field(default_factory=lambda: ['{"__proto__":{}}', "<script>", "' OR 1=1--", "\u0000"])
+
+
+@dataclass
 class OWASPConfig:
     """OWASP testing configuration"""
     enabled_modules: List[str] = field(default_factory=lambda: [
-        "bola", "auth", "property", "resource", "function_auth", "ssrf"
+        "bola", "auth", "property", "resource", "function_auth", "ssrf",
+        "business_flow", "security_misconfig", "inventory", "unsafe_consumption"
     ])
     bola_testing: BOLAConfig = field(default_factory=BOLAConfig)
     auth_testing: AuthTestingConfig = field(default_factory=AuthTestingConfig)
@@ -154,6 +188,10 @@ class OWASPConfig:
     resource_testing: ResourceTestingConfig = field(default_factory=ResourceTestingConfig)
     function_auth_testing: FunctionAuthConfig = field(default_factory=FunctionAuthConfig)
     ssrf_testing: SSRFConfig = field(default_factory=SSRFConfig)
+    business_flow_testing: BusinessFlowConfig = field(default_factory=BusinessFlowConfig)
+    security_misconfig_testing: SecurityMisconfigConfig = field(default_factory=SecurityMisconfigConfig)
+    inventory_testing: InventoryConfig = field(default_factory=InventoryConfig)
+    unsafe_consumption_testing: UnsafeConsumptionConfig = field(default_factory=UnsafeConsumptionConfig)
 
 
 @dataclass
@@ -242,6 +280,20 @@ class AdvancedDiscoveryConfig:
     max_concurrent: int = 10
     timeout: float = 10.0
 
+    # WAF detection / evasion configuration
+    waf_detection: Dict[str, Any] = field(default_factory=lambda: {
+        'enabled': False,
+        'adaptive_throttling': True,
+        'evasion_techniques': True
+    })
+
+    # Payload encoding / obfuscation configuration
+    payload_encoding: Dict[str, Any] = field(default_factory=lambda: {
+        'enabled': False,
+        'encodings': ['url', 'base64', 'html', 'unicode'],
+        'obfuscation_techniques': ['case_variation', 'mutation']
+    })
+
 
 @dataclass
 class CICDIntegrationConfig:
@@ -276,6 +328,9 @@ class APILeakConfig:
     advanced_discovery: AdvancedDiscoveryConfig = field(default_factory=AdvancedDiscoveryConfig)
     http_output: HTTPOutputConfig = field(default_factory=HTTPOutputConfig)
     ci_cd_integration: CICDIntegrationConfig = field(default_factory=CICDIntegrationConfig)
+    safe_mode: bool = False
+    proxy: Optional[str] = None
+    proxy_verify_ssl: bool = False
 
 
 class ConfigurationManager:
@@ -411,7 +466,10 @@ class ConfigurationManager:
                 reporting=reporting,
                 advanced_discovery=advanced_discovery,
                 http_output=http_output,
-                ci_cd_integration=ci_cd_integration
+                ci_cd_integration=ci_cd_integration,
+                safe_mode=config_data.get('safe_mode', False),
+                proxy=config_data.get('proxy'),
+                proxy_verify_ssl=config_data.get('proxy_verify_ssl', False)
             )
             
         except Exception as e:
@@ -441,14 +499,19 @@ class ConfigurationManager:
         """Build OWASP configuration from dict"""
         return OWASPConfig(
             enabled_modules=data.get('enabled_modules', [
-                "bola", "auth", "property", "resource", "function_auth", "ssrf"
+                "bola", "auth", "property", "resource", "function_auth", "ssrf",
+                "business_flow", "security_misconfig", "inventory", "unsafe_consumption"
             ]),
             bola_testing=BOLAConfig(**data.get('bola_testing', {})),
             auth_testing=AuthTestingConfig(**data.get('auth_testing', {})),
             property_testing=PropertyTestingConfig(**data.get('property_testing', {})),
             resource_testing=ResourceTestingConfig(**data.get('resource_testing', {})),
             function_auth_testing=FunctionAuthConfig(**data.get('function_auth_testing', {})),
-            ssrf_testing=SSRFConfig(**data.get('ssrf_testing', {}))
+            ssrf_testing=SSRFConfig(**data.get('ssrf_testing', {})),
+            business_flow_testing=BusinessFlowConfig(**data.get('business_flow_testing', {})),
+            security_misconfig_testing=SecurityMisconfigConfig(**data.get('security_misconfig_testing', {})),
+            inventory_testing=InventoryConfig(**data.get('inventory_testing', {})),
+            unsafe_consumption_testing=UnsafeConsumptionConfig(**data.get('unsafe_consumption_testing', {}))
         )
     
     def _build_auth_config(self, data: Dict[str, Any]) -> AuthConfig:
