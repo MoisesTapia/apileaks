@@ -100,6 +100,25 @@ python apileaks.py dir [OPTIONS]
 | `--detect-framework`, `--df` | Enable framework detection | `false` | `--detect-framework` |
 | `--fuzz-versions`, `--fv` | Enable API version fuzzing | `false` | `--fuzz-versions` |
 
+### Discovery Control Options
+
+These flags tune recursive discovery so you can trade breadth for speed. They keep recursion agile: stay shallow and fast for a quick sweep, or go deep and thorough when you need full coverage — always bounded by the request budget and catch-all detection.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--depth` | Max recursion depth for discovery (`0` = no recursion, depth-0 pass only) | `3` (see precedence below) | `--depth 5` |
+| `--recursive` / `--no-recursive` | Enable or disable recursive discovery | enabled | `--no-recursive` |
+| `--max-requests` | Global request budget for discovery | unbounded | `--max-requests 5000` |
+| `--concurrency` | Max concurrent in-flight discovery requests | `50` | `--concurrency 100` |
+
+**Depth precedence.** The effective recursion depth is resolved as: explicit CLI `--depth` > the `APILEAK_MAX_DEPTH` environment variable > the built-in default of `3`. So `--depth` always wins when supplied; otherwise `APILEAK_MAX_DEPTH` is honored if set; otherwise depth `3` is used.
+
+**Notes.**
+- `--depth 0` performs only the depth-0 pass and disables recursion (equivalent to `--no-recursive`).
+- `--max-requests` defaults to unbounded; when set, it caps the total number of discovery requests across all depths.
+- `--concurrency` defaults to `50` concurrent in-flight requests when not specified.
+- `--depth` must be `>= 0`; `--max-requests` and `--concurrency` must be `>= 1`.
+
 ### Proxy Options
 
 | Option | Description | Default | Example |
@@ -315,6 +334,55 @@ python apileaks.py dir \
   --interactive
 ```
 
+### Rate Limiting and User-Agent in Discovery and Triage
+
+`--rate-limit` and the three User-Agent options apply to every discovery request the `dir` command issues, and they compose freely with the discovery-control and triage flags (`--depth`, `--max-requests`, `--save-session`, `--status-code`, `--interactive`). The same settings are also inherited by the targeted follow-up scan launched from interactive triage (see notes below).
+
+**Rate limit + each User-Agent option, combined with discovery/triage flags**
+
+```bash
+# Random User-Agent rotation + gentle rate limit, bounded recursive discovery,
+# saving a session for later triage
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 5 \
+  --user-agent-random \
+  --depth 4 \
+  --max-requests 5000 \
+  --status-code 2xx \
+  --save-session session.json
+
+# Custom (single) User-Agent + rate limit, with interactive triage so the
+# follow-up scan inherits both settings
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 8 \
+  --user-agent-custom "MyScanner/1.0" \
+  --status-code 2xx \
+  --save-session session.json \
+  --interactive
+
+# Rotating User-Agents from a file + rate limit, deep discovery with a budget,
+# saving a session and opening interactive triage
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 10 \
+  --user-agent-file user_agents.txt \
+  --depth 5 \
+  --max-requests 8000 \
+  --save-session session.json \
+  --interactive
+```
+
+**Notes.**
+
+- **Mutually exclusive User-Agent options.** Exactly one of `--user-agent-random`, `--user-agent-custom "<UA>"`, or `--user-agent-file <list.txt>` may be supplied per invocation. Passing more than one is rejected with an error that names the conflict, and no discovery is performed.
+- **`--user-agent-custom`** uses the single supplied string as the User-Agent for every discovery request.
+- **`--user-agent-random`** picks a User-Agent at random from the built-in set for each discovery request.
+- **`--user-agent-file`** loads User-Agents from the file, one per line; empty lines and lines whose first non-whitespace character is `#` (comments) are skipped. The loaded strings are then rotated in round-robin order across discovery requests. A missing or unreadable file path is rejected with an error naming the path, and no discovery is performed.
+- **`--rate-limit` applies only to requests actually issued.** When `--load-session` reloads a prior session, no discovery requests are made, so the rate limit is not applied to that run.
+- **Targeted follow-up inherits these settings.** The `Targeted_Follow_Up_Scan` launched from interactive triage reuses the same `--rate-limit` and User-Agent option (random / custom / file) from the originating `dir` invocation, applying them to every request it issues. A `--user-agent-file` list is reloaded and rotated for the follow-up the same way.
+
 ## Parameter Fuzzing (`par`)
 
 Identify hidden parameters and input validation issues.
@@ -460,6 +528,25 @@ Same as directory fuzzing - see above.
 | `--enable-waf-evasion` | Enable WAF detection and evasion | `false` | `--enable-waf-evasion` |
 | `--enable-subdomain-discovery` | Enable subdomain discovery | `false` | `--enable-subdomain-discovery` |
 | `--enable-cors-analysis` | Enable CORS analysis | `false` | `--enable-cors-analysis` |
+
+### Discovery Control Options
+
+These flags tune recursive discovery so you can trade breadth for speed. They keep recursion agile: stay shallow and fast for a quick sweep, or go deep and thorough when you need full coverage — always bounded by the request budget and catch-all detection.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--depth` | Max recursion depth for discovery (`0` = no recursion, depth-0 pass only) | `3` (see precedence below) | `--depth 5` |
+| `--recursive` / `--no-recursive` | Enable or disable recursive discovery | enabled | `--no-recursive` |
+| `--max-requests` | Global request budget for discovery | unbounded | `--max-requests 5000` |
+| `--concurrency` | Max concurrent in-flight discovery requests | `50` | `--concurrency 100` |
+
+**Depth precedence.** The effective recursion depth is resolved as: explicit CLI `--depth` > the `APILEAK_MAX_DEPTH` environment variable > the built-in default of `3`. So `--depth` always wins when supplied; otherwise `APILEAK_MAX_DEPTH` is honored if set; otherwise depth `3` is used.
+
+**Notes.**
+- `--depth 0` performs only the depth-0 pass and disables recursion (equivalent to `--no-recursive`).
+- `--max-requests` defaults to unbounded; when set, it caps the total number of discovery requests across all depths.
+- `--concurrency` defaults to `50` concurrent in-flight requests when not specified.
+- `--depth` must be `>= 0`; `--max-requests` and `--concurrency` must be `>= 1`.
 
 ### CI/CD Integration
 

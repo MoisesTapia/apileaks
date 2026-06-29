@@ -211,6 +211,380 @@ class TestEndpointFuzzer:
         assert auth_endpoint.endpoint_type == "authentication"
 
 
+class FakeHTTPRequestEngine:
+    """
+    Fake HTTPRequestEngine that records every request(...) call.
+
+    Used to verify that every Discovery_Request flows through the
+    (rate-limited) client (Requirement 20.4) and to count exactly how many
+    Discovery_Requests Endpoint_Discovery issues (Requirements 18.2/18.3).
+    """
+
+    def __init__(self, status_code: int = 200):
+        self.status_code = status_code
+        self.calls = []            # list of (method, url) tuples in call order
+        self.in_flight = 0         # current number of in-flight requests
+        self.peak_in_flight = 0    # peak observed concurrency
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+    async def request(self, method: str, url: str, **kwargs) -> Response:
+        # Track concurrency: increment on entry, yield, then decrement.
+        self.in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        self.calls.append((method, url))
+        try:
+            # Yield control so concurrent requests can overlap.
+            await asyncio.sleep(0)
+            return Response(
+                status_code=self.status_code,
+                headers={'Content-Type': 'application/json'},
+                content=b'{"ok": true}',
+                text='{"ok": true}',
+                url=url,
+                elapsed=0.01,
+                request_method=method,
+            )
+        finally:
+            self.in_flight -= 1
+
+
+def _write_wordlist(words):
+    """Write words to a temp wordlist file and return its path."""
+    f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    f.write("\n".join(words) + "\n")
+    f.close()
+    return f.name
+
+
+class TestBudgetAndConcurrency:
+    """
+    Unit tests for Request_Budget truncation and concurrency-limited dispatch
+    in EndpointFuzzer (Requirements 18.2, 18.3, 18.4, 18.6, 20.4).
+
+    Note: EndpointFuzzer dedupes candidate requests by URL within a wordlist
+    pass, so each unique word yields one Discovery_Request at depth 0
+    regardless of how many HTTP methods are configured.
+    """
+
+    def _make_config(self, max_requests=None, concurrency=50):
+        return FuzzingConfig(
+            endpoints=EndpointFuzzingConfig(
+                enabled=True,
+                wordlist="unused.txt",
+                methods=["GET", "POST"],
+                follow_redirects=False,
+            ),
+            parameters=ParameterFuzzingConfig(enabled=False),
+            headers=HeaderFuzzingConfig(enabled=False),
+            recursive=False,
+            max_depth=0,
+            max_requests=max_requests,
+            concurrency=concurrency,
+        )
+
+    @pytest.mark.asyncio
+    async def test_budget_truncates_requests_and_returns_partial_set(self):
+        """
+        With max_requests=N against a wordlist exceeding N, exactly N
+        Discovery_Requests are issued, budget_reached is set, and the partial
+        discovered set is returned (Requirements 18.2, 18.3, 18.4).
+
+        Note: catch-all detection (Requirement 19.1) issues CATCH_ALL_PROBES
+        probes first, and those also count toward the Request_Budget, so the
+        wordlist pass only receives the leftover budget.
+        """
+        wordlist_budget = 3
+        max_requests = EndpointFuzzer.CATCH_ALL_PROBES + wordlist_budget
+        words = [f"word{i}" for i in range(10)]  # 10 unique words > leftover budget
+        wordlist_path = _write_wordlist(words)
+        fake_client = FakeHTTPRequestEngine(status_code=200)
+        fuzzer = EndpointFuzzer(fake_client, self._make_config(max_requests=max_requests))
+
+        try:
+            discovered = await fuzzer.discover_endpoints('http://example.com', wordlist_path)
+        finally:
+            os.unlink(wordlist_path)
+
+        # 18.2: exactly N requests counted toward the budget (probes + wordlist)
+        assert fuzzer.requests_issued == max_requests
+        # 18.2 / 20.4: every issued request flowed through the client
+        assert fake_client.call_count == max_requests
+        # 18.3: discovery stopped once the budget was reached
+        assert fuzzer.budget_reached is True
+        # 18.4: the partial discovered set is returned (catch-all probes target
+        # random paths and are not stored as endpoints, so only the wordlist
+        # hits found before the budget was reached appear)
+        assert len(discovered) == wordlist_budget
+        assert all(isinstance(e, Endpoint) for e in discovered)
+
+    @pytest.mark.asyncio
+    async def test_budget_never_exceeded_when_wordlist_larger(self):
+        """
+        FOR a Request_Budget N, the total Discovery_Requests issued is at most N
+        even when many more candidates exist (Requirement 18.3).
+        """
+        max_requests = 5
+        words = [f"path{i}" for i in range(50)]
+        wordlist_path = _write_wordlist(words)
+        fake_client = FakeHTTPRequestEngine(status_code=200)
+        fuzzer = EndpointFuzzer(fake_client, self._make_config(max_requests=max_requests))
+
+        try:
+            await fuzzer.discover_endpoints('http://example.com', wordlist_path)
+        finally:
+            os.unlink(wordlist_path)
+
+        assert fake_client.call_count <= max_requests
+        assert fake_client.call_count == max_requests
+        assert fuzzer.budget_reached is True
+
+    @pytest.mark.asyncio
+    async def test_unbounded_discovery_when_max_requests_none(self):
+        """
+        WHERE no max_requests is provided, discovery runs without a budget
+        limit: every candidate is issued, budget is never marked reached, and
+        every request still flows through the rate-limited client
+        (Requirements 18.6, 20.4).
+        """
+        words = [f"endpoint{i}" for i in range(12)]
+        wordlist_path = _write_wordlist(words)
+        fake_client = FakeHTTPRequestEngine(status_code=200)
+        fuzzer = EndpointFuzzer(fake_client, self._make_config(max_requests=None))
+
+        try:
+            discovered = await fuzzer.discover_endpoints('http://example.com', wordlist_path)
+        finally:
+            os.unlink(wordlist_path)
+
+        # 18.6: unbounded -> all unique words are issued as Discovery_Requests,
+        # plus the CATCH_ALL_PROBES catch-all probes (Requirement 19.1).
+        expected_calls = len(words) + EndpointFuzzer.CATCH_ALL_PROBES
+        assert fake_client.call_count == expected_calls
+        # 20.4: every Discovery_Request passed through the (rate-limited) client
+        assert len(fake_client.calls) == expected_calls
+        # No budget configured, so budget_reached stays False and the issued
+        # counter is not advanced.
+        assert fuzzer.budget_reached is False
+        assert fuzzer.requests_issued == 0
+        # All discovered endpoints returned (each unique word -> one endpoint)
+        assert len(discovered) == len(words)
+
+
+class CatchAllFakeClient:
+    """
+    Fake HTTPRequestEngine for catch-all / wildcard detection tests
+    (Requirement 19).
+
+    ``responder`` is a callable ``(method, url) -> (status_code, content_bytes)``
+    that lets each test decide how the target answers each request, so we can
+    simulate both genuine endpoints and Catch_All_Response behavior. Every
+    request(...) call is recorded in ``calls`` so tests can assert which URLs
+    were (and were not) probed.
+    """
+
+    def __init__(self, responder):
+        self.responder = responder
+        self.calls = []  # list of (method, url) in call order
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+    async def request(self, method: str, url: str, **kwargs) -> Response:
+        self.calls.append((method, url))
+        await asyncio.sleep(0)
+        status_code, content = self.responder(method, url)
+        return Response(
+            status_code=status_code,
+            headers={'Content-Type': 'application/json'},
+            content=content,
+            text=content.decode('utf-8', 'ignore'),
+            url=url,
+            elapsed=0.01,
+            request_method=method,
+        )
+
+
+class TestCatchAllDetection:
+    """
+    Unit tests for Catch_All_Response / wildcard detection in EndpointFuzzer
+    (Requirement 19).
+
+    These exercise _detect_catch_all and the recursion-exclusion behavior with
+    a configurable fake HTTPRequestEngine, matching the existing test
+    conventions (pytest + asyncio, real Response objects, temp wordlists).
+    """
+
+    def _make_config(self, recursive=False, max_depth=0, methods=None):
+        return FuzzingConfig(
+            endpoints=EndpointFuzzingConfig(
+                enabled=True,
+                wordlist="unused.txt",
+                methods=methods or ["GET"],
+                follow_redirects=False,
+            ),
+            parameters=ParameterFuzzingConfig(enabled=False),
+            headers=HeaderFuzzingConfig(enabled=False),
+            recursive=recursive,
+            max_depth=max_depth,
+            max_requests=None,
+            concurrency=50,
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_2xx_probes_set_detection_and_record_signature(self):
+        """
+        19.1 / 19.2: WHEN every randomly generated non-existent path returns a
+        successful (2xx) response, THE base URL is classified as Catch_All and
+        the (status_code, response_size) signature is recorded.
+        """
+        body = b'{"spa": "index"}'  # every probe answers with the same SPA body
+        fake_client = CatchAllFakeClient(lambda method, url: (200, body))
+        fuzzer = EndpointFuzzer(fake_client, self._make_config())
+
+        await fuzzer._detect_catch_all('http://example.com/')
+
+        # 19.1: one probe per CATCH_ALL_PROBES was issued to non-existent paths
+        assert fake_client.call_count == EndpointFuzzer.CATCH_ALL_PROBES
+        assert all(method == 'GET' for method, _ in fake_client.calls)
+        # 19.2: all-2xx -> catch-all detected, signature is (status, size)
+        assert fuzzer.catch_all_detected is True
+        assert fuzzer.catch_all_signature == (200, len(body))
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_probe_leaves_detection_off(self):
+        """
+        19.3: IF any randomly generated non-existent path returns a non-success
+        response, THEN catch-all is NOT detected and no signature is recorded,
+        so recursion proceeds normally.
+        """
+        # Return 2xx for some probes but a 404 for one of them. Order of the
+        # concurrently-dispatched probes does not matter: a single non-2xx is
+        # enough to leave detection off.
+        statuses = iter([200, 404, 200])
+
+        def responder(method, url):
+            return (next(statuses), b'body')
+
+        fake_client = CatchAllFakeClient(responder)
+        fuzzer = EndpointFuzzer(fake_client, self._make_config())
+
+        await fuzzer._detect_catch_all('http://example.com/')
+
+        assert fake_client.call_count == EndpointFuzzer.CATCH_ALL_PROBES
+        # 19.3: not all probes were 2xx -> detection stays off, no signature
+        assert fuzzer.catch_all_detected is False
+        assert fuzzer.catch_all_signature is None
+
+    @pytest.mark.asyncio
+    async def test_probe_failures_count_as_non_2xx(self):
+        """
+        19.3 (failure tolerance): a probe that raises is tolerated and counts as
+        a non-2xx result, so catch-all detection stays off rather than crashing.
+        """
+        call_index = {'n': 0}
+
+        async def failing_request(method, url, **kwargs):
+            call_index['n'] += 1
+            # First probe raises; remaining probes return 2xx.
+            if call_index['n'] == 1:
+                raise ConnectionError("probe failed")
+            await asyncio.sleep(0)
+            return Response(
+                status_code=200,
+                headers={},
+                content=b'ok',
+                text='ok',
+                url=url,
+                elapsed=0.01,
+                request_method=method,
+            )
+
+        fake_client = Mock(spec=HTTPRequestEngine)
+        fake_client.request = failing_request
+        fuzzer = EndpointFuzzer(fake_client, self._make_config())
+
+        # Should not raise even though one probe errored.
+        await fuzzer._detect_catch_all('http://example.com/')
+
+        assert fuzzer.catch_all_detected is False
+        assert fuzzer.catch_all_signature is None
+
+    @pytest.mark.asyncio
+    async def test_catch_all_endpoints_excluded_from_recursable_base_endpoints(self):
+        """
+        19.4: WHILE a base URL exhibits Catch_All_Response behavior, recursion
+        SHALL NOT descend into Discovery_Result records whose status code and
+        response size match the detected signature. Endpoints with a different
+        signature are still recursed normally.
+        """
+        catch_all_size = 16
+        signature = (200, catch_all_size)
+
+        # Depth-1 sub-paths all 404 so recursion stops after one level; this
+        # keeps the test focused on which base endpoints get recursed into.
+        fake_client = CatchAllFakeClient(lambda method, url: (404, b'nope'))
+        fuzzer = EndpointFuzzer(fake_client, self._make_config(recursive=True, max_depth=1))
+
+        # Pretend catch-all was already detected during phase 0.
+        fuzzer.catch_all_detected = True
+        fuzzer.catch_all_signature = signature
+
+        # A wildcard endpoint (matches the signature) and a genuine endpoint
+        # (different response size) discovered at depth 0.
+        wildcard_endpoint = Endpoint(
+            url='http://example.com/wildcard',
+            method='GET',
+            status_code=200,
+            response_size=catch_all_size,   # matches signature -> excluded
+            response_time=0.01,
+        )
+        real_endpoint = Endpoint(
+            url='http://example.com/real',
+            method='GET',
+            status_code=200,
+            response_size=catch_all_size + 100,  # differs -> recursable
+            response_time=0.01,
+        )
+
+        await fuzzer._recursive_fuzzing([wildcard_endpoint, real_endpoint], ["sub"])
+
+        recursed_urls = [url for _, url in fake_client.calls]
+        # The genuine endpoint was recursed into...
+        assert any(url.startswith('http://example.com/real/') for url in recursed_urls)
+        # ...but the catch-all/wildcard endpoint was excluded from recursion.
+        assert not any(
+            url.startswith('http://example.com/wildcard/') for url in recursed_urls
+        )
+
+    @pytest.mark.asyncio
+    async def test_is_catch_all_matches_only_on_signature(self):
+        """
+        19.4 (signature matching): _is_catch_all returns True only for endpoints
+        whose (status_code, response_size) equals the detected signature, and
+        only while catch-all is active.
+        """
+        fuzzer = EndpointFuzzer(CatchAllFakeClient(lambda m, u: (200, b'')),
+                                self._make_config())
+
+        matching = Endpoint(url='http://example.com/a', method='GET',
+                            status_code=200, response_size=42, response_time=0.0)
+        different_size = Endpoint(url='http://example.com/b', method='GET',
+                                 status_code=200, response_size=43, response_time=0.0)
+
+        # Not active yet -> never catch-all.
+        assert fuzzer._is_catch_all(matching) is False
+
+        fuzzer.catch_all_detected = True
+        fuzzer.catch_all_signature = (200, 42)
+
+        assert fuzzer._is_catch_all(matching) is True
+        assert fuzzer._is_catch_all(different_size) is False
+
+
 class TestFuzzingOrchestrator:
     """Test fuzzing orchestrator functionality"""
     

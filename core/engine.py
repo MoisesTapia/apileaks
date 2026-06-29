@@ -786,6 +786,26 @@ class APILeakCore:
         """
         return self.discovered_endpoints.copy()
     
+    def get_discovery_status(self) -> Dict[str, bool]:
+        """
+        Get discovery recursion-control status flags from the endpoint fuzzer.
+        
+        Surfaces ``budget_reached`` (the Request_Budget was reached and discovery
+        stopped early) and ``catch_all_detected`` (Catch_All_Response behavior was
+        detected). The flags are read defensively and default to ``False`` so the
+        accessor is safe to call even when no discovery ran or when the underlying
+        fuzzer attributes are not present.
+        
+        Returns:
+            Dictionary with ``budget_reached`` and ``catch_all_detected`` booleans.
+        """
+        orchestrator = getattr(self, 'fuzzing_orchestrator', None)
+        fuzzer = getattr(orchestrator, 'endpoint_fuzzer', None)
+        return {
+            "budget_reached": bool(getattr(fuzzer, 'budget_reached', False)),
+            "catch_all_detected": bool(getattr(fuzzer, 'catch_all_detected', False)),
+        }
+    
     def get_scan_status(self) -> Dict[str, Any]:
         """
         Get current scan status

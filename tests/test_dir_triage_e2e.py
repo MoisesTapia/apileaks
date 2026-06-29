@@ -55,8 +55,13 @@ def _mock_endpoints():
 
 
 async def _fake_discover(_apileak_config):
-    """Async stand-in for endpoint discovery returning fixed in-memory endpoints."""
-    return _mock_endpoints()
+    """Async stand-in for endpoint discovery returning fixed in-memory endpoints.
+
+    Mirrors the ``_discover_endpoints_for_triage`` contract, returning the
+    ``(endpoints, soft_404_baseline)`` tuple; the baseline is ``None`` since the
+    mocked run derives no soft-404 signature.
+    """
+    return _mock_endpoints(), None
 
 
 def test_dir_triage_save_export_filter_table_and_ci_non_blocking(tmp_path):

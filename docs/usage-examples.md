@@ -56,6 +56,38 @@ python apileaks.py dir \
   --output comprehensive_discovery
 ```
 
+### Recursive Discovery Control
+
+These flags keep recursive discovery agile: go shallow and fast for a quick sweep, or deep and thorough for full coverage. Discovery is always bounded by the request budget (`--max-requests`) and catch-all detection, so deep scans stay safe. The effective depth follows the precedence CLI `--depth` > `APILEAK_MAX_DEPTH` env var > default `3`.
+
+```bash
+# Shallow + fast: a quick, single-level sweep (no recursion)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --depth 1
+
+# Disable recursion entirely (depth-0 pass only)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --no-recursive
+
+# Deep + thorough: recurse further with a request budget as a safety net
+python apileaks.py dir \
+  --target https://api.example.com \
+  --depth 6 \
+  --max-requests 5000
+
+# Tune concurrency for faster discovery (default is 50 in-flight requests)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --concurrency 100 \
+  --max-requests 8000
+
+# Let the APILEAK_MAX_DEPTH env var drive depth (CLI --depth would override it)
+APILEAK_MAX_DEPTH=4 python apileaks.py dir \
+  --target https://api.example.com
+```
+
 ### Discovery Triage Workflow
 
 The triage workflow layers status-code grouping/filtering, session persistence, a human-readable export, a `rich` results table, and an opt-in interactive follow-up on top of discovery. It activates automatically when any triage flag is present.
@@ -120,6 +152,51 @@ python apileaks.py dir \
 ```
 
 **Status-code filter forms** (triage mode): a status class token (`2xx`, `3xx`, `4xx`, `5xx`), explicit codes (`200,401,403`), or a range (`400-403`). Class tokens are single-valued; explicit codes are validated to the `100-599` range.
+
+### Rate Limiting and User-Agent with Discovery and Triage
+
+`--rate-limit` and the User-Agent options pace and identify every discovery request `dir` issues, and they combine cleanly with the discovery-control and triage flags. The targeted follow-up scan launched from interactive triage inherits the same settings, so request pacing and identification stay consistent from discovery through any follow-up.
+
+```bash
+# Random User-Agent + gentle rate limit, bounded recursive discovery,
+# filter to successful endpoints, and save a session
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 5 \
+  --user-agent-random \
+  --depth 4 \
+  --max-requests 5000 \
+  --status-code 2xx \
+  --save-session session.json
+
+# Single custom User-Agent + rate limit, with interactive triage —
+# the follow-up scan inherits both the rate limit and the custom UA
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 8 \
+  --user-agent-custom "MyScanner/1.0" \
+  --status-code 2xx \
+  --save-session session.json \
+  --interactive
+
+# Rotating User-Agents from a file + rate limit, deep discovery with a budget,
+# then open interactive triage (the follow-up reuses the same UA file rotation)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 10 \
+  --user-agent-file wordlists/user_agents.txt \
+  --depth 5 \
+  --max-requests 8000 \
+  --save-session session.json \
+  --interactive
+```
+
+**Notes on rate limiting and User-Agent:**
+
+- **One User-Agent option at a time.** `--user-agent-random`, `--user-agent-custom "<UA>"`, and `--user-agent-file <list.txt>` are mutually exclusive; supplying more than one is rejected with an error and no discovery runs.
+- **`--user-agent-file` format and rotation.** The file is read one User-Agent per line; empty lines and `#` comment lines are skipped, and the remaining strings are rotated in round-robin order across discovery requests.
+- **Reloaded sessions issue no requests.** With `--load-session`, no discovery requests are made, so `--rate-limit` is not applied to that run.
+- **Follow-up inheritance.** The targeted follow-up scan from interactive triage applies the same `--rate-limit` and User-Agent option as the originating `dir` invocation to every request it issues.
 
 ## Parameter Fuzzing
 
@@ -214,6 +291,30 @@ python apileaks.py full \
   --user-agent-random \
   --modules all \
   --output advanced_discovery_scan
+```
+
+### Recursive Discovery Control (Full Scan)
+
+The same discovery-control flags work with `full`, so you can tune how aggressively the scan discovers endpoints before running OWASP tests. They keep recursion agile — shallow/fast vs deep/thorough — and stay bounded by the request budget and catch-all detection. Depth precedence is CLI `--depth` > `APILEAK_MAX_DEPTH` env var > default `3`.
+
+```bash
+# Shallow + fast discovery ahead of the OWASP modules
+python apileaks.py full \
+  --target https://api.example.com \
+  --depth 1 \
+  --modules bola,auth
+
+# Deep + thorough discovery with a request budget as a safety net
+python apileaks.py full \
+  --target https://api.example.com \
+  --depth 6 \
+  --max-requests 5000 \
+  --concurrency 100
+
+# Skip recursive discovery entirely (depth-0 pass only)
+python apileaks.py full \
+  --target https://api.example.com \
+  --no-recursive
 ```
 
 ## Advanced Discovery Features

@@ -94,6 +94,10 @@ class EndpointFuzzer:
     - Automatic redirect following
     """
     
+    # Number of randomly generated non-existent paths probed to detect
+    # Catch_All_Response behavior (Requirement 19.1).
+    CATCH_ALL_PROBES = 3
+    
     def __init__(self, http_client: HTTPRequestEngine, config: FuzzingConfig):
         self.http_client = http_client
         self.config = config
@@ -104,9 +108,37 @@ class EndpointFuzzer:
         self.tested_urls: Set[str] = set()
         self.wordlist_cache: Dict[str, List[str]] = {}
         
+        # Request budget tracking (Request_Budget; None = unbounded discovery)
+        self.requests_issued = 0
+        self.budget_reached = False
+        self.max_requests = config.max_requests
+        
+        # Concurrency limit (Concurrency_Limit). The semaphore caps the number of
+        # in-flight Discovery_Requests so they never exceed self.concurrency.
+        self.concurrency = config.concurrency or 50
+        self._semaphore = asyncio.Semaphore(self.concurrency)
+        
+        # Catch-all / wildcard detection state (Catch_All_Response, Requirement 19).
+        # catch_all_signature is the (status_code, response_size) recorded when the
+        # base URL answers random non-existent paths with 2xx responses.
+        self.catch_all_detected = False
+        self.catch_all_signature: Optional[Tuple[int, int]] = None
+        
+        # Soft-404 baseline signature (Soft_404_Baseline, Requirement 22.5/22.6).
+        # The (status_code, response_size, word_count) signature of the responses
+        # returned for paths that are not expected to exist, captured from the same
+        # catch-all probes so calibration adds no requests beyond those probes
+        # (which already count toward the Request_Budget). Distinct from and
+        # complementary to catch_all_signature (Requirement 22.8): catch-all needs
+        # every probe to be 2xx, whereas the soft-404 baseline only needs the probe
+        # responses to agree on a single (status, size, words) signature.
+        self.soft_404_signature: Optional[Tuple[int, int, int]] = None
+        
         self.logger.info("Endpoint Fuzzer initialized",
                         recursive=config.recursive,
-                        max_depth=config.max_depth)
+                        max_depth=config.max_depth,
+                        max_requests=config.max_requests,
+                        concurrency=self.concurrency)
     
     async def discover_endpoints(self, base_url: str, wordlist_path: str) -> List[Endpoint]:
         """
@@ -132,6 +164,10 @@ class EndpointFuzzer:
         # Normalize base URL
         if not base_url.endswith('/'):
             base_url += '/'
+        
+        # Phase 0: Catch-all / wildcard detection (Requirement 19). Runs before the
+        # depth-0 pass so its probes also count toward requests_issued / the budget.
+        await self._detect_catch_all(base_url)
         
         # Phase 1: Initial wordlist fuzzing
         initial_endpoints = await self._fuzz_wordlist(base_url, wordlist, depth=0)
@@ -191,22 +227,35 @@ class EndpointFuzzer:
                     requests.append((method, url, word, depth))
                     self.tested_urls.add(url)
         
-        # Execute requests in batches to avoid overwhelming the server
-        batch_size = 50
+        # Execute requests. Concurrency is now bounded by the asyncio.Semaphore
+        # in _test_endpoint (Concurrency_Limit), not by a hardcoded batch size.
         discovered_endpoints = []
         
-        for i in range(0, len(requests), batch_size):
-            batch = requests[i:i + batch_size]
-            
-            # Show progress
-            self.logger.info(f"Testing endpoints {i+1}-{min(i+batch_size, len(requests))}/{len(requests)}", 
-                           base_url=base_url, depth=depth)
-            
-            batch_results = await self._execute_batch(batch)
-            discovered_endpoints.extend(batch_results)
-            
-            # Small delay between batches
-            await asyncio.sleep(0.1)
+        # Enforce the request budget (Request_Budget). Skip when unbounded.
+        if self.max_requests is not None:
+            remaining = self.max_requests - self.requests_issued
+            if remaining <= 0:
+                self.budget_reached = True
+                return discovered_endpoints
+            # Trim the dispatched requests to the remaining budget
+            if len(requests) > remaining:
+                requests = requests[:remaining]
+        
+        if not requests:
+            return discovered_endpoints
+        
+        # Show progress
+        self.logger.info(f"Testing {len(requests)} endpoints", base_url=base_url, depth=depth)
+        
+        # Count the requests being issued toward the budget
+        if self.max_requests is not None:
+            self.requests_issued += len(requests)
+        
+        discovered_endpoints = await self._execute_batch(requests)
+        
+        # Flag budget exhaustion so recursive fuzzing can short-circuit
+        if self.max_requests is not None and self.requests_issued >= self.max_requests:
+            self.budget_reached = True
         
         return discovered_endpoints
     
@@ -231,7 +280,11 @@ class EndpointFuzzer:
     async def _test_endpoint(self, method: str, url: str, word: str, depth: int) -> Optional[Endpoint]:
         """Test a single endpoint"""
         try:
-            response = await self.http_client.request(method, url)
+            # Cap in-flight Discovery_Requests at the Concurrency_Limit. Every
+            # request still flows through HTTPRequestEngine.request, so the rate
+            # limiter continues to apply to each Discovery_Request.
+            async with self._semaphore:
+                response = await self.http_client.request(method, url)
             
             # Create endpoint object
             endpoint = Endpoint(
@@ -324,6 +377,99 @@ class EndpointFuzzer:
         except Exception as e:
             self.logger.debug("Failed to handle redirect", error=str(e))
     
+    async def _detect_catch_all(self, base_url: str) -> None:
+        """Detect Catch_All_Response behavior (Requirement 19).
+        
+        Issues GET requests to CATCH_ALL_PROBES randomly generated, almost-certainly
+        non-existent paths. If EVERY probe returns a successful (2xx) response, the
+        base URL is classified as exhibiting catch-all behavior and the
+        (status_code, response_size) signature of the response is recorded so
+        matching endpoints can be excluded from recursion (19.4). If any probe
+        returns a non-2xx response (or errors), catch_all_detected stays False and
+        recursion proceeds normally (19.3).
+        
+        The probes count toward requests_issued so they remain within the
+        Request_Budget, consistent with _fuzz_wordlist.
+        
+        The same probe responses also feed the Soft_404_Baseline (Requirement
+        22.5): when every valid probe response shares one (status_code, size,
+        word_count) signature, that signature is recorded in soft_404_signature so
+        calibrate_soft_404 can suppress matching records without issuing extra
+        requests. This is independent of catch-all detection (Requirement 22.8) --
+        the soft-404 baseline does not require the probes to be 2xx.
+        """
+        # Respect the request budget (Request_Budget). Skip when unbounded.
+        probe_count = self.CATCH_ALL_PROBES
+        if self.max_requests is not None:
+            remaining = self.max_requests - self.requests_issued
+            if remaining <= 0:
+                self.budget_reached = True
+                return
+            # Trim the probes to whatever budget remains
+            if probe_count > remaining:
+                probe_count = remaining
+        
+        if probe_count <= 0:
+            return
+        
+        # Generate random, non-existent paths (e.g. uuid4().hex)
+        probes = [urljoin(base_url, f"{uuid4().hex}{i}") for i in range(probe_count)]
+        
+        # Count the probes being issued toward the budget
+        if self.max_requests is not None:
+            self.requests_issued += len(probes)
+        
+        async def _probe(url: str) -> Response:
+            # Cap in-flight probes at the Concurrency_Limit, like _test_endpoint.
+            async with self._semaphore:
+                return await self.http_client.request("GET", url)
+        
+        responses = await asyncio.gather(
+            *(_probe(u) for u in probes),
+            return_exceptions=True
+        )
+        
+        # Tolerate probe failures: an errored probe is not a 2xx, so it simply
+        # prevents the "all 2xx" condition and defaults to "not catch-all" (19.3).
+        oks = [
+            r for r in responses
+            if isinstance(r, Response) and 200 <= r.status_code < 300
+        ]
+        
+        # Soft_404_Baseline calibration (Requirement 22.5): capture the
+        # (status_code, size, words) signature shared by the probe responses to
+        # non-existent paths. Recorded only when every valid probe response agrees
+        # on a single signature, so the baseline reliably reflects what this base
+        # URL returns for paths that do not exist. Reuses the catch-all probes, so
+        # no extra requests are issued beyond those already counted (22.8).
+        valid = [r for r in responses if isinstance(r, Response)]
+        if valid and len(valid) == len(probes):
+            signatures = {
+                (r.status_code, len(r.content), len(r.text.split()))
+                for r in valid
+            }
+            if len(signatures) == 1:
+                self.soft_404_signature = next(iter(signatures))
+        
+        if oks and len(oks) == len(probes):  # every probe returned 2xx (19.2)
+            self.catch_all_detected = True
+            self.catch_all_signature = (oks[0].status_code, len(oks[0].content))
+            self.logger.info("Catch-all response behavior detected",
+                            base_url=base_url,
+                            status_code=oks[0].status_code,
+                            response_size=len(oks[0].content))
+        
+        # Flag budget exhaustion so the depth-0 pass / recursion can short-circuit
+        if self.max_requests is not None and self.requests_issued >= self.max_requests:
+            self.budget_reached = True
+    
+    def _is_catch_all(self, endpoint: Endpoint) -> bool:
+        """Return True when the endpoint matches the detected Catch_All_Response
+        signature (status code and response size). Used to exclude wildcard
+        responses from recursion (Requirement 19.4)."""
+        return (self.catch_all_detected
+                and self.catch_all_signature == (endpoint.status_code, endpoint.response_size))
+    
     async def _recursive_fuzzing(self, initial_endpoints: List[Endpoint], wordlist: List[str]) -> None:
         """Perform recursive fuzzing on discovered endpoints"""
         self.logger.debug("Starting recursive fuzzing", max_depth=self.config.max_depth)
@@ -335,13 +481,23 @@ class EndpointFuzzer:
             and not e.url.endswith('.html')  # Skip file-like endpoints
             and not e.url.endswith('.json')
             and not e.url.endswith('.xml')
+            and not self._is_catch_all(e)  # Skip catch-all/wildcard responses (19.4)
         ]
         
         for depth in range(1, self.config.max_depth + 1):
+            # Short-circuit the depth loop once the request budget is reached
+            if self.budget_reached:
+                self.logger.debug("Request budget reached, stopping recursive fuzzing", depth=depth)
+                break
+            
             self.logger.debug("Recursive fuzzing depth", depth=depth, base_endpoints=len(base_endpoints))
             
             new_endpoints = []
             for base_endpoint in base_endpoints:
+                # Short-circuit the per-endpoint loop once the budget is reached
+                if self.budget_reached:
+                    break
+                
                 # Create sub-paths by appending wordlist items
                 base_url = base_endpoint.url
                 if not base_url.endswith('/'):
@@ -350,10 +506,16 @@ class EndpointFuzzer:
                 depth_endpoints = await self._fuzz_wordlist(base_url, wordlist, depth)
                 new_endpoints.extend(depth_endpoints)
             
+            # Stop further recursion if the budget was exhausted during this depth
+            if self.budget_reached:
+                self.logger.debug("Request budget reached during recursive fuzzing", depth=depth)
+                break
+            
             # Update base endpoints for next depth level
             base_endpoints = [
                 e for e in new_endpoints 
                 if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
+                and not self._is_catch_all(e)  # Skip catch-all/wildcard responses (19.4)
             ]
             
             # Stop if no new endpoints found

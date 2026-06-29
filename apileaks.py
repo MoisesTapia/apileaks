@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import click
 import os
+from typing import Optional
 
 from core import APILeakCore, ConfigurationManager, setup_logging
 from core import __version__ as APILEAK_VERSION
@@ -27,6 +28,13 @@ from utils.discovery_session import (
 )
 from utils.discovery_export import DiscoveryExportError, write_discovery_export
 from utils.triage_table import render_triage_table
+from utils.response_selector import (
+    DiscoveryResultEx,
+    SelectorError,
+    apply_selectors,
+    calibrate_soft_404,
+    parse_selectors,
+)
 
 
 def parse_response_codes(response_filter: str) -> list:
@@ -81,6 +89,52 @@ def parse_status_codes(status_filter: str) -> list:
                 click.echo(f"Warning: Invalid status code '{part}', ignoring", err=True)
     
     return sorted(list(set(codes)))  # Remove duplicates and sort
+
+
+def _validate_depth(ctx, param, value):
+    """Click callback: reject a negative --depth, naming the offending value.
+
+    Click's ``type=int`` already rejects non-integers; this guards the lower
+    bound so no Endpoint_Discovery runs on an invalid recursion depth
+    (Requirement 17.9).
+    """
+    if value is not None and value < 0:
+        raise click.BadParameter(f"--depth must be >= 0 (got {value})")
+    return value
+
+
+def _validate_max_requests(ctx, param, value):
+    """Click callback: reject a --max-requests below 1, naming the value.
+
+    ``default=None`` means "no budget"; any supplied value must be a positive
+    request budget so discovery cannot be configured with an impossible limit
+    (Requirement 18.7).
+    """
+    if value is not None and value < 1:
+        raise click.BadParameter(f"--max-requests must be >= 1 (got {value})")
+    return value
+
+
+def _validate_concurrency(ctx, param, value):
+    """Click callback: reject a --concurrency below 1, naming the value.
+
+    ``default=None`` falls back to the built-in concurrency of 50; any supplied
+    value must allow at least one in-flight request (Requirement 20.5).
+    """
+    if value is not None and value < 1:
+        raise click.BadParameter(f"--concurrency must be >= 1 (got {value})")
+    return value
+
+
+def resolve_max_depth(cli_depth: Optional[int]) -> int:
+    """Resolve the effective recursion depth with documented precedence.
+
+    Precedence: explicit CLI ``--depth`` value > ``APILEAK_MAX_DEPTH`` env var >
+    default 3 (Requirements 17.6, 17.7, 17.8).
+    """
+    if cli_depth is not None:  # CLI wins (17.6)
+        return cli_depth
+    return int(os.getenv('APILEAK_MAX_DEPTH', '3'))  # env, else default 3 (17.7, 17.8)
 
 
 def validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file):
@@ -271,7 +325,9 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
             },
             'recursive': True,
             'max_depth': int(os.getenv('APILEAK_MAX_DEPTH', '3')),
-            'response_filter': []
+            'response_filter': [],
+            'max_requests': None,
+            'concurrency': 50
         },
         'owasp_testing': {
             'enabled_modules': owasp_modules
@@ -435,7 +491,9 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
             },
             'recursive': True,
             'max_depth': int(os.getenv('APILEAK_MAX_DEPTH', '3')),
-            'response_filter': []
+            'response_filter': [],
+            'max_requests': None,
+            'concurrency': 50
         },
         'owasp_testing': {
             'enabled_modules': [] if scan_type in ["dir", "par"] else [
@@ -540,12 +598,41 @@ def cli(ctx, no_banner):
 @click.option('--rate-limit', type=int, help='Requests per second limit')
 @click.option('--methods', default='GET,POST,PUT,DELETE,PATCH', 
               help='HTTP methods to test (comma-separated)')
+@click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
+              help='Max recursion depth for discovery (0 = no recursion). '
+                   'Overrides APILEAK_MAX_DEPTH and the config default (3).')
+@click.option('--recursive/--no-recursive', 'recursive', default=None,
+              help='Enable or disable recursive discovery (default: enabled).')
+@click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
+              help='Global request budget for discovery (default: unbounded).')
+@click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
+              help='Max concurrent in-flight discovery requests (default: 50).')
 @click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
 @click.option('--jwt', help='JWT token to use for authentication')
 @click.option('--response', help='Filter by response codes (e.g., 200,301,404 or 200-300)')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
+@click.option('--match-size', 'match_size', multiple=True, metavar='EXPR',
+              help='Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.')
+@click.option('--match-words', 'match_words', multiple=True, metavar='EXPR',
+              help='Match results whose response word count satisfies EXPR. Repeatable.')
+@click.option('--match-lines', 'match_lines', multiple=True, metavar='EXPR',
+              help='Match results whose response line count satisfies EXPR. Repeatable.')
+@click.option('--match-regex', 'match_regex', multiple=True, metavar='REGEX',
+              help='Match results whose response body matches the regular expression REGEX. Repeatable.')
+@click.option('--match-time', 'match_time', multiple=True, metavar='EXPR',
+              help='Match results whose response time (seconds) satisfies EXPR. Repeatable.')
+@click.option('--filter-size', 'filter_size', multiple=True, metavar='EXPR',
+              help='Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.')
+@click.option('--filter-words', 'filter_words', multiple=True, metavar='EXPR',
+              help='Exclude results whose response word count satisfies EXPR. Repeatable.')
+@click.option('--filter-lines', 'filter_lines', multiple=True, metavar='EXPR',
+              help='Exclude results whose response line count satisfies EXPR. Repeatable.')
+@click.option('--filter-regex', 'filter_regex', multiple=True, metavar='REGEX',
+              help='Exclude results whose response body matches the regular expression REGEX. Repeatable.')
+@click.option('--filter-time', 'filter_time', multiple=True, metavar='EXPR',
+              help='Exclude results whose response time (seconds) satisfies EXPR. Repeatable.')
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during directory fuzzing')
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing during directory discovery')
 @click.option('--save-session', 'save_session', type=click.Path(), help='Save discovery results to a JSON session file (source of truth for reload)')
@@ -557,7 +644,7 @@ def cli(ctx, no_banner):
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
 @click.pass_context
-def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, fuzz_versions, save_session, load_session, export_format, export_file, interactive, ci_mode, proxy, proxy_verify_ssl):
+def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, export_format, export_file, interactive, ci_mode, proxy, proxy_verify_ssl):
     """Directory/endpoint fuzzing - discover hidden endpoints and directories
     
     \b
@@ -581,11 +668,41 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
     
     logger.info("APILeak directory fuzzing starting", version="0.1.0", target=target)
 
+    # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
+    # grammar understood by parse_selectors. Status matching continues to use the
+    # existing --status-code flag, so it is intentionally not included here.
+    match_exprs = (
+        [f"size:{expr}" for expr in match_size]
+        + [f"words:{expr}" for expr in match_words]
+        + [f"lines:{expr}" for expr in match_lines]
+        + [f"regex:{expr}" for expr in match_regex]
+        + [f"time:{expr}" for expr in match_time]
+    )
+    filter_exprs = (
+        [f"size:{expr}" for expr in filter_size]
+        + [f"words:{expr}" for expr in filter_words]
+        + [f"lines:{expr}" for expr in filter_lines]
+        + [f"regex:{expr}" for expr in filter_regex]
+        + [f"time:{expr}" for expr in filter_time]
+    )
+
+    # Parse selectors at CLI parse time so a syntactically invalid expression is
+    # surfaced as a descriptive CLI error and NO Endpoint_Discovery is performed
+    # (Requirement 22.9).
+    try:
+        matchers, filters = parse_selectors(match_exprs, filter_exprs)
+    except SelectorError as exc:
+        logger.error("Invalid response selector expression", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
     # Discovery triage is an additive workflow layered on top of discovery. It is
     # only engaged when the user opts in via a triage flag; otherwise the command
-    # behaves exactly as before and runs the standard enhanced scan.
+    # behaves exactly as before and runs the standard enhanced scan. Supplying a
+    # response matcher/filter also engages triage so the selection takes effect.
     triage_requested = bool(
         save_session or load_session or export_format or export_file or interactive
+        or matchers or filters
     )
 
     if triage_requested:
@@ -601,6 +718,8 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             jwt=jwt,
             response=response,
             status_code=status_code,
+            matchers=matchers,
+            filters=filters,
             detect_framework=detect_framework,
             fuzz_versions=fuzz_versions,
             save_session=save_session,
@@ -649,6 +768,17 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             config_dict['rate_limiting']['requests_per_second'] = rate_limit
         if methods:
             config_dict['fuzzing']['endpoints']['methods'] = [m.strip() for m in methods.split(',')]
+        # Thread discovery recursion / budget / concurrency controls into the
+        # fuzzing config (Requirements 17, 18, 20).
+        config_dict['fuzzing']['max_depth'] = resolve_max_depth(depth)
+        if recursive is not None:
+            config_dict['fuzzing']['recursive'] = recursive
+        if max_requests is not None:
+            config_dict['fuzzing']['max_requests'] = max_requests
+        if concurrency is not None:
+            config_dict['fuzzing']['concurrency'] = concurrency
+        if depth == 0:
+            config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only (17.3)
         if jwt:
             config_dict['authentication']['contexts'][0]['token'] = jwt
             config_dict['authentication']['contexts'][0]['type'] = 'bearer'
@@ -676,19 +806,44 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         sys.exit(1)
 
 
+def _echo_discovery_control_status(core):
+    """Surface discovery recursion-control flags in the discovery summary.
+
+    Reports when the Request_Budget was reached (Requirement 18.5) or when
+    Catch_All_Response behavior was detected (Requirement 19.5). The flags are
+    read defensively via :meth:`APILeakCore.get_discovery_status`, so the
+    summary stays silent unless a flag is set (including before the underlying
+    fuzzer attributes exist).
+    """
+    status = core.get_discovery_status()
+    if status.get("budget_reached"):
+        click.echo(
+            "⚠️  Request budget reached: discovery stopped early, "
+            "results may be partial"
+        )
+    if status.get("catch_all_detected"):
+        click.echo(
+            "⚠️  Catch-all response detected: wildcard endpoints excluded "
+            "from recursive discovery"
+        )
+
+
 async def _discover_endpoints_for_triage(apileak_config):
-    """Run discovery for the triage workflow and return the discovered endpoints.
+    """Run discovery for the triage workflow and return endpoints + soft-404 baseline.
 
     Builds an :class:`APILeakCore`, executes a scan against the configured target
     (in ``dir`` mode no OWASP modules are enabled, so this is effectively the
     endpoint discovery phase), and returns the discovered ``Endpoint`` objects so
-    the caller can project them into :class:`DiscoveryResult` records.
+    the caller can project them into :class:`DiscoveryResult` records, together
+    with the :class:`Soft404Baseline` derived from the catch-all probes (or
+    ``None`` when no baseline was captured).
 
     Args:
         apileak_config: The loaded APILeak configuration.
 
     Returns:
-        The list of discovered ``Endpoint`` objects.
+        A ``(endpoints, soft_404_baseline)`` tuple. ``soft_404_baseline`` is
+        ``None`` when the discovery probes did not yield a single signature.
     """
     core = APILeakCore(apileak_config)
 
@@ -699,7 +854,81 @@ async def _discover_endpoints_for_triage(apileak_config):
         )
 
     await core.run_scan(apileak_config.target.base_url)
-    return core.get_discovered_endpoints()
+    _echo_discovery_control_status(core)
+
+    # Reach the endpoint fuzzer defensively to derive the Soft_404_Baseline from
+    # the catch-all probes that already ran (Requirement 22.5); deriving it issues
+    # no extra requests. Absence of a fuzzer/baseline simply means no soft-404
+    # suppression is applied.
+    orchestrator = getattr(core, "fuzzing_orchestrator", None)
+    fuzzer = getattr(orchestrator, "endpoint_fuzzer", None)
+    soft_404_baseline = calibrate_soft_404(fuzzer) if fuzzer is not None else None
+
+    return core.get_discovered_endpoints(), soft_404_baseline
+
+
+def _select_records(
+    records,
+    *,
+    endpoints=None,
+    matchers,
+    filters,
+    soft_404_baseline,
+):
+    """Apply response selection as a post-discovery projection (Requirement 22).
+
+    Builds in-memory-only :class:`DiscoveryResultEx` views over ``records`` (the
+    persisted :class:`DiscoveryResult` projection is never widened, so the
+    Requirement 14 session round-trip stays intact), applies the matchers and
+    filters conjunctively (Requirements 22.2-22.4), then **independently** drops
+    any record matching the Soft_404_Baseline (Requirements 22.6, 22.8). Returns
+    the retained :class:`DiscoveryResult` records in their original relative
+    order.
+
+    These selections (response matchers/filters and soft-404 noise suppression)
+    narrow the records that feed the table, session, export, and interactive
+    selection. The existing ``Status_Code_Filter`` (Requirement 13) is applied
+    separately as a **display-only** filter by the table renderer and the
+    interactive prompt, so it never omits records from the persisted session or
+    export (Requirement 14.1); the displayed/triaged set therefore still
+    satisfies the status filter, matchers, and filters conjunctively
+    (Requirement 22.7).
+
+    When ``endpoints`` is provided it is aligned positionally with ``records``
+    and supplies each view's response ``size`` and ``elapsed`` from the
+    ``Endpoint``. The discovered ``Endpoint`` does not retain the response body
+    text, so the word/line counts are best-effort ``0`` and the regex predicate
+    sees an empty body. When ``endpoints`` is ``None`` (a reloaded session),
+    those attributes default to ``0`` because the session file does not persist
+    them.
+    """
+    if endpoints is not None:
+        views = [
+            DiscoveryResultEx(
+                result=record,
+                size=getattr(endpoint, "response_size", 0) or 0,
+                words=0,   # Endpoint does not retain the response body text
+                lines=0,   # Endpoint does not retain the response body text
+                elapsed=getattr(endpoint, "response_time", 0.0) or 0.0,
+                text="",
+            )
+            for record, endpoint in zip(records, endpoints)
+        ]
+    else:
+        views = [DiscoveryResultEx(result=record) for record in records]
+
+    # Matchers + filters combine conjunctively (Requirements 22.2-22.4).
+    selected = apply_selectors(views, matchers, filters)
+
+    # Soft-404 suppression is applied independently of the matchers/filters and
+    # of catch-all suppression: a record removed by either mechanism is excluded
+    # (Requirements 22.6, 22.8).
+    if soft_404_baseline is not None:
+        selected = [
+            view for view in selected if not soft_404_baseline.matches(view)
+        ]
+
+    return [view.result for view in selected]
 
 
 def _run_dir_triage(
@@ -715,6 +944,8 @@ def _run_dir_triage(
     jwt,
     response,
     status_code,
+    matchers,
+    filters,
     detect_framework,
     fuzz_versions,
     save_session,
@@ -751,6 +982,8 @@ def _run_dir_triage(
 
         # Source the Discovery_Result records: reload is the source of truth and
         # skips discovery entirely (Requirements 14.6, 14.7, 15.6, 16.5).
+        endpoints = None
+        soft_404_baseline = None
         if load_session:
             session = DiscoverySession.load(load_session)
             records = list(session.results)
@@ -807,9 +1040,27 @@ def _run_dir_triage(
                     click.echo(f"Error: {error}", err=True)
                 sys.exit(1)
 
-            endpoints = asyncio.run(_discover_endpoints_for_triage(apileak_config))
+            endpoints, soft_404_baseline = asyncio.run(
+                _discover_endpoints_for_triage(apileak_config)
+            )
             records = [DiscoveryResult.from_endpoint(endpoint) for endpoint in endpoints]
             logger.info("Projected discovery results", records=len(records))
+
+        # Apply response matchers/filters and soft-404 suppression as a pure
+        # post-discovery projection so the table, session, export, machine
+        # output, and interactive selection all see the already-selected set
+        # (Requirement 22). The Status_Code_Filter stays a display-only filter
+        # (applied by the table/interactive helpers below), so it never omits
+        # records from the persisted session/export (Requirement 14.1). Catch-all
+        # suppression (applied during recursion) and soft-404 suppression remain
+        # independent mechanisms.
+        records = _select_records(
+            records,
+            endpoints=endpoints,
+            matchers=matchers,
+            filters=filters,
+            soft_404_baseline=soft_404_baseline,
+        )
 
         # Render the triage table from in-memory records, applying the filter to
         # the displayed rows (Requirements 15.1-15.5, 15.7).
@@ -1220,6 +1471,15 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
 @click.option('--modules', help='Comma-separated list of OWASP modules to enable')
 @click.option('--rate-limit', type=int, help='Requests per second limit')
+@click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
+              help='Max recursion depth for discovery (0 = no recursion). '
+                   'Overrides APILEAK_MAX_DEPTH and the config default (3).')
+@click.option('--recursive/--no-recursive', 'recursive', default=None,
+              help='Enable or disable recursive discovery (default: enabled).')
+@click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
+              help='Global request budget for discovery (default: unbounded).')
+@click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
+              help='Max concurrent in-flight discovery requests (default: 50).')
 @click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
@@ -1243,7 +1503,7 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
 @click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl):
+def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl):
     """Full comprehensive scan - includes fuzzing and OWASP testing
     
     \b
@@ -1309,6 +1569,17 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
             status_code_filter = parse_status_codes(status_code) if status_code else None
             
             config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on, safe_mode)
+            # Thread discovery recursion / budget / concurrency controls into the
+            # fuzzing config (Requirements 17, 18, 20).
+            config_dict['fuzzing']['max_depth'] = resolve_max_depth(depth)
+            if recursive is not None:
+                config_dict['fuzzing']['recursive'] = recursive
+            if max_requests is not None:
+                config_dict['fuzzing']['max_requests'] = max_requests
+            if concurrency is not None:
+                config_dict['fuzzing']['concurrency'] = concurrency
+            if depth == 0:
+                config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only (17.3)
             apileak_config = config_manager.load_config_from_dict(config_dict)
         
         # When --safe-mode is requested, ensure it is honored even when the
@@ -3329,6 +3600,11 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
         click.echo(f"Target: {target_url}")
         click.echo(f"Scan ID: {results.scan_id}")
         click.echo(f"Duration: {results.performance_metrics.duration}")
+        
+        # Surface discovery recursion-control status (budget reached / catch-all
+        # detected) so the operator sees when discovery was truncated or wildcard
+        # responses were excluded (Requirements 18.5, 19.5).
+        _echo_discovery_control_status(core)
         
         # Get enhanced statistics from findings collector
         if hasattr(results, 'findings_collector') and results.findings_collector:

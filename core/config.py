@@ -82,6 +82,8 @@ class FuzzingConfig:
     recursive: bool = True
     max_depth: int = 3
     response_filter: List[int] = field(default_factory=list)
+    max_requests: Optional[int] = None  # Request_Budget; None = unbounded
+    concurrency: int = 50  # Concurrency_Limit; matches the prior hardcoded batch size
 
 
 @dataclass
@@ -492,7 +494,9 @@ class ConfigurationManager:
             parameters=parameters,
             headers=headers,
             recursive=data.get('recursive', True),
-            max_depth=data.get('max_depth', 3)
+            max_depth=data.get('max_depth', 3),
+            max_requests=data.get('max_requests'),
+            concurrency=data.get('concurrency', 50)
         )
     
     def _build_owasp_config(self, data: Dict[str, Any]) -> OWASPConfig:
