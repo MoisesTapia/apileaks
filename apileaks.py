@@ -28,6 +28,10 @@ from utils.discovery_session import (
     parse_status_filter,
     status_code_class,
 )
+from utils.discovery_checkpoint import (
+    DiscoveryCheckpoint,
+    DiscoveryCheckpointError,
+)
 from modules.fuzzing.orchestrator import normalize_extensions
 from utils.http_client import parse_resolve
 from utils.discovery_export import DiscoveryExportError, write_discovery_export
@@ -1036,6 +1040,8 @@ def cli(ctx, no_banner):
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing during directory discovery')
 @click.option('--save-session', 'save_session', type=click.Path(), help='Save discovery results to a JSON session file (source of truth for reload)')
 @click.option('--load-session', 'load_session', type=click.Path(), help='Reload discovery results exclusively from a JSON session file (skips discovery)')
+@click.option('--checkpoint', 'checkpoint', type=click.Path(), help='Periodically write a discovery checkpoint to PATH so an interrupted run can be resumed (atomic writes)')
+@click.option('--resume', 'resume', type=click.Path(), help='Resume an interrupted discovery run from the discovery checkpoint at PATH (loaded before discovery; combine with --checkpoint to keep checkpointing)')
 @click.option('--export', 'export_format', type=click.Choice(['md', 'txt']), help='Write a human-readable discovery export in the selected format (md or txt)')
 @click.option('--export-file', 'export_file', type=click.Path(), help='Destination path for the human-readable export (extension selects the format)')
 @click.option('--output-format', 'output_format', type=click.Choice(['csv', 'jsonl']), help='Write a machine-readable discovery output in the selected format (csv or jsonl)')
@@ -1090,7 +1096,7 @@ def cli(ctx, no_banner):
                    "list of endpoint types like 'admin,api_version'. Only narrows the default "
                    'recursion; never relaxes it.')
 @click.pass_context
-def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
+def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, checkpoint, resume, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
     """Directory/endpoint fuzzing - discover hidden endpoints and directories
     
     \b
@@ -1201,6 +1207,29 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
         click.echo("No candidates available: no wordlist entries or spec seeds to scan.")
         return
 
+    # Resume from a Discovery_Checkpoint (Requirement 37.2). The checkpoint is
+    # loaded up front, BEFORE any Endpoint_Discovery runs, so a missing,
+    # unreadable, or malformed checkpoint is surfaced as a descriptive CLI error
+    # identifying the artifact and NO discovery is performed (Requirement 37.5).
+    # The loaded checkpoint then seeds the fuzzer so already-tested candidates
+    # are skipped and checkpointed results merge with newly discovered ones
+    # (Requirements 37.3, 37.4). Combine with --checkpoint to keep checkpointing
+    # a resumed run.
+    resume_checkpoint = None
+    if resume:
+        try:
+            resume_checkpoint = DiscoveryCheckpoint.load(resume)
+        except DiscoveryCheckpointError as exc:
+            logger.error("Discovery checkpoint resume error", error=str(exc))
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
+        logger.info(
+            "Resuming discovery from checkpoint",
+            path=resume,
+            tested=len(resume_checkpoint.tested),
+            records=len(resume_checkpoint.results),
+        )
+
     # Discovery triage is an additive workflow layered on top of discovery. It is
     # only engaged when the user opts in via a triage flag; otherwise the command
     # behaves exactly as before and runs the standard enhanced scan. Supplying a
@@ -1252,6 +1281,8 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
             secret_patterns=secret_patterns,
             path_scope=path_scope,
             storage_status=storage_status,
+            checkpoint=checkpoint,
+            resume_checkpoint=resume_checkpoint,
             logger=logger,
         )
         return
@@ -1399,7 +1430,8 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
             ci_mode, apileak_config.fuzzing.max_requests
         )
         asyncio.run(run_enhanced_apileak(
-            apileak_config, discovery_progress=discovery_progress
+            apileak_config, discovery_progress=discovery_progress,
+            checkpoint_path=checkpoint, resume_checkpoint=resume_checkpoint
         ))
         
     except Exception as e:
@@ -1517,7 +1549,7 @@ def _echo_secret_findings(core):
         click.echo(f"   - [{pattern_name}] {location}: {redacted}")
 
 
-async def _discover_endpoints_for_triage(apileak_config, discovery_progress=None):
+async def _discover_endpoints_for_triage(apileak_config, discovery_progress=None, checkpoint_path=None, resume_checkpoint=None):
     """Run discovery for the triage workflow and return endpoints + soft-404 baseline.
 
     Builds an :class:`APILeakCore`, executes a scan against the configured target
@@ -1544,6 +1576,15 @@ async def _discover_endpoints_for_triage(apileak_config, discovery_progress=None
     # endpoint fuzzer can render it (Requirement 32).
     if discovery_progress is not None:
         core.discovery_progress = discovery_progress
+
+    # Attach the resume/checkpoint state (Requirement 37) before discovery runs,
+    # mirroring run_enhanced_apileak: ``checkpoint_path`` enables periodic writes
+    # and ``resume_checkpoint`` (a pre-loaded DiscoveryCheckpoint) seeds the
+    # fuzzer before discovery. Both default to None, leaving discovery unchanged.
+    if checkpoint_path is not None:
+        core.discovery_checkpoint_path = checkpoint_path
+    if resume_checkpoint is not None:
+        core.discovery_resume_checkpoint = resume_checkpoint
 
     health_status = await core.health_check()
     if health_status.get("status") != "healthy":
@@ -1670,6 +1711,8 @@ def _run_dir_triage(
     secret_patterns=None,
     path_scope=None,
     storage_status=None,
+    checkpoint=None,
+    resume_checkpoint=None,
     logger,
 ):
     """Run the discovery triage workflow for the ``dir`` command.
@@ -1799,6 +1842,8 @@ def _run_dir_triage(
                     _build_discovery_progress(
                         ci_mode, apileak_config.fuzzing.max_requests
                     ),
+                    checkpoint_path=checkpoint,
+                    resume_checkpoint=resume_checkpoint,
                 )
             )
             records = [DiscoveryResult.from_endpoint(endpoint) for endpoint in endpoints]
@@ -1949,6 +1994,13 @@ def _run_dir_triage(
     except DiscoverySessionError as exc:
         # Session persistence/reload failures — Requirements 14.2, 14.9, 14.10.
         logger.error("Discovery session error", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except DiscoveryCheckpointError as exc:
+        # Checkpoint write failure during a checkpointed (and possibly resumed)
+        # triage discovery run — Requirement 37.6. The atomic save leaves no
+        # partial file behind; surface the descriptive message as a CLI error.
+        logger.error("Discovery checkpoint error", error=str(exc))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
     except DiscoveryExportError as exc:
@@ -4637,7 +4689,7 @@ def evaluate_severity_gate(counts, fail_on):
     return 1
 
 
-async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseline=None, discovery_progress=None, scope_endpoints=None):
+async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseline=None, discovery_progress=None, scope_endpoints=None, checkpoint_path=None, resume_checkpoint=None):
     """
     Run enhanced APILeak scan with full integration of all components
     
@@ -4670,6 +4722,16 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
     # are harmless.
     if discovery_progress is not None:
         core.discovery_progress = discovery_progress
+
+    # Attach the resume/checkpoint state (Requirement 37) before discovery runs.
+    # ``checkpoint_path`` enables periodic checkpoint writes; ``resume_checkpoint``
+    # is a pre-loaded DiscoveryCheckpoint used to seed the fuzzer before discovery
+    # so already-tested candidates are skipped and results merge. Both are None by
+    # default, leaving discovery unchanged.
+    if checkpoint_path is not None:
+        core.discovery_checkpoint_path = checkpoint_path
+    if resume_checkpoint is not None:
+        core.discovery_resume_checkpoint = resume_checkpoint
     
     # Perform health check
     health_status = await core.health_check()

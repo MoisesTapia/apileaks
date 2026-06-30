@@ -54,7 +54,8 @@ def _mock_endpoints():
     ]
 
 
-async def _fake_discover(_apileak_config, _discovery_progress=None):
+async def _fake_discover(_apileak_config, _discovery_progress=None,
+                         checkpoint_path=None, resume_checkpoint=None):
     """Async stand-in for endpoint discovery returning fixed in-memory endpoints.
 
     Mirrors the ``_discover_endpoints_for_triage`` contract, returning the

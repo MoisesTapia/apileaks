@@ -7,7 +7,26 @@ Complete command-line interface reference for APILeak v0.1.0 - Enterprise API se
 - [Global Options](#global-options)
 - [Commands Overview](#commands-overview)
 - [Directory Fuzzing (`dir`)](#directory-fuzzing-dir)
+  - [Discovery Control Options](#discovery-control-options)
+  - [Proxy Options](#proxy-options)
   - [Discovery Robustness Options](#discovery-robustness-options)
+    - [Seed Inputs and Extensions](#seed-inputs-and-extensions)
+    - [Request Context (Headers, Cookies, Auth)](#request-context-headers-cookies-auth)
+    - [Response Matchers and Filters](#response-matchers-and-filters)
+    - [Method Enumeration and GraphQL](#method-enumeration-and-graphql)
+    - [Per-Request Resilience](#per-request-resilience)
+    - [Transport and TLS](#transport-and-tls)
+    - [Secret and Leak Detection](#secret-and-leak-detection)
+    - [Machine-Readable Output](#machine-readable-output)
+    - [Path and Status Scope (Storage-Time Selection)](#path-and-status-scope-storage-time-selection)
+    - [Recursion Scope](#recursion-scope)
+    - [Hit Confirmation](#hit-confirmation)
+    - [Checkpoint and Resume](#checkpoint-and-resume)
+  - [Discovery Triage Options](#discovery-triage-options)
+  - [Discovery-to-Scan Integration (Batch Scan Scope)](#discovery-to-scan-integration-batch-scan-scope)
+  - [Status Code Filtering](#status-code-filtering)
+  - [Examples](#examples)
+  - [Rate Limiting and User-Agent in Discovery and Triage](#rate-limiting-and-user-agent-in-discovery-and-triage)
 - [Parameter Fuzzing (`par`)](#parameter-fuzzing-par)
 - [Full Security Scan (`full`)](#full-security-scan-full)
 - [JWT Utilities](#jwt-utilities)
@@ -58,6 +77,20 @@ python apileaks.py jwt encode --help
 ## Directory Fuzzing (`dir`)
 
 Discover hidden API endpoints and administrative interfaces.
+
+**Purpose.** The `dir` command performs directory and endpoint fuzzing against a target: it sends candidate paths (from wordlists and/or imported API specs), classifies each discovered endpoint, and optionally recurses into promising paths. On top of raw discovery it layers an opt-in **triage workflow** (status grouping, session persistence, exports, an interactive table) and can feed discovered endpoints straight into an OWASP scan.
+
+**Option groups at a glance:**
+
+| Group | What it controls |
+|-------|------------------|
+| [Discovery Control](#discovery-control-options) | Recursion depth, request budget, and concurrency |
+| [Proxy](#proxy-options) | Routing traffic through an intercepting proxy |
+| [Discovery Robustness](#discovery-robustness-options) | Seeds/extensions, request context, response matchers/filters, method/GraphQL probing, resilience, TLS, secret detection, machine output, storage-time scope, recursion scope, hit confirmation, checkpoint/resume |
+| [Discovery Triage](#discovery-triage-options) | Sessions, exports, and the interactive table |
+| [Discovery-to-Scan Integration](#discovery-to-scan-integration-batch-scan-scope) | Batch-scanning discovered endpoints |
+| [Status Code Filtering](#status-code-filtering) | How `--status-code` is parsed in triage mode |
+| [Rate Limiting and User-Agent](#rate-limiting-and-user-agent-in-discovery-and-triage) | Pacing and identifying discovery requests |
 
 ### Syntax
 
@@ -237,6 +270,64 @@ Secret detection is off by default. When enabled, a response with no matching co
 
 Records are ordered consistently with the triage table, grouped by status class in ascending order. An unsupported format is rejected with a descriptive error and writes no file; a write failure on an unwritable path also errors. This is distinct from `--export`/`--export-file`, which produce a human-readable `md`/`txt` report.
 
+#### Path and Status Scope (Storage-Time Selection)
+
+These options decide which discovered records are ever **persisted**, applied at discovery time as a record is recorded. They are distinct from the display-only `--status-code` filter and the `--match-*`/`--filter-*` selectors, which act on records that have already been stored.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--include-path` | Only persist discovered endpoints whose path **or** URL matches the regular expression. **Repeatable** | - | `--include-path "^/api/"` |
+| `--exclude-path` | Never persist discovered endpoints whose path **or** URL matches the regular expression. **Repeatable**; takes precedence over `--include-path` | - | `--exclude-path "\.png$"` |
+| `--include-status` | Only persist discovered endpoints whose status matches the selection — a status class (`2xx`) or explicit codes/ranges (`200,404` or `200-300`) | - | `--include-status 2xx` |
+| `--exclude-status` | Never persist discovered endpoints whose status matches the selection; takes precedence over `--include-status` | - | `--exclude-status 404` |
+
+**Exclude precedence (path).** A candidate path or URL matching *any* `--exclude-path` pattern is neither tested nor stored, regardless of which `--include-path` patterns it also matches. When one or more `--include-path` patterns are supplied, a candidate must match at least one of them to be kept; with no include patterns, everything not excluded is kept.
+
+**Exclude precedence (status).** A record whose status matches `--exclude-status` is dropped even if it also matches `--include-status`. With no `--include-status`, every status not excluded is kept.
+
+**Storage vs. display.** These are storage-time decisions: a record dropped here never enters the discovery session file (`--save-session`), the machine-readable output (`--output-format`), or the triage table — regardless of any later display-only `--status-code` value. By contrast, `--status-code`, `--match-*`, and `--filter-*` only change which already-stored records are shown.
+
+**Validation.** An `--include-path`/`--exclude-path` value that is not a valid regular expression, or an `--include-status`/`--exclude-status` value that is an explicit code outside `100-599` or a token that is neither a status class nor an explicit code, is rejected with a descriptive error naming the offending value, and no discovery is performed.
+
+#### Recursion Scope
+
+These options narrow which discovered endpoints recursion descends into. They are accepted by both `dir` and `full`. They only ever *narrow* the default VALID/AUTH_REQUIRED recursion eligibility — they never relax it.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--recursion-status` | Restrict recursion to endpoints whose status class is in the comma-separated list of status classes (`2xx,3xx`) | - | `--recursion-status 2xx,3xx` |
+| `--recursion-type` | Restrict recursion to endpoints whose type is in the comma-separated list of endpoint types (`admin`, `api_version`, `authentication`, `development`, `standard`) | - | `--recursion-type admin,api_version` |
+
+Notes:
+
+- When a recursion-scope option is supplied, only discovered records that satisfy *every* supplied selection are recursed into; the set recursed into is always a subset of the records that already satisfy the default recursion eligibility (VALID or AUTH_REQUIRED and not a catch-all response).
+- Recursion still respects `--depth`, `--max-requests` (every recursive request counts toward the budget), `--concurrency`, and catch-all suppression.
+- With no recursion-scope option, the existing recursion behavior is preserved unchanged.
+- A `--recursion-status` status class or `--recursion-type` endpoint type that is not recognized is rejected with a descriptive error naming the value, and no discovery is performed.
+
+#### Hit Confirmation
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--confirm-hits` | Enable Hit_Confirmation: re-request each interesting candidate `N` times and record it only when the responses are consistent (must be `>= 1`) | off | `--confirm-hits 3` |
+
+Hit confirmation is **off by default**. When enabled, each candidate interesting result is re-requested `N` times and is recorded only when the confirmation responses are consistent — meaning they share the same status class and a comparable response body size. Inconsistent (flaky or randomized) responses are not recorded, which reduces false positives. Each confirmation request counts toward `--max-requests`, stays within `--concurrency`, and honors the configured `--rate-limit`. A `--confirm-hits` value that is not an integer `>= 1` is rejected with a descriptive error, and no discovery is performed.
+
+#### Checkpoint and Resume
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--checkpoint` | Periodically write a discovery checkpoint to `PATH` so an interrupted run can be resumed (atomic writes) | - | `--checkpoint scan.ckpt` |
+| `--resume` | Resume an interrupted discovery run from the checkpoint at `PATH` (loaded before discovery) | - | `--resume scan.ckpt` |
+
+Checkpoint/resume contract:
+
+- **Checkpointing.** With `--checkpoint`, discovery periodically writes a checkpoint recording the candidates already tested and the results discovered so far. Writes are atomic (a temporary file is written then moved into place), so a failure never leaves a partially written checkpoint. A checkpoint path that cannot be written is rejected with a descriptive error.
+- **Resuming.** With `--resume`, the checkpoint is loaded *before* any discovery runs. Candidates recorded as already tested are treated as tested and are not re-requested (no-recompute), and the checkpointed results are merged with newly discovered ones so the union contains no two records sharing the same `(url, method)` pair (no-duplication).
+- **Combine them.** Pass both `--resume` and `--checkpoint` to resume a run and keep checkpointing it.
+- **Validation.** A `--resume` checkpoint that does not exist, cannot be read, or cannot be parsed into the expected checkpoint structure is rejected with a descriptive error naming the artifact, and no discovery is performed.
+- **Separate from sessions.** The discovery checkpoint is a distinct artifact from the `--save-session`/`--load-session` session file; it additionally records the in-flight tested candidates and is intended for resuming, not for triage reload.
+
 ### Discovery Triage Options
 
 The triage workflow is an additive layer on top of discovery. It is engaged automatically when you pass any of the flags below; otherwise `dir` behaves exactly as before. Discovered endpoints are projected into `DiscoveryResult` records (URL, method, status code, EndpointStatus) that can be grouped/filtered by status class, rendered as a `rich` table, saved to a structured session file, exported in a human-readable form, and used to drive an opt-in follow-up scan.
@@ -248,6 +339,7 @@ The triage workflow is an additive layer on top of discovery. It is engaged auto
 | `--export` | Write a human-readable export in the selected format (`md` or `txt`) | - | `--export md` |
 | `--export-file` | Destination path for the human-readable export (the extension selects the format) | `reports/discovery_export.<fmt>` | `--export-file results.md` |
 | `--interactive`, `--triage` | Enable interactive triage mode (opt-in; auto-disabled in CI mode) | `false` | `--interactive` |
+| `--scan-scope` | Non-interactively select a batch of discovered records (`2xx`/`3xx`/`4xx`/`5xx`/`valid`/`auth_required`) and run an OWASP scan over them | - | `--scan-scope valid` |
 | `--ci-mode` | Enable CI mode; disables the interactive prompt so it never blocks a pipeline | `false` | `--ci-mode` |
 
 Key behaviors:
@@ -257,6 +349,17 @@ Key behaviors:
 - **Triage table.** Results render in a four-column table — URL, Method, Status, EndpointStatus — grouped by status class in ascending order (`2xx`, `3xx`, `4xx`, `5xx`). An empty/filtered-to-empty result set shows the header row with zero data rows.
 - **Export grouping.** The `.md`/`.txt` export groups records by status class in the same ascending order. Any format other than `.md`/`.txt` is rejected with a descriptive error and writes nothing.
 - **Interactive mode is opt-in and CI-safe.** It is off by default, prompts for exactly one endpoint when enabled, re-prompts on invalid input up to 3 consecutive attempts (then abandons without a scan), and is automatically disabled under `--ci-mode` so it never blocks.
+
+### Discovery-to-Scan Integration (Batch Scan Scope)
+
+Discovery can feed an OWASP scan directly over a set of discovered endpoints, so you don't have to launch a single-endpoint follow-up for each result. The batch scope can be selected interactively or non-interactively.
+
+- **Interactive multi-select.** In interactive triage (`--interactive`), entering two or more record indices — a comma list like `1,3,5` or a range like `2-4` — selects a batch scan scope and runs an OWASP scan over exactly those records. A single index keeps the existing single-endpoint follow-up.
+- **Non-interactive `--scan-scope`.** `--scan-scope <2xx|3xx|4xx|5xx|valid|auth_required>` selects all discovered records of the chosen status class or EndpointStatus (`valid` selects all VALID records, `auth_required` selects all AUTH_REQUIRED records) and runs an OWASP scan over them through the `full` command engine path.
+- **CI-only non-interactive.** Under `--ci-mode` the batch scope is determined *only* from `--scan-scope`; the interactive selection prompt never runs and never blocks the pipeline.
+- **Inherited request settings.** The batch scan applies the same `--rate-limit`, User-Agent option, and `--header`/`--cookie`/`--basic-auth` request context supplied to the originating `dir` invocation.
+- **Empty scope.** If the determined scope is empty (no records match the token, or an empty multi-select), no scan runs and the command reports that there is nothing to scan.
+- **Invalid token.** A `--scan-scope` value that is neither a recognized status class nor a recognized EndpointStatus is rejected with a descriptive error naming the value, and no scan runs.
 
 ### Status Code Filtering
 
@@ -656,6 +759,17 @@ These flags tune recursive discovery so you can trade breadth for speed. They ke
 - `--max-requests` defaults to unbounded; when set, it caps the total number of discovery requests across all depths.
 - `--concurrency` defaults to `50` concurrent in-flight requests when not specified.
 - `--depth` must be `>= 0`; `--max-requests` and `--concurrency` must be `>= 1`.
+
+#### Recursion Scope
+
+The `full` command accepts the same recursion-scope options as `dir` to narrow which discovered endpoints recursion descends into. They only narrow the default VALID/AUTH_REQUIRED recursion; they never relax it.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--recursion-status` | Restrict recursion to endpoints whose status class is in the comma-separated list of status classes (`2xx,3xx`) | - | `--recursion-status 2xx,3xx` |
+| `--recursion-type` | Restrict recursion to endpoints whose type is in the comma-separated list of endpoint types (`admin`, `api_version`, `authentication`, `development`, `standard`) | - | `--recursion-type admin,api_version` |
+
+An unrecognized `--recursion-status` status class or `--recursion-type` endpoint type is rejected with a descriptive error naming the value, and no discovery is performed. See the `dir` command's [Recursion Scope](#recursion-scope) notes for the full behavior.
 
 ### Discovery Robustness Options
 

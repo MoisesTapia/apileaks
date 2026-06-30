@@ -89,6 +89,8 @@ python apileaks.py dir \
   --output endpoint_discovery
 ```
 
+For the complete list of `dir` options (triage, scope, robustness, and batch-scan flags), see the [CLI Reference](cli-reference.md#directory-fuzzing-dir).
+
 ### Parameter Fuzzing
 
 Identify hidden parameters and input validation issues:

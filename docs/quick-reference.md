@@ -16,6 +16,27 @@ python apileaks.py full --target https://api.example.com --jwt YOUR_JWT_TOKEN
 python apileaks.py full --target https://api.example.com --rate-limit 5
 ```
 
+## Endpoint Discovery (`dir`)
+
+```bash
+# Basic directory/endpoint fuzzing
+python apileaks.py dir --target https://api.example.com
+
+# Custom wordlist + gentle rate limit
+python apileaks.py dir --target https://api.example.com \
+  --wordlist wordlists/endpoints.txt --rate-limit 5
+
+# Triage: filter by status class, save a session, export Markdown
+python apileaks.py dir --target https://api.example.com \
+  --status-code 2xx --save-session session.json --export md --export-file results.md
+
+# Reload a saved session and triage interactively (opt-in prompt)
+python apileaks.py dir --target https://api.example.com \
+  --load-session session.json --interactive
+```
+
+Full `dir` option list: [CLI Reference](cli-reference.md#directory-fuzzing-dir).
+
 ## Available Modules
 
 | Code | Module | OWASP | Description |

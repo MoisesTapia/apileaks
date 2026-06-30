@@ -191,12 +191,7 @@ python apileaks.py dir \
   --interactive
 ```
 
-**Notes on rate limiting and User-Agent:**
-
-- **One User-Agent option at a time.** `--user-agent-random`, `--user-agent-custom "<UA>"`, and `--user-agent-file <list.txt>` are mutually exclusive; supplying more than one is rejected with an error and no discovery runs.
-- **`--user-agent-file` format and rotation.** The file is read one User-Agent per line; empty lines and `#` comment lines are skipped, and the remaining strings are rotated in round-robin order across discovery requests.
-- **Reloaded sessions issue no requests.** With `--load-session`, no discovery requests are made, so `--rate-limit` is not applied to that run.
-- **Follow-up inheritance.** The targeted follow-up scan from interactive triage applies the same `--rate-limit` and User-Agent option as the originating `dir` invocation to every request it issues.
+**Notes on rate limiting and User-Agent:** the three User-Agent options are mutually exclusive, `--user-agent-file` rotates one UA per line (blank/`#` lines skipped), reloaded sessions (`--load-session`) issue no requests, and the targeted follow-up scan inherits the originating `--rate-limit` and User-Agent option. See the [CLI Reference](cli-reference.md#rate-limiting-and-user-agent-in-discovery-and-triage) for the full semantics.
 
 ### Discovery Robustness: Seeds, Matchers, Secrets, and Machine Output
 
@@ -310,6 +305,113 @@ python apileaks.py full \
   --retries 3 \
   --depth 2 \
   --modules bola,auth
+```
+
+### Discovery Scope, Integration, and Resilience
+
+These flags scope what discovery persists, narrow recursion, confirm flaky hits, feed discovered endpoints straight into an OWASP scan, and checkpoint/resume long runs. They compose with the discovery-control, robustness, and triage flags above. See the [CLI Reference](cli-reference.md#path-and-status-scope-storage-time-selection) for full semantics.
+
+```bash
+# Storage-time path scope: persist only /api/* endpoints, drop static assets.
+# Exclude takes precedence over include.
+python apileaks.py dir \
+  --target https://api.example.com \
+  --include-path "^/api/" \
+  --exclude-path "\.(png|jpg|css|js)$" \
+  --save-session session.json
+
+# Storage-time status scope: persist only 2xx, drop 404s. Distinct from the
+# display-only --status-code: dropped records never reach the session or output.
+python apileaks.py dir \
+  --target https://api.example.com \
+  --include-status 2xx \
+  --exclude-status 404 \
+  --output-format jsonl \
+  --output-file reports/discovery.jsonl
+
+# Combine storage-time scope with display-only matchers/filters: scope decides
+# what is stored, matchers/filters decide what is shown from the stored set
+python apileaks.py dir \
+  --target https://api.example.com \
+  --include-path "^/api/" \
+  --include-status 2xx \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --save-session session.json
+
+# Recursion scope: only descend into 2xx/3xx admin and api_version endpoints.
+# Only narrows the default VALID/AUTH_REQUIRED recursion; never relaxes it.
+python apileaks.py dir \
+  --target https://api.example.com \
+  --depth 4 \
+  --max-requests 5000 \
+  --recursion-status 2xx,3xx \
+  --recursion-type admin,api_version
+
+# Recursion scope also works on the full scan
+python apileaks.py full \
+  --target https://api.example.com \
+  --depth 3 \
+  --recursion-type admin,api_version \
+  --modules bola,auth
+
+# Hit confirmation: re-request each interesting candidate 3 times and record it
+# only when the responses are consistent (reduces false positives)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --confirm-hits 3 \
+  --rate-limit 5 \
+  --status-code 2xx
+
+# Batch scan scope (non-interactive): discover, then run an OWASP scan over all
+# VALID discovered endpoints. CI-safe — the interactive prompt never runs.
+python apileaks.py dir \
+  --target https://api.example.com \
+  --scan-scope valid \
+  --ci-mode
+
+# Batch scan scope by status class, with request context inherited by the scan
+python apileaks.py dir \
+  --target https://api.example.com \
+  -H "X-API-Key: key123" \
+  --rate-limit 8 \
+  --scan-scope 2xx
+
+# Interactive multi-select: enter "1,3,5" or "2-4" at the prompt to batch-scan
+# those records; a single index keeps the single-endpoint follow-up
+python apileaks.py dir \
+  --target https://api.example.com \
+  --interactive
+
+# Checkpoint a long run so it can be resumed after an interruption (atomic writes)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist wordlists/big.txt \
+  --max-requests 50000 \
+  --checkpoint reports/scan.ckpt
+
+# Resume from the checkpoint and keep checkpointing the resumed run. Already
+# tested candidates are not re-requested; results merge with no duplicates.
+python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist wordlists/big.txt \
+  --resume reports/scan.ckpt \
+  --checkpoint reports/scan.ckpt
+
+# Everything together: storage-time scope + recursion scope + hit confirmation,
+# checkpointed, then batch-scan the VALID endpoints — CI-safe
+python apileaks.py dir \
+  --target https://api.example.com \
+  --include-path "^/api/" \
+  --exclude-path "\.(png|jpg|css|js)$" \
+  --include-status 2xx \
+  --recursion-status 2xx,3xx \
+  --recursion-type admin,api_version \
+  --confirm-hits 2 \
+  --max-requests 20000 \
+  --checkpoint reports/scan.ckpt \
+  --scan-scope valid \
+  --ci-mode
 ```
 
 ## Parameter Fuzzing
@@ -699,55 +801,12 @@ python apileaks.py \
 
 ## Command Options Reference
 
-### Global Options
-- `--no-banner` - Suppress banner output for CI/CD integration
-- `--help` - Show help message and available commands
+The full, authoritative list of options for every command — `dir`, `par`, `full`, and `jwt` — lives in the [CLI Reference](cli-reference.md). For the `dir` command specifically:
 
-### Common Options (Available in all commands)
-- `-t, --target` - Target URL to scan (required)
-- `-o, --output` - Output filename for reports (files saved in reports/ directory)
-- `--log-level` - Logging level: DEBUG, INFO, WARNING, ERROR (default: WARNING)
-- `--log-file` - Log file path (optional)
-- `--json-logs` - Output logs in JSON format for structured logging
-- `--rate-limit` - Requests per second limit (default: 10)
-- `--jwt` - JWT token to use for authentication
-- `--response` - Filter by response codes (e.g., 200,301,404 or 200-300)
-- `--status-code` - Show only HTTP requests with specific status codes
+- [`dir` options overview](cli-reference.md#directory-fuzzing-dir)
+- [Discovery Control](cli-reference.md#discovery-control-options) · [Robustness](cli-reference.md#discovery-robustness-options) · [Triage](cli-reference.md#discovery-triage-options) · [Batch Scan Scope](cli-reference.md#discovery-to-scan-integration-batch-scan-scope)
 
-### WAF Evasion Options (Available in all commands)
-- `--user-agent-random` - Use random User-Agent headers from built-in list
-- `--user-agent-custom "Custom Agent"` - Use a custom User-Agent string
-- `--user-agent-file path/to/file.txt` - Use User-Agent rotation from file
-
-**Note**: Only one user agent option can be used at a time.
-
-### Full Scan Specific Options
-- `-c, --config` - Configuration file path (YAML or JSON) - optional
-- `--modules` - Comma-separated list of OWASP modules to enable
-- `--detect-framework, --df` - Enable framework detection
-- `--fuzz-versions, --fv` - Enable API version fuzzing
-- `--framework-confidence` - Minimum confidence threshold (0.0-1.0, default: 0.6)
-- `--version-patterns` - Custom version patterns for fuzzing
-
-### Directory Fuzzing Specific Options
-- `-w, --wordlist` - Wordlist file for directory fuzzing
-- `--methods` - HTTP methods to test (default: GET,POST,PUT,DELETE,PATCH)
-- `--detect-framework, --df` - Enable framework detection during directory fuzzing
-- `--fuzz-versions, --fv` - Enable API version fuzzing during directory discovery
-
-### Directory Triage Options (dir command)
-- `--save-session PATH` - Save all discovery results to a JSON session file (source of truth for reload)
-- `--load-session PATH` - Reload discovery results exclusively from a JSON session file (skips discovery)
-- `--export md|txt` - Write a human-readable export in the selected format
-- `--export-file PATH` - Destination path for the human-readable export (extension selects the format)
-- `--interactive, --triage` - Enable the opt-in interactive triage prompt (auto-disabled in CI mode)
-- `--ci-mode` - Disable the interactive prompt so it never blocks a pipeline
-- `--status-code` accepts a status class token (`2xx`/`3xx`/`4xx`/`5xx`), explicit codes (`200,404`), or a range (`200-299`)
-
-### Parameter Fuzzing Specific Options
-- `-w, --wordlist` - Wordlist file for parameter fuzzing
-- `--methods` - HTTP methods to test (default: GET,POST)
-- `--detect-framework, --df` - Enable framework detection during parameter fuzzing
+You can also run `python apileaks.py dir --help` for the inline option list.
 
 ## Real-World Scenarios
 

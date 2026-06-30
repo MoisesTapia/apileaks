@@ -13,6 +13,7 @@ from uuid import uuid4
 from .config import APILeakConfig, ConfigurationManager
 from .logging import get_logger, APILeakLogger
 from utils.findings import FindingsCollector, Finding
+from utils.discovery_checkpoint import DiscoveryCheckpointError
 
 
 def _get_status_code_filter(config):
@@ -351,8 +352,20 @@ class APILeakCore:
                 self.config.fuzzing, 
                 http_client,
                 getattr(self.config, 'secret_scan', None),
-                getattr(self, 'discovery_progress', None)
+                getattr(self, 'discovery_progress', None),
+                getattr(self, 'discovery_checkpoint_path', None)
             )
+
+            # Resume seeding (Requirement 37.3, 37.4). When the dir command loaded
+            # a Discovery_Checkpoint up front and stashed it on the core, seed the
+            # freshly built endpoint fuzzer before any discovery runs so already-
+            # tested candidates are skipped and checkpointed results merge with
+            # newly discovered ones.
+            resume_checkpoint = getattr(self, 'discovery_resume_checkpoint', None)
+            if resume_checkpoint is not None:
+                self.fuzzing_orchestrator.endpoint_fuzzer.seed_from_checkpoint(
+                    resume_checkpoint
+                )
         
         # Check if we should do endpoint discovery or just use target for parameter fuzzing
         if self.config.fuzzing.endpoints.enabled:
@@ -366,6 +379,11 @@ class APILeakCore:
                                 valid_endpoints=len([e for e in discovered_endpoints if e.status.value == "valid"]),
                                 auth_required=len([e for e in discovered_endpoints if e.auth_required]))
                 
+            except DiscoveryCheckpointError:
+                # A checkpoint write failure must surface to the dir command as a
+                # descriptive error (Requirement 37.6); never swallow it as an
+                # ordinary discovery failure.
+                raise
             except Exception as e:
                 self.logger.error("Endpoint discovery failed", error=str(e))
                 self.discovered_endpoints = []

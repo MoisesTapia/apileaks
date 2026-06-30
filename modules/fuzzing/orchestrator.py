@@ -8,6 +8,7 @@ import os
 import json
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple, Union
 from dataclasses import dataclass, field
@@ -23,7 +24,8 @@ from utils.secret_scanner import SecretFinding, scan_for_secrets
 from utils.spec_import import normalize_candidate_path
 from utils.url_normalize import normalize_url
 from utils.discovery_progress import DiscoveryProgress
-from utils.discovery_session import status_code_class
+from utils.discovery_session import status_code_class, DiscoveryResult
+from utils.discovery_checkpoint import DiscoveryCheckpoint, DiscoveryCheckpointError
 from utils.graphql_probe import (
     COMMON_GRAPHQL_PATHS,
     INTROSPECTION_QUERY,
@@ -209,7 +211,8 @@ class EndpointFuzzer:
     
     def __init__(self, http_client: HTTPRequestEngine, config: FuzzingConfig,
                  secret_scan_config: Optional[SecretScanConfig] = None,
-                 progress: Optional[DiscoveryProgress] = None):
+                 progress: Optional[DiscoveryProgress] = None,
+                 checkpoint_path: Optional[str] = None):
         self.http_client = http_client
         self.config = config
         self.logger = get_logger(__name__).bind(component="endpoint_fuzzer")
@@ -227,6 +230,21 @@ class EndpointFuzzer:
         self.discovered_endpoints: Dict[str, Endpoint] = {}
         self.tested_urls: Set[str] = set()
         self.wordlist_cache: Dict[str, List[str]] = {}
+
+        # Resume/checkpoint state (Requirement 37). When ``checkpoint_path`` is
+        # set, a checkpoint is written periodically (after each completed
+        # ``_execute_batch`` slice and after each recursion depth) so an
+        # interrupted ``dir`` run can resume without re-requesting (37.1, 37.6).
+        # When None, all checkpoint logic is fully inert. ``_tested_methods``
+        # records the HTTP method that first caused each normalized URL to be
+        # added to ``tested_urls`` so the checkpoint ``tested`` field can carry
+        # ``(normalized url, method)`` pairs; ``tested_urls`` itself remains the
+        # url-keyed dedup set used by ``_fuzz_wordlist``. ``_checkpoint_target``
+        # is the base URL captured when discovery starts, used only as checkpoint
+        # metadata.
+        self.checkpoint_path = checkpoint_path
+        self._tested_methods: Dict[str, str] = {}
+        self._checkpoint_target: str = ""
         
         # Request budget tracking (Request_Budget; None = unbounded discovery)
         self.requests_issued = 0
@@ -304,6 +322,89 @@ class EndpointFuzzer:
             elapsed = 0.0
         self.progress.update(issued=self._progress_issued, elapsed=elapsed)
     
+    def _write_checkpoint(self) -> None:
+        """Atomically persist the current discovery progress to ``checkpoint_path``.
+
+        Captures the current ``tested_urls`` as ``(normalized url, method)`` pairs
+        (the method recorded when each URL was first tested) and the current
+        ``discovered_endpoints`` projected via
+        :meth:`~utils.discovery_session.DiscoveryResult.from_endpoint`, then writes
+        them through :meth:`DiscoveryCheckpoint.save`, whose temp-file +
+        ``os.replace`` discipline guarantees an interruption mid-write never
+        corrupts the checkpoint (Requirement 37.1, 37.6).
+
+        Fully inert when ``checkpoint_path`` is ``None``: it returns immediately
+        without touching the filesystem, so discovery that does not opt into
+        checkpointing is unaffected. A write failure surfaces as
+        :class:`~utils.discovery_checkpoint.DiscoveryCheckpointWriteError`.
+        """
+        if not self.checkpoint_path:
+            return
+
+        # tool_version mirrors the value the dir command stamps onto a
+        # DiscoverySession. Imported lazily to avoid a top-level dependency on the
+        # core package initializer from this module.
+        try:
+            from core import __version__ as tool_version
+        except Exception:  # pragma: no cover - defensive: version is metadata only
+            tool_version = ""
+
+        tested = sorted(
+            (url, self._tested_methods.get(url, "GET")) for url in self.tested_urls
+        )
+        results = [
+            DiscoveryResult.from_endpoint(endpoint)
+            for endpoint in self.discovered_endpoints.values()
+        ]
+
+        checkpoint = DiscoveryCheckpoint(
+            target=self._checkpoint_target,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            tool_version=tool_version,
+            tested=tested,
+            results=results,
+        )
+        checkpoint.save(self.checkpoint_path)
+
+    def seed_from_checkpoint(self, checkpoint: DiscoveryCheckpoint) -> None:
+        """Seed resume state from a loaded :class:`DiscoveryCheckpoint`.
+
+        Pre-populates ``self.tested_urls`` with every checkpoint ``tested`` URL
+        (normalized) so ``_fuzz_wordlist``'s ``if url not in self.tested_urls``
+        guard skips re-issuing any already-tested candidate (Requirement 37.3,
+        no-recompute), and pre-populates ``self.discovered_endpoints`` from the
+        checkpoint ``results`` keyed by normalized URL so resumed discovery
+        merges newly discovered records with the checkpointed ones (Requirement
+        37.4). Because both seeds key on the normalized URL and
+        ``discovered_endpoints`` is url-keyed, the merged result contains no two
+        records sharing the same ``(url, method)`` pair (Requirement 37.7).
+
+        Call before discovery starts. Idempotent re-seeding is safe.
+        """
+        for url, method in checkpoint.tested:
+            normalized = normalize_url(url)
+            self.tested_urls.add(normalized)
+            # Preserve the recorded method so a subsequent checkpoint write
+            # round-trips the (url, method) pair.
+            self._tested_methods.setdefault(normalized, method)
+
+        for result in checkpoint.results:
+            normalized = normalize_url(result.url)
+            # Reconstruct a minimal Endpoint from the projected DiscoveryResult.
+            # Only the triage fields (url, method, status_code) are persisted in a
+            # checkpoint; response size/time/headers are unknown on resume and
+            # default to empty. The status classification is derived from the
+            # status code via Endpoint.status, matching the checkpointed
+            # endpoint_status.
+            self.discovered_endpoints[normalized] = Endpoint(
+                url=normalized,
+                method=result.method,
+                status_code=result.status_code,
+                response_size=0,
+                response_time=0.0,
+                discovered_via="checkpoint",
+            )
+    
     async def discover_endpoints(self, base_url: str, wordlist_path: str) -> List[Endpoint]:
         """
         Discover endpoints using wordlist fuzzing
@@ -346,6 +447,10 @@ class EndpointFuzzer:
         # Normalize base URL
         if not base_url.endswith('/'):
             base_url += '/'
+
+        # Record the (normalized) base URL as the checkpoint target metadata.
+        # No-op effect when checkpointing is disabled.
+        self._checkpoint_target = base_url
         
         # Phase 0: Catch-all / wildcard detection (Requirement 19). Runs before the
         # depth-0 pass so its probes also count toward requests_issued / the budget.
@@ -459,6 +564,10 @@ class EndpointFuzzer:
                     if url not in self.tested_urls:
                         requests.append((method, url, candidate, depth))
                         self.tested_urls.add(url)
+                        # Record the method that first caused this URL to be
+                        # tested so the checkpoint can carry (url, method) pairs
+                        # (Requirement 37.1). Inert when checkpointing is off.
+                        self._tested_methods[url] = method
         
         # Execute requests. Concurrency is now bounded by the asyncio.Semaphore
         # in _test_endpoint (Concurrency_Limit), not by a hardcoded batch size.
@@ -489,7 +598,12 @@ class EndpointFuzzer:
         self._advance_progress(len(requests))
         
         discovered_endpoints = await self._execute_batch(requests)
-        
+
+        # Persist a checkpoint after this completed _execute_batch slice so an
+        # interrupted run can resume without re-requesting (Requirement 37.1).
+        # Atomic and fully inert when checkpointing is disabled.
+        self._write_checkpoint()
+
         # Flag budget exhaustion so recursive fuzzing can short-circuit
         if self.max_requests is not None and self.requests_issued >= self.max_requests:
             self.budget_reached = True
@@ -861,6 +975,9 @@ class EndpointFuzzer:
                 if normalized_location not in self.tested_urls:
                     self.logger.debug("Following redirect", from_url=endpoint.url, to_url=location)
                     self.tested_urls.add(normalized_location)
+                    # Record the method used for the redirect target so the
+                    # checkpoint carries it as a (url, method) pair (Req 37.1).
+                    self._tested_methods[normalized_location] = endpoint.method
                     redirect_endpoint = await self._test_endpoint(endpoint.method, location, "redirect", 0)
                     if redirect_endpoint:
                         redirect_endpoint.discovered_via = "redirect"
@@ -1087,6 +1204,11 @@ class EndpointFuzzer:
             if self.budget_reached:
                 self.logger.debug("Request budget reached during recursive fuzzing", depth=depth)
                 break
+            
+            # Persist a checkpoint after each completed recursion depth so an
+            # interrupted run can resume without re-requesting (Requirement 37.1).
+            # Atomic and fully inert when checkpointing is disabled.
+            self._write_checkpoint()
             
             # Update base endpoints for next depth level
             base_endpoints = [
@@ -1990,7 +2112,8 @@ class FuzzingOrchestrator:
     
     def __init__(self, config: FuzzingConfig, http_client: HTTPRequestEngine,
                  secret_scan_config: Optional[SecretScanConfig] = None,
-                 progress: Optional[DiscoveryProgress] = None):
+                 progress: Optional[DiscoveryProgress] = None,
+                 checkpoint_path: Optional[str] = None):
         """
         Initialize Fuzzing Orchestrator
         
@@ -2004,6 +2127,10 @@ class FuzzingOrchestrator:
                 provided (an enabled instance for an interactive, non-CI, TTY
                 session) the endpoint fuzzer renders live discovery progress;
                 otherwise the fuzzer defaults to a disabled no-op display.
+            checkpoint_path: Optional destination for periodic discovery
+                checkpoints (Requirement 37). When provided it is forwarded to
+                the endpoint fuzzer so an interrupted ``dir`` run can be resumed;
+                ``None`` leaves all checkpoint logic inert.
         """
         self.config = config
         self.http_client = http_client
@@ -2011,7 +2138,9 @@ class FuzzingOrchestrator:
         self.stats = FuzzingStats()
         
         # Initialize specialized fuzzers
-        self.endpoint_fuzzer = EndpointFuzzer(http_client, config, secret_scan_config, progress)
+        self.endpoint_fuzzer = EndpointFuzzer(
+            http_client, config, secret_scan_config, progress, checkpoint_path
+        )
         self.parameter_fuzzer = ParameterFuzzer(http_client, config)
         self.header_fuzzer = HeaderFuzzer(http_client, config)
         
@@ -2055,6 +2184,11 @@ class FuzzingOrchestrator:
             
             return endpoints
             
+        except DiscoveryCheckpointError:
+            # A checkpoint write failure must surface to the dir command as a
+            # descriptive error (Requirement 37.6); never swallow it as an
+            # ordinary discovery failure.
+            raise
         except Exception as e:
             self.logger.error("Endpoint discovery failed", error=str(e))
             return []

@@ -17,7 +17,6 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 
 ### Developer Documentation
 - **[Architecture](architecture.md)** - System architecture and design
-- **[API Reference](api-reference.md)** - Complete API documentation
 - **[Testing Guide](testing.md)** - Testing strategies and guidelines
 - **[Development Setup](development.md)** - Development environment setup
 
@@ -67,7 +66,7 @@ We welcome documentation contributions! See our [Contributing Guide](../CONTRIBU
 
 If you can't find what you're looking for:
 
-1. Check the [Troubleshooting Guide](advanced/troubleshooting.md)
+1. Check the [Troubleshooting Guide](troubleshooting-guide.md)
 2. Search existing [GitHub Issues](https://github.com/your-repo/apileak/issues)
 3. Create a new issue with the `documentation` label
 4. Join our community discussions
