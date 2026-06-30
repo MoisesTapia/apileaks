@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .logging import get_logger
-from .config import APILeakConfig
+from .config import APILeakConfig, Severity
 from utils.findings import FindingsCollector, Finding
 
 
@@ -291,6 +291,13 @@ class EnhancedOrchestrator:
         # Store in execution context
         self.execution_context["discovered_endpoints"] = self.discovered_endpoints
         
+        # Populate fuzzing_results from discovery statistics so the scan results
+        # report endpoint-discovery metrics even when no parameter/header fuzzing
+        # phase runs. The traditional_fuzzing phase later overwrites this with the
+        # full results (including findings) when it executes.
+        if core_engine.scan_results.fuzzing_results is None:
+            core_engine.scan_results.fuzzing_results = core_engine._build_fuzzing_results()
+        
         self.logger.info("Discovery phase completed", 
                         endpoints_found=len(self.discovered_endpoints))
     
@@ -444,8 +451,10 @@ class EnhancedOrchestrator:
         # Delegate to core engine's fuzzing implementation
         fuzzing_results = await core_engine._execute_fuzzing_phase()
         
-        # Store results in execution context
+        # Store results in execution context and on the scan results so the
+        # aggregation phase and reporting can consume them.
         self.execution_context["fuzzing_results"] = fuzzing_results
+        core_engine.scan_results.fuzzing_results = fuzzing_results
         
         self.logger.info("Traditional fuzzing phase completed",
                         findings=len(fuzzing_results.get("findings", [])))
@@ -457,8 +466,10 @@ class EnhancedOrchestrator:
         # Delegate to core engine's OWASP implementation
         owasp_results = await core_engine._execute_owasp_phase()
         
-        # Store results in execution context
+        # Store results in execution context and on the scan results so the
+        # aggregation phase and reporting can consume them.
         self.execution_context["owasp_results"] = owasp_results
+        core_engine.scan_results.owasp_results = owasp_results
         
         self.logger.info("OWASP testing phase completed",
                         modules_executed=len(owasp_results.get("modules_executed", [])),
@@ -487,7 +498,7 @@ class EnhancedOrchestrator:
     async def _execute_cors_analysis(self, target: str) -> None:
         """Execute CORS analysis"""
         try:
-            from modules.advanced.cors_analyzer import CORSAnalyzer
+            from modules.advanced.cors_analyzer import CORSAnalyzer, CORSAnalyzerConfig
             from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
             
             # Create HTTP client
@@ -495,18 +506,37 @@ class EnhancedOrchestrator:
             retry_config = RetryConfig(max_attempts=3, backoff_factor=2.0)
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
             
-            # Initialize CORS analyzer
-            cors_analyzer = CORSAnalyzer(http_client)
+            # Initialize CORS analyzer (requires config + http_client)
+            cors_analyzer = CORSAnalyzer(CORSAnalyzerConfig(), http_client)
             
-            # Analyze CORS policy
-            cors_results = await cors_analyzer.analyze_cors_policy(target)
+            # Analyze CORS policy (expects a list of endpoint URLs)
+            cors_results = await cors_analyzer.analyze_cors_policy([target])
             
-            if cors_results and cors_results.get("findings"):
-                for finding_data in cors_results["findings"]:
-                    self.findings_collector.add_finding(**finding_data)
-                
-                self.logger.info("CORS analysis completed", 
-                               findings=len(cors_results["findings"]))
+            findings_count = 0
+            for endpoint, analysis in (cors_results or {}).items():
+                # A wildcard origin combined with credentials, or any HIGH/CRITICAL
+                # security risk, is a reportable CORS misconfiguration.
+                risk = (analysis.security_risk or "LOW").upper()
+                if analysis.wildcard_origin or risk in ("HIGH", "CRITICAL"):
+                    severity = Severity.HIGH if analysis.credentials_allowed or risk == "CRITICAL" else Severity.MEDIUM
+                    self.findings_collector.add_finding(
+                        category="CORS_MISCONFIGURATION",
+                        severity=severity,
+                        endpoint=endpoint,
+                        method="OPTIONS",
+                        evidence=(
+                            f"CORS risk={risk}, wildcard_origin={analysis.wildcard_origin}, "
+                            f"credentials_allowed={analysis.credentials_allowed}, "
+                            f"dangerous_methods={sorted(analysis.dangerous_methods)}"
+                        ),
+                        recommendation=(
+                            "Restrict Access-Control-Allow-Origin to trusted origins and avoid "
+                            "combining wildcard origins with credentials."
+                        ),
+                    )
+                    findings_count += 1
+            
+            self.logger.info("CORS analysis completed", findings=findings_count)
             
         except ImportError:
             self.logger.warning("CORS analyzer module not available")
@@ -516,7 +546,9 @@ class EnhancedOrchestrator:
     async def _execute_security_headers_analysis(self, target: str) -> None:
         """Execute security headers analysis"""
         try:
-            from modules.advanced.security_headers_analyzer import SecurityHeadersAnalyzer
+            from modules.advanced.security_headers_analyzer import (
+                SecurityHeadersAnalyzer, SecurityHeadersConfig,
+            )
             from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
             
             # Create HTTP client
@@ -524,18 +556,33 @@ class EnhancedOrchestrator:
             retry_config = RetryConfig(max_attempts=3, backoff_factor=2.0)
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
             
-            # Initialize security headers analyzer
-            headers_analyzer = SecurityHeadersAnalyzer(http_client)
+            # Initialize security headers analyzer (requires config + http_client)
+            headers_analyzer = SecurityHeadersAnalyzer(SecurityHeadersConfig(), http_client)
             
-            # Analyze security headers
-            headers_results = await headers_analyzer.analyze_security_headers(target)
+            # Analyze security headers (expects a list of endpoint URLs)
+            headers_results = await headers_analyzer.analyze_security_headers([target])
             
-            if headers_results and headers_results.get("findings"):
-                for finding_data in headers_results["findings"]:
-                    self.findings_collector.add_finding(**finding_data)
-                
-                self.logger.info("Security headers analysis completed", 
-                               findings=len(headers_results["findings"]))
+            findings_count = 0
+            for endpoint, analysis in (headers_results or {}).items():
+                if analysis.missing_headers:
+                    self.findings_collector.add_finding(
+                        category="MISSING_SECURITY_HEADERS",
+                        severity=Severity.MEDIUM,
+                        endpoint=endpoint,
+                        method="GET",
+                        evidence=(
+                            f"Security score={analysis.security_score}/100, "
+                            f"missing_headers={analysis.missing_headers}, "
+                            f"insecure_headers={analysis.insecure_headers}"
+                        ),
+                        recommendation=(
+                            "Add the missing security headers (e.g. Content-Security-Policy, "
+                            "Strict-Transport-Security, X-Content-Type-Options, X-Frame-Options)."
+                        ),
+                    )
+                    findings_count += 1
+            
+            self.logger.info("Security headers analysis completed", findings=findings_count)
             
         except ImportError:
             self.logger.warning("Security headers analyzer module not available")
@@ -545,7 +592,9 @@ class EnhancedOrchestrator:
     async def _execute_subdomain_discovery(self, target: str) -> None:
         """Execute subdomain discovery"""
         try:
-            from modules.advanced.subdomain_discovery import SubdomainDiscovery
+            from modules.advanced.subdomain_discovery import (
+                SubdomainDiscovery, SubdomainDiscoveryConfig,
+            )
             from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
             
             # Create HTTP client
@@ -553,18 +602,27 @@ class EnhancedOrchestrator:
             retry_config = RetryConfig(max_attempts=3, backoff_factor=2.0)
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
             
-            # Initialize subdomain discovery
-            subdomain_discovery = SubdomainDiscovery(http_client)
+            # Initialize subdomain discovery (requires config + http_client)
+            subdomain_discovery = SubdomainDiscovery(SubdomainDiscoveryConfig(), http_client)
             
-            # Discover subdomains
-            subdomains_results = await subdomain_discovery.discover_subdomains(target)
+            # Discover subdomains (expects the target domain string)
+            subdomain_results = await subdomain_discovery.discover_subdomains(target)
             
-            if subdomains_results and subdomains_results.get("findings"):
-                for finding_data in subdomains_results["findings"]:
-                    self.findings_collector.add_finding(**finding_data)
-                
-                self.logger.info("Subdomain discovery completed", 
-                               findings=len(subdomains_results["findings"]))
+            accessible = [r for r in (subdomain_results or []) if getattr(r, "is_accessible", False)]
+            for result in accessible:
+                self.findings_collector.add_finding(
+                    category="SUBDOMAIN_DISCOVERED",
+                    severity=None,  # Auto-classified (informational)
+                    endpoint=result.subdomain,
+                    method="GET",
+                    evidence=(
+                        f"Accessible subdomain discovered: {result.subdomain} "
+                        f"(status={result.status_code}, via={result.discovered_via})"
+                    ),
+                    recommendation="Review whether this subdomain should be publicly accessible.",
+                )
+            
+            self.logger.info("Subdomain discovery completed", findings=len(accessible))
             
         except ImportError:
             self.logger.warning("Subdomain discovery module not available")

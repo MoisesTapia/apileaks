@@ -5,7 +5,9 @@ PyYAML>=6.0
 click>=8.1.0
 
 # HTTP Client Dependencies
-httpx>=0.24.0
+# The [socks] extra pulls in socksio so discovery can route through a
+# socks5://user:pass@host:port proxy supplied via --proxy (Requirement 29.5).
+httpx[socks]>=0.24.0
 aiohttp>=3.8.0
 requests>=2.31.0
 

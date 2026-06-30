@@ -5,6 +5,7 @@ Tests universal properties using Hypothesis for comprehensive coverage
 
 import pytest
 import json
+import re
 import uuid
 from unittest.mock import AsyncMock, Mock
 from datetime import datetime
@@ -379,11 +380,11 @@ class TestPropertyLevelAuthProperties:
                 assert result is True, f"API key pattern should be detected: {value}"
             
             # Property: Email patterns should be detected
-            if '@' in value and '.' in value.split('@')[-1]:
-                # Simple email check - if it looks like an email, should be detected
-                parts = value.split('@')
-                if len(parts) == 2 and '.' in parts[1]:
-                    assert result is True, f"Email pattern should be detected: {value}"
+            # Use a proper email shape (local + domain label + 2+ char alpha TLD)
+            # consistent with the detector's regex, so non-emails like "00@."
+            # are not falsely expected to match.
+            if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', value):
+                assert result is True, f"Email pattern should be detected: {value}"
             
             # Property: SSN patterns should be detected
             if len(value) == 11 and value[3] == '-' and value[6] == '-':

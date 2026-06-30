@@ -7,6 +7,7 @@ Complete command-line interface reference for APILeak v0.1.0 - Enterprise API se
 - [Global Options](#global-options)
 - [Commands Overview](#commands-overview)
 - [Directory Fuzzing (`dir`)](#directory-fuzzing-dir)
+  - [Discovery Robustness Options](#discovery-robustness-options)
 - [Parameter Fuzzing (`par`)](#parameter-fuzzing-par)
 - [Full Security Scan (`full`)](#full-security-scan-full)
 - [JWT Utilities](#jwt-utilities)
@@ -123,10 +124,118 @@ These flags tune recursive discovery so you can trade breadth for speed. They ke
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
-| `--proxy` | Route all HTTP traffic through an intercepting proxy (Burp/Caido/Hetty) | - | `--proxy http://127.0.0.1:8080` |
+| `--proxy` | Route all HTTP traffic through an intercepting proxy (Burp/Caido/Hetty). Also accepts a SOCKS5 URL, optionally with auth | - | `--proxy http://127.0.0.1:8080` |
 | `--proxy-verify-ssl` | Keep TLS verification on when proxying (after installing the proxy CA) | `false` | `--proxy-verify-ssl` |
 
+> **SOCKS5 dependency.** Routing through a SOCKS5 proxy (e.g. `--proxy socks5://user:pass@host:port`) requires the optional `httpx[socks]` extra to be installed (`pip install "httpx[socks]"`). Without it, SOCKS5 URLs are rejected by the underlying HTTP client. Plain `http://`/`https://` proxies need no extra dependency.
+
 See [Proxy Integration](#proxy-integration) for details.
+
+### Discovery Robustness Options
+
+These flags harden and broaden discovery: they widen the candidate set (seeds and extensions), attach request context (headers/cookies/auth), refine which results are kept (response matchers/filters), enumerate methods and GraphQL surfaces, control per-request resilience and transport/TLS, scan responses for secrets, and emit machine-readable output. Unless noted otherwise these options apply to the `dir` command. The shared options `-x`/`--extensions`, `--timeout`, and `--retries` are also accepted by the `full` command.
+
+#### Seed Inputs and Extensions
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--wordlist`, `-w` | Wordlist file for discovery. **Repeatable**; values are merged and de-duplicated after normalization. Pass `-` to read entries from stdin (empty lines and `#` comment lines are skipped) | `wordlists/endpoints.txt` | `-w a.txt -w b.txt` / `cat list.txt \| ... -w -` |
+| `--openapi` | OpenAPI/Swagger document (JSON or YAML) to seed discovery from. **Repeatable** | - | `--openapi api.yaml` |
+| `--postman` | Postman collection to seed discovery from. **Repeatable** | - | `--postman collection.json` |
+| `--extensions`, `-x` | File extensions appended to each wordlist entry (comma-separated, **repeatable**). Leading dots are optional, so `-x json,php` and `-x .json -x .php` are equivalent. Also available on `full` | - | `-x json,php` |
+
+Notes:
+
+- Repeated `--wordlist` values and `--openapi`/`--postman` seeds are merged into a single candidate set with no duplicate normalized paths. If the merged candidate set is empty, the command completes without issuing any request and reports that no candidates were available.
+- An unparseable OpenAPI/Postman source is rejected with a descriptive error and no discovery is performed.
+- Each extension expands a wordlist entry into the original entry plus one candidate per distinct normalized extension (so `W` entries with `E` distinct extensions produce `W × (E + 1)` candidates per method). Every expanded candidate counts toward `--max-requests` and stays within `--concurrency`.
+
+#### Request Context (Headers, Cookies, Auth)
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--header`, `-H` | Custom header applied to every discovery request, in `"Name: Value"` format. **Repeatable** | - | `-H "X-API-Key: key123"` |
+| `--cookie` | Raw `Cookie` header string applied to every discovery request | - | `--cookie "session=abc123"` |
+| `--basic-auth` | HTTP Basic credentials as `user:pass`, sent as an `Authorization` header on every discovery request | - | `--basic-auth admin:secret` |
+
+Notes:
+
+- These request-context settings are carried into the targeted follow-up scan launched from interactive triage.
+- `--basic-auth` and `--jwt` are mutually exclusive; supplying both is rejected with a descriptive error and no discovery runs.
+- A `--basic-auth` value without a `:` separating user and password is rejected with a descriptive error and no discovery runs.
+- When `--load-session` reloads a prior session, no requests are issued, so none of these options are applied to that run.
+
+#### Response Matchers and Filters
+
+Matchers keep only results that satisfy them; filters exclude results that satisfy them. When both are present, matchers are applied first and filters are applied to the retained set. They compose conjunctively with `--status-code`. All of these options are **repeatable**.
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--match-size` | Keep results whose response body size (bytes) satisfies the expression | `--match-size >100` |
+| `--match-words` | Keep results whose response word count satisfies the expression | `--match-words 10-20` |
+| `--match-lines` | Keep results whose response line count satisfies the expression | `--match-lines <50` |
+| `--match-regex` | Keep results whose response body matches the regular expression | `--match-regex "api_key"` |
+| `--match-time` | Keep results whose response time (seconds) satisfies the expression | `--match-time >2` |
+| `--filter-size` | Exclude results whose response body size (bytes) satisfies the expression | `--filter-size 0` |
+| `--filter-words` | Exclude results whose response word count satisfies the expression | `--filter-words <5` |
+| `--filter-lines` | Exclude results whose response line count satisfies the expression | `--filter-lines 1` |
+| `--filter-regex` | Exclude results whose response body matches the regular expression | `--filter-regex "Not Found"` |
+| `--filter-time` | Exclude results whose response time (seconds) satisfies the expression | `--filter-time >10` |
+
+**Expression forms.** Numeric attributes (`size`, `words`, `lines`, `time`) accept `>N`, `<N`, an inclusive range `N-M`, or an exact value `N`. The `regex` attributes take a regular expression matched against the response body. A syntactically invalid expression (an unparseable regex or a non-numeric bound) is rejected with a descriptive error and no discovery is performed. A soft-404 baseline is derived automatically and matching noise is suppressed independently of these selectors.
+
+#### Method Enumeration and GraphQL
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--enumerate-methods` | After discovering an endpoint, issue an `OPTIONS` request and record the methods parsed from the `Allow` header. An absent/empty `Allow` records an empty set; a `405` marks the path valid under a different method | `false` | `--enumerate-methods` |
+| `--graphql` | Probe common GraphQL paths and report whether introspection is enabled (read-only introspection query). No finding is recorded when no GraphQL endpoint is found | `false` | `--graphql` |
+
+Both are off by default, and each extra request they issue counts toward `--max-requests` and stays within `--concurrency`.
+
+#### Per-Request Resilience
+
+These options apply to both `dir` and `full`.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--timeout` | Per-request timeout in seconds applied to every discovery request (must be `> 0`) | `10` | `--timeout 30` |
+| `--retries` | Number of automatic retries for each failed discovery request (must be `>= 0`) | `2` | `--retries 5` |
+
+A request exceeding `--timeout` is abandoned and retried up to `--retries`. A `429` response triggers automatic throttle/backoff that continues to honor the configured rate limit and concurrency. An invalid `--timeout` (not a positive number) or `--retries` (not a non-negative integer) is rejected with a descriptive error and no discovery is performed.
+
+#### Transport and TLS
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--client-cert` | Client certificate for mutual TLS, presented on every request. A combined `cert+key` PEM path, or a `cert:key` pair of paths | - | `--client-cert client.pem` |
+| `--ca-bundle` | Custom CA bundle used to verify target certificates for every request | - | `--ca-bundle ca.pem` |
+| `--allow-cross-domain-redirects` | Follow redirects to other domains. By default discovery follows redirects only to the originating request's domain | `false` | `--allow-cross-domain-redirects` |
+| `--resolve` | Override DNS resolution for a host to a given IP for every request, expressed as `host:ip` | - | `--resolve api.example.com:127.0.0.1` |
+
+Notes:
+
+- A `--client-cert` or `--ca-bundle` path that does not exist or cannot be read is rejected with a descriptive error naming the path, and no discovery is performed.
+- A `--resolve` value not expressed as `host:ip` is rejected with a descriptive error naming the value, and no discovery is performed.
+- SOCKS5 proxies are supplied through the existing `--proxy` flag and require the `httpx[socks]` extra (see the Proxy Options note above).
+
+#### Secret and Leak Detection
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--detect-secrets` | Scan each discovery response body and headers for secrets/leaked credentials (read-only). Matched values are redacted in output | `false` | `--detect-secrets` |
+| `--secret-patterns` | Path to a JSON file mapping pattern names to regex strings used for secret detection. Defaults to the built-in patterns when omitted | built-in patterns | `--secret-patterns patterns.json` |
+
+Secret detection is off by default. When enabled, a response with no matching content yields no finding; a match is tagged to the endpoint whose response contained it, with the matched value redacted.
+
+#### Machine-Readable Output
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--output-format` | Write a machine-readable discovery output in the selected format (`csv` or `jsonl`) | - | `--output-format jsonl` |
+| `--output-file` | Destination path for the machine-readable output (the extension selects the format) | - | `--output-file results.jsonl` |
+
+Records are ordered consistently with the triage table, grouped by status class in ascending order. An unsupported format is rejected with a descriptive error and writes no file; a write failure on an unwritable path also errors. This is distinct from `--export`/`--export-file`, which produce a human-readable `md`/`txt` report.
 
 ### Discovery Triage Options
 
@@ -547,6 +656,18 @@ These flags tune recursive discovery so you can trade breadth for speed. They ke
 - `--max-requests` defaults to unbounded; when set, it caps the total number of discovery requests across all depths.
 - `--concurrency` defaults to `50` concurrent in-flight requests when not specified.
 - `--depth` must be `>= 0`; `--max-requests` and `--concurrency` must be `>= 1`.
+
+### Discovery Robustness Options
+
+The `full` command shares the discovery seed and per-request resilience controls described in detail under the `dir` command's [Discovery Robustness Options](#discovery-robustness-options). The following are accepted by `full`:
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--extensions`, `-x` | File extensions appended to each wordlist entry (comma-separated, repeatable; leading dots optional) | - | `-x json,php` |
+| `--timeout` | Per-request timeout in seconds applied to every discovery request (must be `> 0`) | `10` | `--timeout 30` |
+| `--retries` | Number of automatic retries for each failed discovery request (must be `>= 0`) | `2` | `--retries 5` |
+
+Invalid `--timeout` or `--retries` values are rejected with a descriptive error before any discovery runs. The richer request-context, response-matcher/filter, GraphQL, transport/TLS, secret-detection, and machine-readable-output options are specific to the `dir` command.
 
 ### CI/CD Integration
 

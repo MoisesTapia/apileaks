@@ -7,14 +7,34 @@ import os
 import yaml
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pydantic import BaseModel, ValidationError, validator
 from enum import Enum
 
 from .logging import get_logger
 
+if TYPE_CHECKING:
+    # Imported under TYPE_CHECKING only to avoid a circular import at module
+    # load time: importing the ``utils`` package runs ``utils/__init__.py``,
+    # which imports ``utils.http_client`` -> ``core.config`` (this module). The
+    # ``path_scope``/``storage_status`` fields below default to ``None`` and are
+    # populated later by the CLI (subtask 38.4), so no runtime import is needed.
+    from utils.discovery_scope import PathScope, RecursionScope, StorageStatusSelection
+
 logger = get_logger(__name__)
+
+
+def _default_secret_patterns() -> "Dict[str, str]":
+    """Return a copy of the built-in secret patterns (Requirement 30.6).
+
+    Imported lazily inside the factory to avoid a circular import at module
+    load time: ``utils`` package initialization imports ``utils.http_client``,
+    which imports from ``core.config``. Deferring the import until a
+    :class:`SecretScanConfig` is actually instantiated breaks that cycle.
+    """
+    from utils.secret_scanner import DEFAULT_SECRET_PATTERNS
+    return dict(DEFAULT_SECRET_PATTERNS)
 
 
 class Severity(str, Enum):
@@ -51,6 +71,33 @@ class EndpointFuzzingConfig:
     wordlist: str = "wordlists/endpoints.txt"
     methods: List[str] = field(default_factory=lambda: ["GET", "POST", "PUT", "DELETE"])
     follow_redirects: bool = True
+    # Cross-domain redirect scope (Requirement 29.3). When False (the default),
+    # discovery follows redirects only to the same domain as the originating
+    # request, preserving the existing same-domain behavior. When True
+    # (--allow-cross-domain-redirects), cross-domain redirect targets are also
+    # followed.
+    allow_cross_domain_redirects: bool = False
+    extensions: List[str] = field(default_factory=list)
+    # Method_Enumeration (Requirement 26). When enabled, an OPTIONS Discovery_Request
+    # is issued for each discovered endpoint and its ``Allow`` response header is
+    # parsed into the endpoint's allowed_methods. Disabled by default (26.1).
+    enumerate_methods: bool = False
+    # GraphQL endpoint discovery (Requirement 27). When enabled, common GraphQL
+    # paths are probed against the base URL and, on detecting a GraphQL endpoint,
+    # a read-only introspection query is issued to report whether introspection
+    # is enabled. Disabled by default (27.1). The introspection query is a single
+    # read-only operation (no mutation) so it remains Safe_Mode compatible (27.5).
+    graphql: bool = False
+    # In-memory merged candidate set (Spec_Import seeds + wordlist entries). When
+    # not None, discovery uses these candidates directly instead of loading the
+    # single ``wordlist`` file (Requirement 25.3/25.4). An empty list means no
+    # candidates are available and discovery issues no Discovery_Request
+    # (Requirement 25.7). None preserves the backward-compatible single-file path.
+    candidate_set: Optional[List[str]] = None
+    # Per-candidate HTTP methods contributed by Spec_Import seeds, keyed by the
+    # normalized candidate path. These extend the per-path method set for spec
+    # seeds; brute-force entries keep ``methods`` (Requirement 25.3).
+    seed_methods: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,6 +121,21 @@ class HeaderFuzzingConfig:
 
 
 @dataclass
+class HitConfirmationConfig:
+    """Hit_Confirmation: re-request interesting candidates to reduce false
+    positives (Requirement 35).
+
+    Opt-in step in which Endpoint_Discovery re-requests each candidate
+    interesting result ``count`` additional times and records it as a
+    Discovery_Result only when the responses are consistent across the
+    confirmation requests. ``enabled=False`` (the default) preserves the
+    existing single-request behavior (Requirement 35.1).
+    """
+    enabled: bool = False
+    count: int = 1
+
+
+@dataclass
 class FuzzingConfig:
     """Fuzzing configuration"""
     endpoints: EndpointFuzzingConfig = field(default_factory=EndpointFuzzingConfig)
@@ -84,6 +146,31 @@ class FuzzingConfig:
     response_filter: List[int] = field(default_factory=list)
     max_requests: Optional[int] = None  # Request_Budget; None = unbounded
     concurrency: int = 50  # Concurrency_Limit; matches the prior hardcoded batch size
+    # Retry_Limit (Requirement 28). The number of automatic retries for a single
+    # failed Discovery_Request. RetryConfig counts total attempts, so the engine
+    # uses max_attempts = retries + 1 (the initial attempt plus the retries).
+    # Defaults to 2 retries (3 attempts), preserving the prior hardcoded behavior.
+    retries: int = 2
+    # Discovery scope selections (Requirement 33). These are runtime selection
+    # objects (not plain config primitives) compiled from CLI flags and populated
+    # later by the CLI (subtask 38.4); they default to None so the keys always
+    # exist on the config object.
+    #   path_scope: Path_Scope include/exclude regex selection (33.1-33.4).
+    #   storage_status: Storage_Status_Selection include/exclude status selection
+    #     applied at storage time (33.5, 33.6).
+    path_scope: "Optional[PathScope]" = None
+    storage_status: "Optional[StorageStatusSelection]" = None
+    # Recursion_Scope selection (Requirement 34). Optional runtime selection
+    # object compiled from CLI flags (--recursion-status/--recursion-type) that
+    # only ever narrows recursion eligibility, never relaxes it (34.3, 34.4).
+    # Defaults to None so the key always exists on the config object and recursion
+    # uses its default eligibility when no scope is supplied.
+    recursion_scope: "Optional[RecursionScope]" = None
+    # Hit_Confirmation selection (Requirement 35). Off by default so discovery
+    # keeps its existing single-request behavior (35.1); when enabled, interesting
+    # candidates are re-requested ``count`` times and only recorded when the
+    # responses are consistent (35.2-35.6).
+    hit_confirmation: HitConfirmationConfig = field(default_factory=HitConfirmationConfig)
 
 
 @dataclass
@@ -319,6 +406,22 @@ class HTTPOutputConfig:
 
 
 @dataclass
+class SecretScanConfig:
+    """Secret/leak detection configuration (Requirement 30).
+
+    Opt-in scanning of discovery response bodies and headers for secrets and
+    sensitive data. Disabled by default (Requirement 30.1). ``patterns`` is a
+    configurable name -> regex map (Requirement 30.6); it defaults to
+    :data:`DEFAULT_SECRET_PATTERNS` so enabling detection without supplying a
+    custom pattern file uses the built-in high-signal patterns.
+    """
+    enabled: bool = False
+    patterns: Dict[str, str] = field(
+        default_factory=_default_secret_patterns
+    )
+
+
+@dataclass
 class APILeakConfig:
     """Main APILeak configuration"""
     target: TargetConfig
@@ -330,9 +433,21 @@ class APILeakConfig:
     advanced_discovery: AdvancedDiscoveryConfig = field(default_factory=AdvancedDiscoveryConfig)
     http_output: HTTPOutputConfig = field(default_factory=HTTPOutputConfig)
     ci_cd_integration: CICDIntegrationConfig = field(default_factory=CICDIntegrationConfig)
+    secret_scan: SecretScanConfig = field(default_factory=SecretScanConfig)
     safe_mode: bool = False
     proxy: Optional[str] = None
     proxy_verify_ssl: bool = False
+    # Transport/TLS options for discovery (Requirement 29). These are threaded
+    # into the discovery HTTPRequestEngine construction.
+    #   client_cert: mTLS client certificate. A path string, or a (cert, key)
+    #     tuple when the CLI supplies the cert:key form (29.1).
+    #   ca_bundle: custom CA bundle path used to verify target certificates;
+    #     overrides the boolean verify only when supplied (29.2).
+    #   resolve: a (host, ip) DNS override applied to every Discovery_Request
+    #     for the named host (29.4).
+    client_cert: Optional[Union[str, Tuple[str, str]]] = None
+    ca_bundle: Optional[str] = None
+    resolve: Optional[Tuple[str, str]] = None
 
 
 class ConfigurationManager:
@@ -459,6 +574,9 @@ class ConfigurationManager:
             ci_cd_data = config_data.get('ci_cd_integration', {})
             ci_cd_integration = CICDIntegrationConfig(**ci_cd_data)
             
+            secret_scan_data = config_data.get('secret_scan', {})
+            secret_scan = self._build_secret_scan_config(secret_scan_data)
+            
             return APILeakConfig(
                 target=target,
                 fuzzing=fuzzing,
@@ -469,9 +587,13 @@ class ConfigurationManager:
                 advanced_discovery=advanced_discovery,
                 http_output=http_output,
                 ci_cd_integration=ci_cd_integration,
+                secret_scan=secret_scan,
                 safe_mode=config_data.get('safe_mode', False),
                 proxy=config_data.get('proxy'),
-                proxy_verify_ssl=config_data.get('proxy_verify_ssl', False)
+                proxy_verify_ssl=config_data.get('proxy_verify_ssl', False),
+                client_cert=config_data.get('client_cert'),
+                ca_bundle=config_data.get('ca_bundle'),
+                resolve=config_data.get('resolve')
             )
             
         except Exception as e:
@@ -488,7 +610,20 @@ class ConfigurationManager:
         
         headers_data = data.get('headers', {})
         headers = HeaderFuzzingConfig(**headers_data)
-        
+
+        # Hit_Confirmation (Requirement 35). Defaults to disabled; when present
+        # in the config dict it is built from the supplied mapping so it can be
+        # threaded in by the CLI (subtask 40.3) via
+        # ``config_dict['fuzzing']['hit_confirmation']``. Accept either a prebuilt
+        # HitConfirmationConfig or a plain dict.
+        hit_confirmation_data = data.get('hit_confirmation')
+        if isinstance(hit_confirmation_data, HitConfirmationConfig):
+            hit_confirmation = hit_confirmation_data
+        elif hit_confirmation_data:
+            hit_confirmation = HitConfirmationConfig(**hit_confirmation_data)
+        else:
+            hit_confirmation = HitConfirmationConfig()
+
         return FuzzingConfig(
             endpoints=endpoints,
             parameters=parameters,
@@ -496,9 +631,37 @@ class ConfigurationManager:
             recursive=data.get('recursive', True),
             max_depth=data.get('max_depth', 3),
             max_requests=data.get('max_requests'),
-            concurrency=data.get('concurrency', 50)
+            concurrency=data.get('concurrency', 50),
+            retries=data.get('retries', 2),
+            # Runtime selection objects threaded in by the CLI (subtask 38.4):
+            # the parsed Path_Scope / Storage_Status_Selection objects flow
+            # through ``config_dict['fuzzing']['path_scope']`` /
+            # ``['storage_status']`` so they reach the EndpointFuzzer's
+            # FuzzingConfig. Both default to None when absent so the keys always
+            # exist on the config object (Requirements 33.1-33.7).
+            path_scope=data.get('path_scope'),
+            storage_status=data.get('storage_status'),
+            # Recursion_Scope selection threaded in by the CLI; defaults to None
+            # when absent so recursion uses its default eligibility (Req 34.3, 34.4).
+            recursion_scope=data.get('recursion_scope'),
+            # Hit_Confirmation built above; defaults to disabled (Req 35.1, 35.6).
+            hit_confirmation=hit_confirmation
         )
     
+    def _build_secret_scan_config(self, data: Dict[str, Any]) -> SecretScanConfig:
+        """Build secret/leak detection configuration from dict (Requirement 30).
+
+        ``enabled`` defaults to ``False`` (Requirement 30.1). When ``patterns``
+        is omitted or empty, the built-in :data:`DEFAULT_SECRET_PATTERNS` are
+        used via the dataclass default factory (Requirement 30.6); a supplied
+        non-empty name -> regex map overrides them.
+        """
+        enabled = data.get('enabled', False)
+        patterns = data.get('patterns')
+        if patterns:
+            return SecretScanConfig(enabled=enabled, patterns=dict(patterns))
+        return SecretScanConfig(enabled=enabled)
+
     def _build_owasp_config(self, data: Dict[str, Any]) -> OWASPConfig:
         """Build OWASP configuration from dict"""
         return OWASPConfig(

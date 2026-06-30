@@ -41,6 +41,22 @@ def _get_proxy_settings(config):
     return proxy, verify_ssl
 
 
+def _get_retry_settings(config):
+    """Resolve RetryConfig.max_attempts from the configured Retry_Limit.
+
+    The user-supplied Retry_Limit (``--retries``) is the number of automatic
+    retries for a single failed Discovery_Request (Requirement 28.2/28.3).
+    RetryConfig counts total attempts, so max_attempts = Retry_Limit + 1 (the
+    initial attempt plus the retries). Defaults to 2 retries (3 attempts) when
+    not configured, preserving the prior hardcoded behavior.
+
+    Returns:
+        The resolved ``max_attempts`` integer (always >= 1).
+    """
+    retries = getattr(config.fuzzing, 'retries', 2)
+    return retries + 1
+
+
 @dataclass
 class ScanStatistics:
     """Scan execution statistics"""
@@ -120,12 +136,19 @@ class APILeakCore:
                         target=config.target.base_url,
                         enabled_modules=config.owasp_testing.enabled_modules)
     
-    async def run_scan(self, target: str) -> ScanResults:
+    async def run_scan(self, target: str, scope_endpoints: Optional[List[Any]] = None) -> ScanResults:
         """
         Execute complete APILeak scan with enhanced orchestration
         
         Args:
             target: Target URL to scan
+            scope_endpoints: Optional pre-selected discovered records
+                (``DiscoveryResult`` objects carrying ``url``, ``method`` and
+                ``status_code``) used to seed discovery for a Batch_Scan_Scope.
+                When a non-empty set is provided, wordlist discovery is skipped
+                and the OWASP phase consumes exactly the seeded endpoints
+                (Requirements 36.3, 36.8). ``None`` or an empty set preserves the
+                normal wordlist-driven discovery behavior.
             
         Returns:
             Complete scan results
@@ -139,6 +162,10 @@ class APILeakCore:
         
         if not target:
             raise ValueError("Target URL is required")
+        
+        # Stash the optional Batch_Scan_Scope seed so the discovery phase (invoked
+        # by the orchestrator without extra arguments) can consume it.
+        self._scope_endpoints = scope_endpoints
         
         self.is_running = True
         start_time = datetime.now()
@@ -204,9 +231,58 @@ class APILeakCore:
         finally:
             self.is_running = False
     
-    async def _execute_discovery_phase(self, target: str) -> None:
-        """Execute endpoint discovery phase"""
+    async def _execute_discovery_phase(self, target: str, scope_endpoints: Optional[List[Any]] = None) -> None:
+        """Execute endpoint discovery phase.
+
+        Args:
+            target: Target URL to scan.
+            scope_endpoints: Optional pre-selected discovered records
+                (``DiscoveryResult`` objects exposing ``url``, ``method`` and
+                ``status_code``). When a non-empty set is provided (directly or
+                via the seed stashed on ``run_scan``), wordlist discovery is
+                skipped and ``self.discovered_endpoints`` is set directly to
+                synthetic ``Endpoint`` objects reconstructed from the selected
+                records so the OWASP phase consumes exactly the seeded set
+                (Requirements 36.3, 36.8).
+        """
         self.logger.debug("Executing endpoint discovery phase")
+        
+        # Resolve the Batch_Scan_Scope seed: the explicit argument wins, falling
+        # back to the seed stashed by run_scan (the orchestrator invokes this
+        # method without extra arguments).
+        if scope_endpoints is None:
+            scope_endpoints = getattr(self, '_scope_endpoints', None)
+        
+        # When a non-empty scope is provided, skip wordlist discovery entirely and
+        # seed discovered_endpoints from the selected records. Each record is
+        # reconstructed into a synthetic Endpoint carrying url/method/status_code;
+        # the Endpoint.status classification derives from status_code via the
+        # existing Endpoint.status property (Requirements 36.3, 36.8).
+        if scope_endpoints:
+            from modules.fuzzing.orchestrator import Endpoint
+            
+            seeded_endpoints = []
+            for record in scope_endpoints:
+                endpoint = Endpoint(
+                    url=record.url,
+                    method=record.method,
+                    status_code=record.status_code,
+                    response_size=0,
+                    response_time=0.0,
+                    discovered_via="scope",
+                    endpoint_type="scope_seed",
+                )
+                # Mirror the discovery-time auth_required flag so the OWASP phase
+                # sees the same classification a real discovery would produce.
+                if endpoint.status_code in (401, 403):
+                    endpoint.auth_required = True
+                seeded_endpoints.append(endpoint)
+            
+            self.discovered_endpoints = seeded_endpoints
+            
+            self.logger.info("Discovery phase seeded from scope endpoints",
+                            endpoints_seeded=len(self.discovered_endpoints))
+            return
         
         # Initialize fuzzing orchestrator if not already done
         if not hasattr(self, 'fuzzing_orchestrator'):
@@ -216,7 +292,7 @@ class APILeakCore:
             # Create HTTP client for fuzzing
             rate_limiter = RateLimiter(self.config.rate_limiting)
             retry_config = RetryConfig(
-                max_attempts=3,
+                max_attempts=_get_retry_settings(self.config),
                 backoff_factor=2.0,
                 retry_on_status=[429, 502, 503, 504]
             )
@@ -238,7 +314,22 @@ class APILeakCore:
             status_code_filter = _get_status_code_filter(self.config)
             
             proxy, verify_ssl = _get_proxy_settings(self.config)
-            http_client = HTTPRequestEngine(rate_limiter, retry_config, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
+            # Forward operator-supplied discovery headers and the --cookie string
+            # (carried in HeaderFuzzingConfig.custom_headers) as engine-level
+            # default headers so they are applied to every Discovery_Request
+            # (Requirements 24.2, 24.3). User-Agent stays managed by the rotator.
+            discovery_headers = {
+                k: v for k, v in headers_config.custom_headers.items()
+                if k.lower() != 'user-agent'
+            }
+            # Transport/TLS options for discovery (Requirement 29): mTLS client
+            # cert (29.1), custom CA bundle (29.2), and the --resolve DNS override
+            # (29.4) are read off the config and threaded into the engine so they
+            # apply to every Discovery_Request.
+            client_cert = getattr(self.config, 'client_cert', None)
+            ca_bundle = getattr(self.config, 'ca_bundle', None)
+            resolve = getattr(self.config, 'resolve', None)
+            http_client = HTTPRequestEngine(rate_limiter, retry_config, timeout=self.config.target.timeout, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy, default_headers=discovery_headers, cert=client_cert, ca_bundle=ca_bundle, resolve=resolve)
 
             # Wire configured authentication contexts into the discovery HTTP
             # client so that --jwt (and other auth contexts) are applied to
@@ -258,7 +349,9 @@ class APILeakCore:
             # Create fuzzing orchestrator
             self.fuzzing_orchestrator = FuzzingOrchestrator(
                 self.config.fuzzing, 
-                http_client
+                http_client,
+                getattr(self.config, 'secret_scan', None),
+                getattr(self, 'discovery_progress', None)
             )
         
         # Check if we should do endpoint discovery or just use target for parameter fuzzing
@@ -360,6 +453,40 @@ class APILeakCore:
                 "findings": []
             }
     
+    def _build_fuzzing_results(self, findings: Optional[List[Any]] = None,
+                               parameter_details: Optional[List[Any]] = None) -> dict:
+        """Build a fuzzing-results dict from the current orchestrator statistics.
+
+        Used to populate ``scan_results.fuzzing_results`` in the enhanced
+        orchestration path. Endpoint discovery already updates the orchestrator
+        statistics (endpoints_tested, total_requests, success_rate, ...), so this
+        can be called after the discovery phase even when no parameter/header
+        fuzzing runs.
+        """
+        if not hasattr(self, 'fuzzing_orchestrator'):
+            return {
+                "endpoints_tested": 0,
+                "endpoints_discovered": 0,
+                "parameters_tested": 0,
+                "headers_tested": 0,
+                "total_requests": 0,
+                "success_rate": 0.0,
+                "findings": findings or [],
+                "parameter_details": parameter_details or [],
+            }
+
+        stats = self.fuzzing_orchestrator.get_fuzzing_statistics()
+        return {
+            "endpoints_tested": stats.endpoints_tested,
+            "endpoints_discovered": stats.endpoints_discovered,
+            "parameters_tested": stats.parameters_tested,
+            "headers_tested": stats.headers_tested,
+            "total_requests": stats.total_requests,
+            "success_rate": stats.success_rate,
+            "findings": findings or [],
+            "parameter_details": parameter_details or [],
+        }
+
     async def _execute_owasp_phase(self) -> Any:
         """Execute OWASP specialized testing phase"""
         self.logger.debug("Executing OWASP testing phase")
@@ -444,7 +571,7 @@ class APILeakCore:
             
             rate_limiter = RateLimiter(self.config.rate_limiting)
             retry_config = RetryConfig(
-                max_attempts=3,
+                max_attempts=_get_retry_settings(self.config),
                 backoff_factor=2.0,
                 retry_on_status=[429, 502, 503, 504]
             )
@@ -466,7 +593,7 @@ class APILeakCore:
             status_code_filter = _get_status_code_filter(self.config)
             
             proxy, verify_ssl = _get_proxy_settings(self.config)
-            http_client = HTTPRequestEngine(rate_limiter, retry_config, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
+            http_client = HTTPRequestEngine(rate_limiter, retry_config, timeout=self.config.target.timeout, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
             
             # Get authentication contexts
             auth_contexts = self.config.authentication.contexts
@@ -558,7 +685,7 @@ class APILeakCore:
             
             rate_limiter = RateLimiter(self.config.rate_limiting)
             retry_config = RetryConfig(
-                max_attempts=3,
+                max_attempts=_get_retry_settings(self.config),
                 backoff_factor=2.0,
                 retry_on_status=[429, 502, 503, 504]
             )
@@ -580,7 +707,7 @@ class APILeakCore:
             status_code_filter = _get_status_code_filter(self.config)
             
             proxy, verify_ssl = _get_proxy_settings(self.config)
-            http_client = HTTPRequestEngine(rate_limiter, retry_config, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
+            http_client = HTTPRequestEngine(rate_limiter, retry_config, timeout=self.config.target.timeout, verify_ssl=verify_ssl, user_agent_rotator=user_agent_rotator, status_code_filter=status_code_filter, proxy=proxy)
             
             # Create advanced discovery configuration
             subdomain_config = SubdomainDiscoveryConfig(
@@ -786,25 +913,69 @@ class APILeakCore:
         """
         return self.discovered_endpoints.copy()
     
-    def get_discovery_status(self) -> Dict[str, bool]:
+    def get_discovery_status(self) -> Dict[str, Any]:
         """
         Get discovery recursion-control status flags from the endpoint fuzzer.
         
         Surfaces ``budget_reached`` (the Request_Budget was reached and discovery
-        stopped early) and ``catch_all_detected`` (Catch_All_Response behavior was
-        detected). The flags are read defensively and default to ``False`` so the
+        stopped early), ``catch_all_detected`` (Catch_All_Response behavior was
+        detected), and ``graphql_introspection_endpoint`` (the URL of a detected
+        GraphQL endpoint with introspection enabled, or ``None``; Requirement 27).
+        The values are read defensively and default to ``False``/``None`` so the
         accessor is safe to call even when no discovery ran or when the underlying
         fuzzer attributes are not present.
         
         Returns:
-            Dictionary with ``budget_reached`` and ``catch_all_detected`` booleans.
+            Dictionary with ``budget_reached`` and ``catch_all_detected`` booleans
+            and the ``graphql_introspection_endpoint`` URL (or ``None``).
         """
         orchestrator = getattr(self, 'fuzzing_orchestrator', None)
         fuzzer = getattr(orchestrator, 'endpoint_fuzzer', None)
         return {
             "budget_reached": bool(getattr(fuzzer, 'budget_reached', False)),
             "catch_all_detected": bool(getattr(fuzzer, 'catch_all_detected', False)),
+            "graphql_introspection_endpoint": getattr(
+                fuzzer, 'graphql_introspection_endpoint', None
+            ),
         }
+    
+    def get_secret_findings(self) -> List[Any]:
+        """Return redacted secret findings collected during discovery.
+
+        Surfaces the :class:`SecretFinding` records accumulated by the endpoint
+        fuzzer when secret detection is enabled (Requirement 30). The fuzzer and
+        its findings list are read defensively, so this returns an empty list
+        when discovery has not run, secret detection was disabled, or no match
+        was found (Requirement 30.7). Each finding's matched value is already
+        redacted (Requirement 30.4).
+        """
+        orchestrator = getattr(self, 'fuzzing_orchestrator', None)
+        fuzzer = getattr(orchestrator, 'endpoint_fuzzer', None)
+        return list(getattr(fuzzer, 'secret_findings', []) or [])
+    
+    def get_fuzzing_stats(self) -> Optional[Any]:
+        """Return the fuzzing/discovery execution statistics, or ``None``.
+
+        Surfaces the :class:`FuzzingStats` object accumulated by the fuzzing
+        orchestrator during discovery (endpoints tested/discovered, total
+        requests, success rate, recursion depth reached; Requirement 31.3). The
+        orchestrator and its statistics are read defensively, so this returns
+        ``None`` when discovery has not run or the orchestrator is not present,
+        keeping callers safe to invoke even when no discovery occurred.
+
+        Returns:
+            The current ``FuzzingStats`` object, or ``None`` when unavailable.
+        """
+        orchestrator = getattr(self, 'fuzzing_orchestrator', None)
+        if orchestrator is None:
+            return None
+        getter = getattr(orchestrator, 'get_fuzzing_statistics', None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:  # noqa: BLE001 - defensive: never break the summary
+            return None
     
     def get_scan_status(self) -> Dict[str, Any]:
         """

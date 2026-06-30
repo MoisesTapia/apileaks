@@ -25,6 +25,13 @@ class TestCoreEngineFindingsIntegration:
             fuzzing=FuzzingConfig(),
             owasp_testing=OWASPConfig(enabled_modules=["bola", "auth"])
         )
+        # Disable the security-analysis sub-features so that phase is skipped.
+        # This test mocks the discovery/fuzzing/OWASP phases to control findings;
+        # leaving CORS/headers/subdomain analysis enabled would make real network
+        # calls and add non-deterministic findings.
+        self.config.advanced_discovery.cors_analysis = False
+        self.config.advanced_discovery.security_headers = False
+        self.config.advanced_discovery.subdomain_discovery = False
         self.core = APILeakCore(self.config)
     
     def test_core_engine_initialization_with_findings_collector(self):

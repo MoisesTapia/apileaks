@@ -179,6 +179,78 @@ def test_positive_depth_threads_max_depth_and_keeps_recursive(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Extension_Set threading (Requirement 23.1)
+# ---------------------------------------------------------------------------
+
+def _invoke_full_capturing_config(args):
+    """Invoke the ``full`` command and capture the threaded ``config_dict``.
+
+    Mirrors ``_invoke_dir_capturing_config`` for the ``full`` command, which also
+    threads the Extension_Set into ``config_dict['fuzzing']['endpoints']`` before
+    handing the dict to ConfigurationManager.load_config_from_dict.
+    """
+    captured = {}
+
+    def _capture(self, config_dict):
+        captured["config_dict"] = config_dict
+        raise _ShortCircuit()
+
+    runner = CliRunner()
+    with patch.object(
+        apileaks.ConfigurationManager, "load_config_from_dict", _capture
+    ):
+        runner.invoke(
+            cli,
+            ["--no-banner", "full", "--target", "https://api.example.com", *args],
+        )
+    return captured.get("config_dict")
+
+
+def test_dir_extensions_comma_separated_threaded_and_normalized():
+    """``dir -x`` accepts a comma-separated value, normalized into the config.
+
+    **Validates: Requirements 23.1**
+    """
+    config_dict = _invoke_dir_capturing_config(["-x", "json,php"])
+
+    assert config_dict is not None
+    assert config_dict["fuzzing"]["endpoints"]["extensions"] == [".json", ".php"]
+
+
+def test_dir_extensions_repeatable_and_deduplicated():
+    """Repeated ``-x`` flags are flattened, normalized and de-duplicated.
+
+    **Validates: Requirements 23.1**
+    """
+    config_dict = _invoke_dir_capturing_config(["-x", ".json", "-x", "json,php"])
+
+    assert config_dict is not None
+    assert config_dict["fuzzing"]["endpoints"]["extensions"] == [".json", ".php"]
+
+
+def test_dir_extensions_absent_defaults_to_empty():
+    """Without ``-x`` the threaded Extension_Set is empty (no expansion).
+
+    **Validates: Requirements 23.1**
+    """
+    config_dict = _invoke_dir_capturing_config([])
+
+    assert config_dict is not None
+    assert config_dict["fuzzing"]["endpoints"]["extensions"] == []
+
+
+def test_full_extensions_comma_separated_threaded_and_normalized():
+    """``full -x`` threads a normalized Extension_Set into the fuzzing config.
+
+    **Validates: Requirements 23.1**
+    """
+    config_dict = _invoke_full_capturing_config(["--extensions", "json,.php"])
+
+    assert config_dict is not None
+    assert config_dict["fuzzing"]["endpoints"]["extensions"] == [".json", ".php"]
+
+
+# ---------------------------------------------------------------------------
 # Discovery summary flags (Requirements 18.5, 19.5)
 # ---------------------------------------------------------------------------
 
@@ -259,7 +331,11 @@ def test_get_discovery_status_reads_fuzzer_flags():
 
     status = APILeakCore.get_discovery_status(fake_self)
 
-    assert status == {"budget_reached": True, "catch_all_detected": True}
+    assert status == {
+        "budget_reached": True,
+        "catch_all_detected": True,
+        "graphql_introspection_endpoint": None,
+    }
 
 
 def test_get_discovery_status_defaults_false_without_fuzzer():
@@ -271,4 +347,8 @@ def test_get_discovery_status_defaults_false_without_fuzzer():
 
     status = APILeakCore.get_discovery_status(fake_self)
 
-    assert status == {"budget_reached": False, "catch_all_detected": False}
+    assert status == {
+        "budget_reached": False,
+        "catch_all_detected": False,
+        "graphql_introspection_endpoint": None,
+    }

@@ -6,6 +6,7 @@ Coordinates traditional fuzzing operations for endpoints, parameters, and header
 import asyncio
 import os
 import json
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple, Union
@@ -15,9 +16,106 @@ from enum import Enum
 from uuid import uuid4
 
 from core.logging import get_logger
-from core.config import FuzzingConfig, Severity
+from core.config import FuzzingConfig, SecretScanConfig, Severity
 from utils.http_client import HTTPRequestEngine, Response
 from utils.findings import Finding, FindingsCollector
+from utils.secret_scanner import SecretFinding, scan_for_secrets
+from utils.spec_import import normalize_candidate_path
+from utils.url_normalize import normalize_url
+from utils.discovery_progress import DiscoveryProgress
+from utils.discovery_session import status_code_class
+from utils.graphql_probe import (
+    COMMON_GRAPHQL_PATHS,
+    INTROSPECTION_QUERY,
+    is_graphql_response,
+    introspection_enabled,
+)
+
+
+def normalize_extensions(raw: List[str]) -> List[str]:
+    """
+    Normalize a list of raw extension strings into canonical form.
+
+    Each extension is lower-cased, stripped of surrounding whitespace, and
+    given exactly one leading dot (e.g. both ``json`` and ``.json`` normalize
+    to ``.json``). Blank entries are dropped and duplicates are removed while
+    preserving first-seen order.
+
+    Args:
+        raw: Raw extension strings (with or without leading dots).
+
+    Returns:
+        Normalized, de-duplicated extensions, each with a single leading dot.
+    """
+    normalized: List[str] = []
+    seen: Set[str] = set()
+
+    for item in raw or []:
+        if item is None:
+            continue
+        cleaned = str(item).strip().lower()
+        if not cleaned:
+            continue
+        # Collapse any leading dots into exactly one.
+        cleaned = "." + cleaned.lstrip(".")
+        # A value consisting solely of dots becomes "." which has no extension.
+        if cleaned == ".":
+            continue
+        if cleaned not in seen:
+            seen.add(cleaned)
+            normalized.append(cleaned)
+
+    return normalized
+
+
+def expand_candidates(word: str, extensions: List[str]) -> List[str]:
+    """
+    Expand a single discovery word into candidate words with extensions.
+
+    Returns the bare ``word`` followed by ``word + ext`` for each distinct
+    extension. When ``extensions`` is empty, only ``[word]`` is returned.
+
+    Args:
+        word: The base discovery word.
+        extensions: Normalized extensions to append (see ``normalize_extensions``).
+
+    Returns:
+        List of candidate words, always beginning with the bare ``word``.
+    """
+    candidates: List[str] = [word]
+    for ext in normalize_extensions(extensions):
+        candidates.append(f"{word}{ext}")
+    return candidates
+
+
+def parse_allow_header(value: Optional[str]) -> List[str]:
+    """
+    Parse an HTTP ``Allow`` response header into supported method tokens.
+
+    Splits the comma-separated header into upper-cased, whitespace-trimmed
+    method tokens, dropping blanks and de-duplicating while preserving
+    first-seen order. An absent (``None``) or empty/whitespace-only header
+    yields an empty list (Method_Enumeration, Requirement 26.6).
+
+    Args:
+        value: Raw ``Allow`` header value, or ``None`` when the header is absent.
+
+    Returns:
+        Upper-cased, de-duplicated HTTP method tokens (``[]`` when none).
+    """
+    if not value:
+        return []
+
+    methods: List[str] = []
+    seen: Set[str] = set()
+    for token in str(value).split(","):
+        method = token.strip().upper()
+        if not method:
+            continue
+        if method not in seen:
+            seen.add(method)
+            methods.append(method)
+    return methods
 
 
 class EndpointStatus(str, Enum):
@@ -43,6 +141,10 @@ class Endpoint:
     discovered_via: str = "wordlist"  # wordlist, recursive, redirect
     endpoint_type: str = "standard"   # standard, admin, api_version, etc.
     redirect_location: Optional[str] = None
+    # Enumerated HTTP methods from an OPTIONS Allow header (Method_Enumeration,
+    # Requirement 26). Populated only when enumerate_methods is enabled; an absent
+    # or empty Allow header leaves this as an empty list (Requirement 26.6).
+    allowed_methods: List[str] = field(default_factory=list)
     
     @property
     def status(self) -> EndpointStatus:
@@ -98,10 +200,28 @@ class EndpointFuzzer:
     # Catch_All_Response behavior (Requirement 19.1).
     CATCH_ALL_PROBES = 3
     
-    def __init__(self, http_client: HTTPRequestEngine, config: FuzzingConfig):
+    # Relative tolerance applied when comparing confirmation response body sizes
+    # for Hit_Confirmation consistency (Requirement 35.3). Two body sizes are
+    # "comparable" when their difference is within this fraction of the larger
+    # size, allowing for minor, benign body variation (timestamps, request ids)
+    # between otherwise-identical responses.
+    HIT_CONFIRMATION_SIZE_TOLERANCE = 0.05
+    
+    def __init__(self, http_client: HTTPRequestEngine, config: FuzzingConfig,
+                 secret_scan_config: Optional[SecretScanConfig] = None,
+                 progress: Optional[DiscoveryProgress] = None):
         self.http_client = http_client
         self.config = config
         self.logger = get_logger(__name__).bind(component="endpoint_fuzzer")
+        
+        # Secret/leak detection configuration (Requirement 30). When None or
+        # disabled, discovery responses are not scanned. When enabled, each
+        # discovery response body and headers are scanned against the configured
+        # Secret_Patterns and any matches are accumulated as redacted
+        # SecretFinding records tagged to the originating endpoint. The scan is
+        # pure/read-only so it stays Safe_Mode compatible (Requirement 30.5).
+        self.secret_scan_config = secret_scan_config
+        self.secret_findings: List[SecretFinding] = []
         
         # Discovery state
         self.discovered_endpoints: Dict[str, Endpoint] = {}
@@ -112,6 +232,22 @@ class EndpointFuzzer:
         self.requests_issued = 0
         self.budget_reached = False
         self.max_requests = config.max_requests
+        
+        # Live progress display (Progress_Display, Requirement 32). Defaults to a
+        # disabled no-op so discovery can report progress unconditionally; the
+        # dir command supplies an enabled instance only for an interactive,
+        # non-CI, TTY session (gated exactly like the interactive triage prompt).
+        self.progress = progress or DiscoveryProgress(
+            enabled=False, total=config.max_requests
+        )
+        # Count of Discovery_Requests issued for the Progress_Display. Tracked
+        # separately from ``requests_issued`` (which stays budget-only and is not
+        # advanced when discovery is unbounded) so the display reports the issued
+        # count in both bounded and unbounded discovery (Requirement 32.5).
+        self._progress_issued = 0
+        # Monotonic timestamp captured when discovery starts, used to compute the
+        # elapsed time and rate reported by the Progress_Display.
+        self._discovery_started_at: Optional[float] = None
         
         # Concurrency limit (Concurrency_Limit). The semaphore caps the number of
         # in-flight Discovery_Requests so they never exceed self.concurrency.
@@ -134,11 +270,39 @@ class EndpointFuzzer:
         # responses to agree on a single (status, size, words) signature.
         self.soft_404_signature: Optional[Tuple[int, int, int]] = None
         
+        # GraphQL endpoint discovery state (Requirement 27). When GraphQL probing
+        # is enabled and a GraphQL endpoint is detected with introspection turned
+        # on, ``graphql_introspection_endpoint`` records that endpoint's URL so the
+        # dir command can surface a GRAPHQL_INTROSPECTION_ENABLED finding tagged to
+        # it (27.4). It stays None when GraphQL probing is disabled, no GraphQL
+        # endpoint is found, or introspection is not enabled (27.6).
+        self.graphql_introspection_endpoint: Optional[str] = None
+        
         self.logger.info("Endpoint Fuzzer initialized",
                         recursive=config.recursive,
                         max_depth=config.max_depth,
                         max_requests=config.max_requests,
                         concurrency=self.concurrency)
+    
+    def _advance_progress(self, count: int) -> None:
+        """Advance the live Progress_Display by ``count`` issued requests.
+
+        A no-op unless the Progress_Display is enabled (interactive, non-CI,
+        TTY — Requirements 32.3, 32.4), so it is cheap to call from every
+        request-issuing path. When enabled, it advances the dedicated
+        ``_progress_issued`` counter (which tracks issued requests for the
+        display in both bounded and unbounded discovery, Requirement 32.5) and
+        refreshes the display with the issued count, current rate, budget figures,
+        elapsed time, and ETA (Requirement 32.2).
+        """
+        if not self.progress.enabled:
+            return
+        self._progress_issued += count
+        if self._discovery_started_at is not None:
+            elapsed = max(time.monotonic() - self._discovery_started_at, 0.0)
+        else:
+            elapsed = 0.0
+        self.progress.update(issued=self._progress_issued, elapsed=elapsed)
     
     async def discover_endpoints(self, base_url: str, wordlist_path: str) -> List[Endpoint]:
         """
@@ -155,11 +319,29 @@ class EndpointFuzzer:
                         base_url=base_url,
                         wordlist=wordlist_path)
         
-        # Load wordlist
-        wordlist = await self._load_wordlist(wordlist_path)
-        if not wordlist:
-            self.logger.error("Failed to load wordlist", path=wordlist_path)
-            return []
+        # Mark the discovery start so the Progress_Display can report elapsed time
+        # and request rate (Requirement 32.2). Harmless when the display is
+        # disabled.
+        self._discovery_started_at = time.monotonic()
+        
+        # Prefer an in-memory merged candidate set when one was supplied via the
+        # configuration (Spec_Import seeds + one or more wordlists/stdin merged by
+        # the CLI, Requirements 25.3/25.4). Otherwise fall back to loading the
+        # single wordlist file, preserving the backward-compatible default path.
+        candidate_set = getattr(self.config.endpoints, "candidate_set", None)
+        if candidate_set is not None:
+            wordlist = list(candidate_set)
+            if not wordlist:
+                # An empty merged candidate set yields no Discovery_Request
+                # (Requirement 25.7); the CLI surfaces the user-facing message.
+                self.logger.info("No candidates available; skipping discovery")
+                return []
+        else:
+            # Load wordlist
+            wordlist = await self._load_wordlist(wordlist_path)
+            if not wordlist:
+                self.logger.error("Failed to load wordlist", path=wordlist_path)
+                return []
         
         # Normalize base URL
         if not base_url.endswith('/'):
@@ -168,6 +350,16 @@ class EndpointFuzzer:
         # Phase 0: Catch-all / wildcard detection (Requirement 19). Runs before the
         # depth-0 pass so its probes also count toward requests_issued / the budget.
         await self._detect_catch_all(base_url)
+        
+        # Phase 0.5: GraphQL endpoint discovery (Requirement 27). When enabled,
+        # probe common GraphQL paths and, on detection, issue a read-only
+        # introspection query. Probes flow through the same semaphore +
+        # http_client.request path as every other Discovery_Request, so they count
+        # toward the Request_Budget and respect the Concurrency_Limit. Disabled by
+        # default (27.1); a non-GraphQL target records no finding and continues
+        # discovery without error (27.6).
+        if getattr(self.config.endpoints, "graphql", False):
+            await self._probe_graphql(base_url)
         
         # Phase 1: Initial wordlist fuzzing
         initial_endpoints = await self._fuzz_wordlist(base_url, wordlist, depth=0)
@@ -179,6 +371,10 @@ class EndpointFuzzer:
         # Convert to list and sort by URL
         discovered = list(self.discovered_endpoints.values())
         discovered.sort(key=lambda e: e.url)
+        
+        # Tear down the live Progress_Display now that discovery is complete.
+        # No-op when the display was disabled (Requirements 32.3, 32.4).
+        self.progress.stop()
         
         self.logger.info("Endpoint discovery completed",
                         total_discovered=len(discovered),
@@ -218,14 +414,51 @@ class EndpointFuzzer:
         """Fuzz endpoints using wordlist"""
         self.logger.debug("Fuzzing wordlist", base_url=base_url, words=len(wordlist), depth=depth)
         
-        # Create requests for all word/method combinations
+        # Create requests for all word/method combinations. Each word is first
+        # expanded into candidate words (the bare word plus word+extension for
+        # each configured extension, Requirements 23.2/23.7) so extension-bearing
+        # candidates are generated here, before the budget-trim and semaphore
+        # dispatch below. This keeps every expanded candidate counted toward the
+        # Request_Budget and bounded by the Concurrency_Limit.
         requests = []
+        seed_methods = getattr(self.config.endpoints, "seed_methods", None) or {}
+        # Path_Scope selection (Requirement 33.1-33.4). When configured, a
+        # candidate excluded by the scope is dropped here, BEFORE it is added to
+        # tested_urls, dispatched, or counted toward the Request_Budget below, so
+        # an excluded candidate consumes no budget and issues no Discovery_Request
+        # (Requirements 33.2, 33.3, 33.4).
+        path_scope = self.config.path_scope
         for word in wordlist:
-            for method in self.config.endpoints.methods:
-                url = urljoin(base_url, word)
-                if url not in self.tested_urls:
-                    requests.append((method, url, word, depth))
-                    self.tested_urls.add(url)
+            # Brute-force entries keep config.endpoints.methods; Spec_Import seeds
+            # extend that per-path method set with the methods declared for the
+            # seed's path (Requirement 25.3). The dedup below is keyed by URL, so
+            # this preserves the existing per-path dispatch behavior for
+            # brute-force entries while making the spec-derived methods part of
+            # the candidate's method set.
+            methods = list(self.config.endpoints.methods)
+            if seed_methods:
+                extra = seed_methods.get(normalize_candidate_path(word))
+                if extra:
+                    for method in extra:
+                        if method not in methods:
+                            methods.append(method)
+            for candidate in expand_candidates(word, self.config.endpoints.extensions):
+                for method in methods:
+                    # Canonicalize the candidate URL before the tested_urls
+                    # membership check so two candidates that normalize to the
+                    # same canonical URL add a single tested_urls entry and issue
+                    # a single Discovery_Request (Requirement 38.1, 38.3). This
+                    # EXTENDS the existing tested_urls dedup (Requirement 38.3).
+                    url = normalize_url(urljoin(base_url, candidate))
+                    # Drop candidates excluded by the Path_Scope before any
+                    # tested_urls insertion or budget accounting (Requirement
+                    # 33.2-33.4). Evaluated against the candidate path and the
+                    # constructed URL; exclude takes precedence over include.
+                    if path_scope is not None and not path_scope.admits(candidate, url):
+                        continue
+                    if url not in self.tested_urls:
+                        requests.append((method, url, candidate, depth))
+                        self.tested_urls.add(url)
         
         # Execute requests. Concurrency is now bounded by the asyncio.Semaphore
         # in _test_endpoint (Concurrency_Limit), not by a hardcoded batch size.
@@ -250,6 +483,10 @@ class EndpointFuzzer:
         # Count the requests being issued toward the budget
         if self.max_requests is not None:
             self.requests_issued += len(requests)
+        
+        # Advance the live Progress_Display by the number of requests being
+        # issued in this batch (Requirement 32.2). No-op when disabled.
+        self._advance_progress(len(requests))
         
         discovered_endpoints = await self._execute_batch(requests)
         
@@ -280,6 +517,13 @@ class EndpointFuzzer:
     async def _test_endpoint(self, method: str, url: str, word: str, depth: int) -> Optional[Endpoint]:
         """Test a single endpoint"""
         try:
+            # Canonicalize the URL used for storage and dedup. _fuzz_wordlist
+            # already passes a normalized URL, but redirect targets routed
+            # through _handle_redirect may not be, so normalize here too so the
+            # stored Endpoint.url and discovered_endpoints key are canonical
+            # (Requirement 38.2). Idempotent, so an already-canonical URL is
+            # unchanged.
+            canonical_url = normalize_url(url)
             # Cap in-flight Discovery_Requests at the Concurrency_Limit. Every
             # request still flows through HTTPRequestEngine.request, so the rate
             # limiter continues to apply to each Discovery_Request.
@@ -288,7 +532,7 @@ class EndpointFuzzer:
             
             # Create endpoint object
             endpoint = Endpoint(
-                url=url,
+                url=canonical_url,
                 method=method,
                 status_code=response.status_code,
                 response_size=len(response.content),
@@ -305,20 +549,250 @@ class EndpointFuzzer:
                 self.config.endpoints.follow_redirects):
                 await self._handle_redirect(endpoint, response)
             
-            # Only store interesting endpoints (not 404s)
-            if endpoint.status != EndpointStatus.NOT_FOUND:
-                self.discovered_endpoints[url] = endpoint
+            # Hit_Confirmation (Requirement 35). When enabled and the first
+            # response is interesting (anything other than a true 404 NOT_FOUND),
+            # re-request the candidate ``count`` additional times and record it
+            # only when every response is consistent (35.2-35.4). An inconsistent
+            # set means the candidate is dropped (return None) and never stored
+            # (35.4). When disabled, this branch is skipped entirely and the
+            # existing single-request behavior is preserved (35.6).
+            if (
+                self.config.hit_confirmation.enabled
+                and endpoint.status != EndpointStatus.NOT_FOUND
+            ):
+                confirmations = await self._confirm_candidate(method, url, response)
+                if not self.responses_consistent([response, *confirmations]):
+                    return None
+            
+            # Store interesting endpoints. Only true 404 (NOT_FOUND) responses are
+            # discarded. A 405 (Method Not Allowed) is intentionally kept: it is
+            # evidence of a valid path served by a different allowed method, so it
+            # is recorded as a Discovery_Result (Method_Enumeration, Requirement
+            # 26.3) rather than discarded like a 404.
+            #
+            # Storage-time scope selection (Requirement 33). A record is persisted
+            # only when both the Path_Scope admits the candidate path/URL
+            # (33.2-33.4) AND the Storage_Status_Selection admits the response
+            # status code (33.5). A record dropped here never enters
+            # discovered_endpoints, so it is absent from the discovery session,
+            # CSV/JSONL output, and triage table regardless of any later
+            # display-only --status-code filter (Requirements 33.6, 33.7).
+            path_scope = self.config.path_scope
+            storage_status = self.config.storage_status
+            if (
+                endpoint.status != EndpointStatus.NOT_FOUND
+                and (path_scope is None or path_scope.admits(word, endpoint.url))
+                and (storage_status is None or storage_status.admits(endpoint.status_code))
+            ):
+                self.discovered_endpoints[canonical_url] = endpoint
                 self.logger.debug("Endpoint discovered",
-                                url=url,
+                                url=canonical_url,
                                 method=method,
                                 status=endpoint.status_code,
                                 size=endpoint.response_size)
+                
+                # Secret/leak detection (Requirement 30). When enabled, scan the
+                # already-received response body and headers against the
+                # configured Secret_Patterns and accumulate redacted findings
+                # tagged to this endpoint (30.2-30.4). The scan inspects only the
+                # response we already hold and issues no new requests, so it adds
+                # no state-changing traffic and stays Safe_Mode compatible (30.5).
+                self._scan_response_for_secrets(endpoint, response)
+                
+                # Method_Enumeration (Requirement 26.2/26.4): when enabled, issue a
+                # single OPTIONS Discovery_Request for the discovered endpoint and
+                # record the parsed Allow methods. The OPTIONS request flows through
+                # the same semaphore + http_client.request path so it counts toward
+                # the Request_Budget and stays within the Concurrency_Limit (26.5).
+                if getattr(self.config.endpoints, "enumerate_methods", False):
+                    await self._enumerate_methods(endpoint)
+                
                 return endpoint
             
         except Exception as e:
             self.logger.debug("Endpoint test failed", url=url, method=method, error=str(e))
         
         return None
+    
+    @staticmethod
+    def responses_consistent(responses: List[Response]) -> bool:
+        """Return True when confirmation responses are mutually consistent.
+
+        Consistency for Hit_Confirmation (Requirement 35.3) requires that every
+        response share the same Status_Code_Class (via
+        :func:`utils.discovery_session.status_code_class`) AND have a comparable
+        body size, where "comparable" means all body sizes fall within
+        :data:`HIT_CONFIRMATION_SIZE_TOLERANCE` of the largest observed size.
+
+        An empty list or a singleton is trivially consistent and returns True
+        (there is nothing to disagree).
+
+        Args:
+            responses: The first response plus its confirmation responses.
+
+        Returns:
+            True when the responses agree on Status_Code_Class and body size
+            within tolerance; False otherwise.
+        """
+        if len(responses) <= 1:
+            return True
+        
+        # All responses must share the same Status_Code_Class (Requirement 35.3).
+        # A leading digit outside 2-5 yields None; the set comparison still holds
+        # the responses to a single shared class (or shared None).
+        classes = {status_code_class(r.status_code) for r in responses}
+        if len(classes) > 1:
+            return False
+        
+        sizes = [len(r.content) for r in responses]
+        largest = max(sizes)
+        if largest == 0:
+            # All bodies empty -> identical size, trivially comparable.
+            return True
+        spread = largest - min(sizes)
+        return spread <= EndpointFuzzer.HIT_CONFIRMATION_SIZE_TOLERANCE * largest
+    
+    async def _confirm_candidate(
+        self, method: str, url: str, first_response: Response
+    ) -> List[Response]:
+        """Issue Hit_Confirmation re-requests for a candidate interesting result.
+
+        Re-requests ``self.config.hit_confirmation.count`` additional times using
+        the SAME ``async with self._semaphore:`` + ``self.http_client.request``
+        path as :meth:`_test_endpoint`. Consequently each confirmation request
+        counts toward the Request_Budget (incrementing ``self.requests_issued``),
+        stays within the Concurrency_Limit semaphore, and is paced by the
+        configured Rate_Limit because every request flows through
+        :class:`HTTPRequestEngine` (Requirement 35.5).
+
+        Args:
+            method: HTTP method of the candidate.
+            url: Candidate URL to re-request.
+            first_response: The already-received first response (the caller
+                combines it with the returned confirmations for the consistency
+                check; not re-issued here).
+
+        Returns:
+            The list of confirmation responses (length up to ``count``; a request
+            that raises is skipped so consistency is judged on the responses that
+            were actually received).
+        """
+        count = self.config.hit_confirmation.count
+        confirmations: List[Response] = []
+        for _ in range(count):
+            # Count each confirmation request toward the Request_Budget and flag
+            # exhaustion, mirroring the budget accounting in other request-issuing
+            # paths (Requirement 35.5).
+            if self.max_requests is not None:
+                self.requests_issued += 1
+                if self.requests_issued >= self.max_requests:
+                    self.budget_reached = True
+            
+            # Advance the live Progress_Display for the confirmation request being
+            # issued (Requirement 32.2). No-op when disabled.
+            self._advance_progress(1)
+            
+            try:
+                async with self._semaphore:
+                    response = await self.http_client.request(method, url)
+                confirmations.append(response)
+            except Exception as exc:  # defensive: a failed re-request is skipped
+                self.logger.debug(
+                    "Hit_Confirmation request failed",
+                    url=url,
+                    method=method,
+                    error=str(exc),
+                )
+        
+        return confirmations
+    
+    def _scan_response_for_secrets(self, endpoint: Endpoint, response: Response) -> None:
+        """Scan a discovery response for secrets and accumulate redacted findings.
+
+        No-op unless secret detection is enabled via ``self.secret_scan_config``
+        (Requirement 30.1). When enabled, the already-received response body
+        (``response.text``) and headers are scanned against the configured
+        Secret_Patterns (Requirement 30.2) using the pure, read-only
+        :func:`scan_for_secrets`. Each match yields a redacted
+        :class:`SecretFinding` tagged to the originating endpoint's URL/method
+        (Requirements 30.3, 30.4), appended to ``self.secret_findings``. A
+        response with no matching content contributes nothing (Requirement 30.7).
+
+        Because it inspects only content already held in memory and issues no
+        further requests, it adds no state-changing traffic and stays Safe_Mode
+        compatible (Requirement 30.5).
+        """
+        config = self.secret_scan_config
+        if config is None or not getattr(config, "enabled", False):
+            return
+
+        patterns = getattr(config, "patterns", None)
+        try:
+            if patterns:
+                findings = scan_for_secrets(
+                    body=response.text or "",
+                    headers=response.headers or {},
+                    patterns=patterns,
+                    endpoint=endpoint.url,
+                    method=endpoint.method,
+                )
+            else:
+                # Fall back to the built-in DEFAULT_SECRET_PATTERNS by omitting
+                # the patterns argument (Requirement 30.6).
+                findings = scan_for_secrets(
+                    body=response.text or "",
+                    headers=response.headers or {},
+                    endpoint=endpoint.url,
+                    method=endpoint.method,
+                )
+        except Exception as exc:  # defensive: never let scanning abort discovery
+            self.logger.debug(
+                "Secret scan failed for endpoint",
+                url=endpoint.url,
+                method=endpoint.method,
+                error=str(exc),
+            )
+            return
+
+        if findings:
+            self.secret_findings.extend(findings)
+    
+    async def _enumerate_methods(self, endpoint: Endpoint) -> None:
+        """Enumerate allowed HTTP methods for a discovered endpoint via OPTIONS.
+
+        Issues exactly one OPTIONS Discovery_Request to the endpoint URL and parses
+        the ``Allow`` response header into ``endpoint.allowed_methods``
+        (Method_Enumeration, Requirement 26.2/26.4). The request is dispatched
+        through the same ``self._semaphore`` + ``self.http_client.request`` path as
+        every other Discovery_Request, so it counts toward the Request_Budget and
+        respects the Concurrency_Limit (Requirement 26.5). An absent or empty
+        ``Allow`` header records an empty method set and discovery continues
+        (Requirement 26.6).
+        """
+        # Count the OPTIONS request toward the Request_Budget (Requirement 26.5).
+        if self.max_requests is not None:
+            self.requests_issued += 1
+            if self.requests_issued >= self.max_requests:
+                self.budget_reached = True
+        
+        # Advance the live Progress_Display for the OPTIONS request being issued
+        # (Requirement 32.2). No-op when disabled.
+        self._advance_progress(1)
+        
+        try:
+            async with self._semaphore:
+                response = await self.http_client.request("OPTIONS", endpoint.url)
+            
+            allow = response.headers.get('Allow') or response.headers.get('allow')
+            endpoint.allowed_methods = parse_allow_header(allow)
+            self.logger.debug("Method enumeration completed",
+                            url=endpoint.url,
+                            allowed_methods=endpoint.allowed_methods)
+        except Exception as e:
+            # On failure record an empty method set and continue (Requirement 26.6).
+            endpoint.allowed_methods = []
+            self.logger.debug("Method enumeration failed",
+                            url=endpoint.url, error=str(e))
     
     def _classify_endpoint(self, endpoint: Endpoint, word: str) -> None:
         """Classify endpoint type based on URL patterns"""
@@ -348,6 +822,12 @@ class EndpointFuzzer:
         # Set auth_required flag for 401/403 responses
         if endpoint.status_code in [401, 403]:
             endpoint.auth_required = True
+        
+        # A 405 (Method Not Allowed) marks a valid path served by a different
+        # allowed method (Method_Enumeration, Requirement 26.3). Tag it so it is
+        # recorded as a Discovery_Result rather than treated like a 404.
+        if endpoint.status_code == 405:
+            endpoint.endpoint_type = "method_not_allowed"
     
     async def _handle_redirect(self, endpoint: Endpoint, response: Response) -> None:
         """Handle redirect responses"""
@@ -357,19 +837,30 @@ class EndpointFuzzer:
         
         endpoint.redirect_location = location
         
-        # Follow redirect if it's to the same domain
+        # Follow redirect if it's to the same domain. When the operator opts in
+        # via --allow-cross-domain-redirects, cross-domain targets are also
+        # followed; otherwise the same-domain default is preserved (Req 29.3).
         try:
             original_domain = urlparse(endpoint.url).netloc
             redirect_domain = urlparse(location).netloc
+            allow_cross_domain = getattr(
+                self.config.endpoints, "allow_cross_domain_redirects", False
+            )
             
-            if redirect_domain == original_domain or not redirect_domain:
+            if (redirect_domain == original_domain or not redirect_domain
+                    or allow_cross_domain):
                 # Resolve relative redirects
                 if not redirect_domain:
                     location = urljoin(endpoint.url, location)
                 
-                # Test the redirect target if we haven't already
-                if location not in self.tested_urls:
+                # Test the redirect target if we haven't already. Canonicalize
+                # the redirect target before the tested_urls membership check so
+                # an equivalent redirect target is not re-tested (Requirement
+                # 38.1, 38.3); this EXTENDS the existing tested_urls dedup.
+                normalized_location = normalize_url(location)
+                if normalized_location not in self.tested_urls:
                     self.logger.debug("Following redirect", from_url=endpoint.url, to_url=location)
+                    self.tested_urls.add(normalized_location)
                     redirect_endpoint = await self._test_endpoint(endpoint.method, location, "redirect", 0)
                     if redirect_endpoint:
                         redirect_endpoint.discovered_via = "redirect"
@@ -418,6 +909,10 @@ class EndpointFuzzer:
         # Count the probes being issued toward the budget
         if self.max_requests is not None:
             self.requests_issued += len(probes)
+        
+        # Advance the live Progress_Display for the catch-all probes being issued
+        # (Requirement 32.2). No-op when disabled.
+        self._advance_progress(len(probes))
         
         async def _probe(url: str) -> Response:
             # Cap in-flight probes at the Concurrency_Limit, like _test_endpoint.
@@ -470,9 +965,90 @@ class EndpointFuzzer:
         return (self.catch_all_detected
                 and self.catch_all_signature == (endpoint.status_code, endpoint.response_size))
     
+    async def _probe_graphql(self, base_url: str) -> None:
+        """Probe common GraphQL paths and report whether introspection is enabled.
+
+        Issues a single read-only GraphQL introspection request
+        (``INTROSPECTION_QUERY`` sent as a raw ``data=`` body with a
+        ``Content-Type: application/json`` header) to each path in
+        ``COMMON_GRAPHQL_PATHS`` against ``base_url`` (Requirement 27.2). The first
+        path whose response is classified as GraphQL by ``is_graphql_response`` is
+        treated as the detected GraphQL endpoint; probing then stops. When
+        ``introspection_enabled`` is ``True`` for that endpoint's response, the
+        endpoint URL is recorded in ``self.graphql_introspection_endpoint`` so the
+        dir command can surface a GRAPHQL_INTROSPECTION_ENABLED finding tagged to
+        it (Requirements 27.3/27.4).
+
+        The introspection query is a single read-only operation (no mutation), so
+        the request is Safe_Mode compatible and is intentionally not gated behind
+        the state-changing-method skip (Requirement 27.5).
+
+        Every probe is dispatched through the same ``self._semaphore`` +
+        ``self.http_client.request`` path as any other Discovery_Request, so each
+        counts toward the Request_Budget and respects the Concurrency_Limit. A
+        non-GraphQL target records no finding and discovery continues without
+        error (Requirement 27.6); probe failures are tolerated likewise.
+        """
+        headers = {"Content-Type": "application/json"}
+        
+        for path in COMMON_GRAPHQL_PATHS:
+            # Respect the Request_Budget (Request_Budget). Skip when unbounded.
+            if self.max_requests is not None:
+                if self.requests_issued >= self.max_requests:
+                    self.budget_reached = True
+                    return
+                # Count this probe toward the budget before issuing it.
+                self.requests_issued += 1
+                if self.requests_issued >= self.max_requests:
+                    self.budget_reached = True
+            
+            url = urljoin(base_url, path.lstrip("/"))
+            
+            # Advance the live Progress_Display for this GraphQL probe
+            # (Requirement 32.2). No-op when disabled.
+            self._advance_progress(1)
+            
+            try:
+                # Cap in-flight probes at the Concurrency_Limit, like every other
+                # Discovery_Request, and route through http_client.request so the
+                # rate limiter applies. The read-only introspection query is sent
+                # as a raw JSON body via data= (Requirements 27.3/27.5).
+                async with self._semaphore:
+                    response = await self.http_client.request(
+                        "POST", url, data=INTROSPECTION_QUERY, headers=headers
+                    )
+            except Exception as e:
+                # Tolerate probe failures: continue probing remaining paths
+                # (Requirement 27.6).
+                self.logger.debug("GraphQL probe failed", url=url, error=str(e))
+                continue
+            
+            # A response classified as GraphQL marks the detected endpoint
+            # (Requirement 27.2). Stop at the first GraphQL endpoint found.
+            if not is_graphql_response(response):
+                continue
+            
+            self.logger.info("GraphQL endpoint detected", url=url)
+            
+            # Record a GRAPHQL_INTROSPECTION_ENABLED finding only when the
+            # introspection response shows introspection is enabled on the
+            # detected endpoint (Requirement 27.4).
+            if introspection_enabled(response):
+                self.graphql_introspection_endpoint = url
+                self.logger.info("GraphQL introspection enabled", url=url)
+            return
+    
     async def _recursive_fuzzing(self, initial_endpoints: List[Endpoint], wordlist: List[str]) -> None:
         """Perform recursive fuzzing on discovered endpoints"""
         self.logger.debug("Starting recursive fuzzing", max_depth=self.config.max_depth)
+        
+        # Optional Recursion_Scope selection (Requirement 34). When configured it
+        # is conjoined into the default recursion eligibility below, so it can only
+        # ever narrow the recursable set (logical AND), never relax it (34.3). When
+        # None (the default), recursion keeps its existing VALID/AUTH_REQUIRED
+        # eligibility unchanged (34.4). Depth, budget, and Catch_All_Response
+        # suppression are enforced separately and remain unchanged (34.5-34.7).
+        recursion_scope = self.config.recursion_scope
         
         # Find valid endpoints that could have sub-paths
         base_endpoints = [
@@ -482,6 +1058,7 @@ class EndpointFuzzer:
             and not e.url.endswith('.json')
             and not e.url.endswith('.xml')
             and not self._is_catch_all(e)  # Skip catch-all/wildcard responses (19.4)
+            and (recursion_scope is None or recursion_scope.admits(e))  # Recursion_Scope narrows only (34.3)
         ]
         
         for depth in range(1, self.config.max_depth + 1):
@@ -516,6 +1093,7 @@ class EndpointFuzzer:
                 e for e in new_endpoints 
                 if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
                 and not self._is_catch_all(e)  # Skip catch-all/wildcard responses (19.4)
+                and (recursion_scope is None or recursion_scope.admits(e))  # Recursion_Scope narrows only (34.3)
             ]
             
             # Stop if no new endpoints found
@@ -1410,13 +1988,22 @@ class FuzzingOrchestrator:
     Handles endpoint discovery and response analysis
     """
     
-    def __init__(self, config: FuzzingConfig, http_client: HTTPRequestEngine):
+    def __init__(self, config: FuzzingConfig, http_client: HTTPRequestEngine,
+                 secret_scan_config: Optional[SecretScanConfig] = None,
+                 progress: Optional[DiscoveryProgress] = None):
         """
         Initialize Fuzzing Orchestrator
         
         Args:
             config: Fuzzing configuration
             http_client: HTTP client for requests
+            secret_scan_config: Optional secret/leak detection configuration
+                (Requirement 30). When provided and enabled, discovery responses
+                are scanned for secrets by the endpoint fuzzer.
+            progress: Optional live Progress_Display (Requirement 32). When
+                provided (an enabled instance for an interactive, non-CI, TTY
+                session) the endpoint fuzzer renders live discovery progress;
+                otherwise the fuzzer defaults to a disabled no-op display.
         """
         self.config = config
         self.http_client = http_client
@@ -1424,7 +2011,7 @@ class FuzzingOrchestrator:
         self.stats = FuzzingStats()
         
         # Initialize specialized fuzzers
-        self.endpoint_fuzzer = EndpointFuzzer(http_client, config)
+        self.endpoint_fuzzer = EndpointFuzzer(http_client, config, secret_scan_config, progress)
         self.parameter_fuzzer = ParameterFuzzer(http_client, config)
         self.header_fuzzer = HeaderFuzzer(http_client, config)
         

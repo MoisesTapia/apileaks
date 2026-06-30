@@ -198,6 +198,120 @@ python apileaks.py dir \
 - **Reloaded sessions issue no requests.** With `--load-session`, no discovery requests are made, so `--rate-limit` is not applied to that run.
 - **Follow-up inheritance.** The targeted follow-up scan from interactive triage applies the same `--rate-limit` and User-Agent option as the originating `dir` invocation to every request it issues.
 
+### Discovery Robustness: Seeds, Matchers, Secrets, and Machine Output
+
+These flags harden and broaden discovery and compose freely with the discovery-control (`--depth`, `--max-requests`, `--concurrency`) and triage (`--status-code`, `--save-session`, `--export`, `--interactive`, `--ci-mode`) flags. See the [CLI Reference](cli-reference.md#discovery-robustness-options) for full semantics. The shared `-x`/`--extensions`, `--timeout`, and `--retries` options also work with `full`.
+
+```bash
+# Seed from a spec + multiple wordlists (merged & de-duplicated) and expand
+# with extensions, then filter to successful endpoints and save a session
+python apileaks.py dir \
+  --target https://api.example.com \
+  --openapi specs/openapi.yaml \
+  --wordlist wordlists/endpoints.txt \
+  --wordlist wordlists/admin_endpoints.txt \
+  --extensions json,php \
+  --status-code 2xx \
+  --save-session session.json
+
+# Read wordlist entries from stdin (`-`) and append extensions
+cat wordlists/endpoints.txt | python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist - \
+  -x .json -x .php \
+  --depth 2
+
+# Attach request context (headers, cookie, basic auth) to every request
+python apileaks.py dir \
+  --target https://api.example.com \
+  -H "X-API-Key: key123" \
+  -H "X-Tenant: acme" \
+  --cookie "session=abc123" \
+  --basic-auth admin:secret \
+  --status-code 2xx \
+  --save-session session.json
+
+# Response matchers + filters to cut soft-404 noise (kept results must be
+# larger than 100 bytes and not match "Not Found"); combine with --status-code
+python apileaks.py dir \
+  --target https://api.example.com \
+  --status-code 200,403 \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --filter-words "<5"
+
+# Enumerate allowed methods and probe for GraphQL introspection, bounded by a
+# request budget and concurrency limit
+python apileaks.py dir \
+  --target https://api.example.com \
+  --enumerate-methods \
+  --graphql \
+  --max-requests 5000 \
+  --concurrency 100
+
+# Per-request resilience against a slow / rate-limiting target
+python apileaks.py dir \
+  --target https://api.example.com \
+  --timeout 30 \
+  --retries 5 \
+  --rate-limit 5
+
+# Transport / TLS: mutual TLS, custom CA, DNS override, cross-domain redirects
+python apileaks.py dir \
+  --target https://api.example.com \
+  --client-cert client.pem \
+  --ca-bundle ca.pem \
+  --resolve api.example.com:127.0.0.1 \
+  --allow-cross-domain-redirects
+
+# Route discovery through a SOCKS5 proxy with auth (requires httpx[socks])
+python apileaks.py dir \
+  --target https://api.example.com \
+  --proxy socks5://user:pass@127.0.0.1:1080
+
+# Secret detection (redacted) with custom patterns, plus machine-readable output
+python apileaks.py dir \
+  --target https://api.example.com \
+  --detect-secrets \
+  --secret-patterns config/secret_patterns.json \
+  --status-code 2xx \
+  --output-format jsonl \
+  --output-file reports/discovery.jsonl
+
+# Everything together: spec + multi-wordlist seeds, extensions, request context,
+# matchers/filters, method+GraphQL probes, secret detection, machine output,
+# and a saved session — CI-safe
+python apileaks.py dir \
+  --target https://api.example.com \
+  --openapi specs/openapi.yaml \
+  --wordlist wordlists/endpoints.txt \
+  --wordlist - \
+  --extensions json,php \
+  -H "X-API-Key: key123" \
+  --cookie "session=abc123" \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --enumerate-methods \
+  --graphql \
+  --timeout 20 \
+  --retries 3 \
+  --detect-secrets \
+  --status-code 2xx \
+  --save-session session.json \
+  --output-format csv \
+  --output-file reports/discovery.csv \
+  --ci-mode
+
+# full scan reusing the shared robustness flags (extensions, timeout, retries)
+python apileaks.py full \
+  --target https://api.example.com \
+  --extensions json,php \
+  --timeout 20 \
+  --retries 3 \
+  --depth 2 \
+  --modules bola,auth
+```
+
 ## Parameter Fuzzing
 
 Parameter fuzzing identifies hidden parameters, injection points, and input validation issues.

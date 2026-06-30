@@ -8,6 +8,7 @@ import asyncio
 import sys
 import json
 import copy
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 import click
@@ -25,9 +26,26 @@ from utils.discovery_session import (
     apply_status_filter,
     group_by_status_class,
     parse_status_filter,
+    status_code_class,
 )
+from modules.fuzzing.orchestrator import normalize_extensions
+from utils.http_client import parse_resolve
 from utils.discovery_export import DiscoveryExportError, write_discovery_export
+from utils.discovery_output import (
+    DiscoveryOutputError,
+    UnsupportedOutputFormatError,
+    write_discovery_output,
+)
 from utils.triage_table import render_triage_table
+from utils.discovery_progress import DiscoveryProgress
+from utils.discovery_scope import (
+    PathScopeError,
+    RecursionScopeError,
+    StorageStatusError,
+    parse_path_scope,
+    parse_recursion_scope,
+    parse_storage_status_selection,
+)
 from utils.response_selector import (
     DiscoveryResultEx,
     SelectorError,
@@ -35,6 +53,14 @@ from utils.response_selector import (
     calibrate_soft_404,
     parse_selectors,
 )
+from utils.spec_import import (
+    SpecImportError,
+    import_openapi,
+    import_postman,
+    merge_candidates,
+    normalize_candidate_path,
+)
+from utils.spec_import import _parse_document as _parse_spec_document
 
 
 def parse_response_codes(response_filter: str) -> list:
@@ -126,6 +152,154 @@ def _validate_concurrency(ctx, param, value):
     return value
 
 
+def _validate_confirm_hits(ctx, param, value):
+    """Click callback: reject a --confirm-hits below 1, naming the value.
+
+    Click's ``type=int`` already rejects non-integers; this guards the lower
+    bound so no Endpoint_Discovery runs on an invalid Hit_Confirmation count.
+    ``default=None`` keeps Hit_Confirmation disabled; any supplied value must
+    request at least one confirmation re-request (Requirement 35.7).
+    """
+    if value is not None and value < 1:
+        raise click.BadParameter(f"--confirm-hits must be >= 1 (got {value})")
+    return value
+
+
+def _validate_timeout(ctx, param, value):
+    """Click callback: reject a non-positive --timeout, naming the value.
+
+    The Request_Timeout is a per-request upper bound in seconds and must be a
+    positive number; ``default=None`` falls back to the config default. Rejecting
+    here guarantees no Endpoint_Discovery runs on an invalid timeout
+    (Requirement 28.6).
+    """
+    if value is not None and value <= 0:
+        raise click.BadParameter(f"--timeout must be a positive number of seconds (got {value})")
+    return value
+
+
+def _validate_retries(ctx, param, value):
+    """Click callback: reject a negative --retries, naming the value.
+
+    Click's ``type=int`` already rejects non-integers; this guards the lower
+    bound so the Retry_Limit is never negative. ``default=None`` falls back to
+    the config default. Rejecting here guarantees no Endpoint_Discovery runs on
+    an invalid retry limit (Requirement 28.7).
+    """
+    if value is not None and value < 0:
+        raise click.BadParameter(f"--retries must be a non-negative integer (got {value})")
+    return value
+
+
+def _assert_readable(path, option_name):
+    """Raise click.BadParameter naming the path when it is missing/unreadable.
+
+    Shared by the --client-cert and --ca-bundle validators so an unreadable path
+    is rejected before any Endpoint_Discovery runs (Requirement 29.6).
+    """
+    if not os.path.exists(path):
+        raise click.BadParameter(f"{option_name} path does not exist: {path}")
+    if not os.path.isfile(path) or not os.access(path, os.R_OK):
+        raise click.BadParameter(f"{option_name} path cannot be read: {path}")
+
+
+def _validate_client_cert(ctx, param, value):
+    """Click callback: validate --client-cert and return the parsed value.
+
+    Accepts either a single ``PATH`` (combined cert+key PEM) or a ``cert:key``
+    pair. Each referenced path must exist and be readable, otherwise a
+    descriptive error names the unreadable path and no Endpoint_Discovery runs
+    (Requirement 29.6). Returns either the path string or a ``(cert, key)`` tuple
+    suitable for httpx's ``cert`` kwarg (Requirement 29.1).
+    """
+    if value is None:
+        return None
+    if ":" in value:
+        cert_path, key_path = value.split(":", 1)
+        _assert_readable(cert_path, "--client-cert")
+        _assert_readable(key_path, "--client-cert key")
+        return (cert_path, key_path)
+    _assert_readable(value, "--client-cert")
+    return value
+
+
+def _validate_ca_bundle(ctx, param, value):
+    """Click callback: validate --ca-bundle path readability before discovery.
+
+    The custom CA bundle path must exist and be readable; otherwise a descriptive
+    error names the unreadable path and no Endpoint_Discovery runs (Requirement
+    29.6). Returns the path unchanged (Requirement 29.2).
+    """
+    if value is None:
+        return None
+    _assert_readable(value, "--ca-bundle")
+    return value
+
+
+def _validate_resolve(ctx, param, value):
+    """Click callback: validate --resolve as a host:ip pair before discovery.
+
+    Delegates to ``parse_resolve`` so a value not expressed as ``host:ip`` is
+    rejected with a descriptive error naming the value and no Endpoint_Discovery
+    runs (Requirement 29.7). Returns the parsed ``(host, ip)`` tuple (Requirement
+    29.4).
+    """
+    if value is None:
+        return None
+    try:
+        return parse_resolve(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc))
+
+
+def _validate_secret_patterns(ctx, param, value):
+    """Click callback: load and validate the --secret-patterns file.
+
+    The file is a JSON object mapping Secret_Pattern names to regular expression
+    strings (Requirement 30.6). The path must be readable, parse as a JSON
+    object of string -> string entries, and every regex must compile; otherwise
+    a descriptive error names the problem and no Endpoint_Discovery runs.
+    Returns the parsed name -> regex map, or ``None`` when the option is not
+    supplied (the built-in DEFAULT_SECRET_PATTERNS are then used).
+    """
+    if value is None:
+        return None
+    _assert_readable(value, "--secret-patterns")
+    try:
+        with open(value, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise click.BadParameter(
+            f"--secret-patterns file is not valid JSON: {value} ({exc})"
+        )
+    except OSError as exc:
+        raise click.BadParameter(
+            f"--secret-patterns file cannot be read: {value} ({exc})"
+        )
+
+    if not isinstance(data, dict) or not data:
+        raise click.BadParameter(
+            f"--secret-patterns file must be a non-empty JSON object mapping "
+            f"pattern names to regex strings: {value}"
+        )
+
+    patterns = {}
+    for name, pattern in data.items():
+        if not isinstance(name, str) or not isinstance(pattern, str):
+            raise click.BadParameter(
+                f"--secret-patterns entries must map a string name to a string "
+                f"regex (offending entry: {name!r})"
+            )
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise click.BadParameter(
+                f"--secret-patterns regex for '{name}' is invalid: {exc}"
+            )
+        patterns[name] = pattern
+    return patterns
+
+
 def resolve_max_depth(cli_depth: Optional[int]) -> int:
     """Resolve the effective recursion depth with documented precedence.
 
@@ -135,6 +309,73 @@ def resolve_max_depth(cli_depth: Optional[int]) -> int:
     if cli_depth is not None:  # CLI wins (17.6)
         return cli_depth
     return int(os.getenv('APILEAK_MAX_DEPTH', '3'))  # env, else default 3 (17.7, 17.8)
+
+
+def parse_header_options(header):
+    """Parse repeatable ``-H``/``--header`` ``Name: Value`` strings into a dict.
+
+    Each value is split on the first colon; the name and value are stripped.
+    Later values for the same header name win. The resulting dict is merged into
+    ``HeaderFuzzingConfig.custom_headers`` so the headers ride the existing
+    custom-header plumbing and are applied to every Discovery_Request
+    (Requirement 24.2).
+    """
+    parsed = {}
+    for raw in header or ():
+        name, sep, value = raw.partition(':')
+        # A missing separator yields a valueless header name; the malformed-value
+        # validation lives in the conflict-validation subtask (Requirement 24.6
+        # is scoped to --basic-auth).
+        parsed[name.strip()] = value.strip() if sep else ''
+    return parsed
+
+
+def parse_basic_auth(basic_auth):
+    """Split a ``--basic-auth`` ``user:pass`` value into ``(username, password)``.
+
+    Returns ``None`` when no value is supplied. The colon-separator validation
+    (Requirement 24.6) and the ``--jwt`` conflict check (Requirement 24.5) are
+    handled by the conflict-validation subtask before any discovery runs; this
+    helper only parses an already-accepted value.
+    """
+    if not basic_auth:
+        return None
+    username, _, password = basic_auth.partition(':')
+    return (username, password)
+
+
+def validate_basic_auth_options(basic_auth, jwt):
+    """Validate ``--basic-auth`` against conflicts and malformed values.
+
+    Mirrors :func:`validate_user_agent_options`' exit-before-discovery pattern:
+    on a problem it prints a descriptive error to stderr and ``sys.exit(1)`` so
+    NO Endpoint_Discovery is performed.
+
+    - ``--basic-auth`` together with ``--jwt`` is rejected as a conflicting set
+      of authentication options (Requirement 24.5); they would otherwise fight
+      over the single anonymous ``authentication.contexts[0]`` (the standard
+      ``if jwt:`` override would clobber the basic context to ``bearer``).
+    - A ``--basic-auth`` value without a ``:`` separating the user from the
+      password is rejected as malformed (Requirement 24.6).
+    """
+    if not basic_auth:
+        return
+
+    if jwt:
+        click.echo(
+            "Error: Conflicting authentication options: --basic-auth and --jwt "
+            "cannot be used together.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if ':' not in basic_auth:
+        click.echo(
+            f"Error: Malformed --basic-auth value '{basic_auth}': expected "
+            "'user:pass' with a ':' separating the username from the password.",
+            err=True,
+        )
+        sys.exit(1)
 
 
 def validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file):
@@ -175,6 +416,104 @@ def load_user_agents_from_file(file_path):
         sys.exit(1)
 
 
+def _read_wordlist_entries(source):
+    """Read one ``--wordlist`` source into entries.
+
+    A ``source`` of ``-`` reads entries from standard input; any other value is
+    treated as a file path. Blank lines and lines whose first non-whitespace
+    character is ``#`` are skipped, using the same rule as ``_load_wordlist`` /
+    :func:`load_user_agents_from_file` (Requirement 25.5).
+    """
+    if source == '-':
+        lines = sys.stdin.read().splitlines()
+    else:
+        with open(source, 'r', encoding='utf-8') as handle:
+            lines = handle.readlines()
+
+    entries = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            entries.append(stripped)
+    return entries
+
+
+def _load_spec_seeds(openapi_sources, postman_sources):
+    """Parse ``--openapi`` / ``--postman`` sources into Spec_Import seeds.
+
+    OpenAPI/Swagger sources are parsed with :func:`import_openapi` and Postman
+    collections with :func:`import_postman` (Requirements 25.1-25.3). An
+    unparseable or unrecognized source raises :class:`SpecImportError` naming the
+    offending source so the caller can perform no discovery (Requirement 25.6).
+    """
+    seeds = []
+    for path in openapi_sources:
+        try:
+            doc = _parse_spec_document(path)
+            seeds.extend(import_openapi(doc))
+        except SpecImportError as exc:
+            raise SpecImportError(f"OpenAPI source '{path}': {exc}") from exc
+    for path in postman_sources:
+        try:
+            doc = _parse_spec_document(path)
+            seeds.extend(import_postman(doc))
+        except SpecImportError as exc:
+            raise SpecImportError(f"Postman source '{path}': {exc}") from exc
+    return seeds
+
+
+def _resolve_dir_candidates(wordlists, openapi_sources, postman_sources):
+    """Resolve discovery candidates from wordlists and Spec_Import sources.
+
+    Returns a ``(candidate_set, seed_methods, wordlist_path)`` tuple:
+
+    * Backward-compatible single-file case (no spec sources, no stdin, and at
+      most one ``--wordlist``): ``candidate_set`` is ``None`` and ``seed_methods``
+      is empty, while ``wordlist_path`` is the single file path (or ``None`` for
+      the default wordlist). Discovery then loads the file via ``_load_wordlist``
+      exactly as before.
+    * Otherwise (any spec source, repeated ``--wordlist``, or ``--wordlist -``):
+      all wordlist entries and spec seed paths are merged and de-duplicated by
+      normalized path via :func:`merge_candidates` into an in-memory
+      ``candidate_set`` (possibly empty, Requirement 25.4/25.7/25.8).
+      ``seed_methods`` maps each spec seed's normalized path to its declared HTTP
+      methods so those methods extend the per-path method set (Requirement 25.3),
+      and ``wordlist_path`` is ``None``.
+
+    Raises :class:`SpecImportError` naming an unparseable spec source
+    (Requirement 25.6).
+    """
+    wordlists = list(wordlists or [])
+    has_stdin = '-' in wordlists
+    has_specs = bool(openapi_sources or postman_sources)
+
+    # Backward-compatible single-file (or default) discovery path.
+    if not has_specs and not has_stdin and len(wordlists) <= 1:
+        return None, {}, (wordlists[0] if wordlists else None)
+
+    # In-memory merged candidate set mode (Requirements 25.3, 25.4, 25.5).
+    spec_seeds = _load_spec_seeds(openapi_sources, postman_sources)
+
+    wordlist_entries = []
+    for source in wordlists:
+        wordlist_entries.extend(_read_wordlist_entries(source))
+
+    candidate_set = merge_candidates(wordlist_entries, spec_seeds)
+
+    # Spec methods extend the per-path method set for those seeds (Requirement
+    # 25.3); keyed by normalized path so the fuzzer can match each candidate.
+    seed_methods = {}
+    for seed in spec_seeds:
+        key = normalize_candidate_path(seed.path)
+        if not key:
+            continue
+        methods = seed_methods.setdefault(key, [])
+        if seed.method not in methods:
+            methods.append(seed.method)
+
+    return candidate_set, seed_methods, None
+
+
 def prepare_output_filename(output_param):
     """Prepare output filename, ensuring it goes to reports directory"""
     if not output_param:
@@ -206,7 +545,7 @@ APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False):
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None):
     """Create an enhanced configuration with all advanced features integrated"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -244,6 +583,13 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
             user_agent_rotation = True
             # Use first user agent as default
             user_agent_settings['User-Agent'] = user_agent_list[0]
+    
+    # Merge operator-supplied discovery headers (and the --cookie string, which
+    # the caller places under the 'Cookie' key) into the header-fuzzing
+    # custom_headers dict so they exist on the engine config and are applied to
+    # every Discovery_Request (Requirements 24.2, 24.3).
+    if extra_headers:
+        user_agent_settings.update(extra_headers)
     
     # Configure enhanced advanced discovery settings
     advanced_discovery_config = {
@@ -307,7 +653,9 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
                 'enabled': scan_type in ["full", "dir"],
                 'wordlist': default_wordlists['endpoints'],
                 'methods': ["GET", "POST", "PUT", "DELETE", "PATCH"],
-                'follow_redirects': True
+                'follow_redirects': True,
+                'extensions': [],
+                'enumerate_methods': False
             },
             'parameters': {
                 'enabled': scan_type in ["full", "par"],
@@ -372,8 +720,26 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
                 'low': 0
             }
         },
+        'secret_scan': {
+            # Secret/leak detection is opt-in (Requirement 30.1); the dir/full
+            # override block flips 'enabled' and sets 'patterns' when
+            # --detect-secrets/--secret-patterns are supplied. Omitting
+            # 'patterns' here lets SecretScanConfig fall back to the built-in
+            # DEFAULT_SECRET_PATTERNS (Requirement 30.6).
+            'enabled': False
+        },
         'safe_mode': safe_mode
     }
+    
+    # Map --basic-auth onto the anonymous auth context as an HTTP Basic context
+    # (type='basic' with username/password) so the existing
+    # HTTPRequestEngine._apply_authentication branch emits a Basic Authorization
+    # header on every Discovery_Request (Requirement 24.4).
+    if basic_auth:
+        username, password = basic_auth
+        config['authentication']['contexts'][0]['type'] = 'basic'
+        config['authentication']['contexts'][0]['username'] = username
+        config['authentication']['contexts'][0]['password'] = password
     
     # For parameter fuzzing, disable endpoint discovery and use the target directly
     if scan_type == "par":
@@ -382,9 +748,9 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     return config
 
 
-def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None):
+def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None):
     """Create a default configuration when no config file is provided (legacy compatibility)"""
-    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical")
+    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth)
     """Create a default configuration when no config file is provided"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -473,7 +839,8 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
                 'enabled': scan_type in ["full", "dir"],
                 'wordlist': default_wordlists['endpoints'],
                 'methods': ["GET", "POST", "PUT", "DELETE", "PATCH"],
-                'follow_redirects': True
+                'follow_redirects': True,
+                'enumerate_methods': False
             },
             'parameters': {
                 'enabled': scan_type in ["full", "par"],
@@ -589,7 +956,13 @@ def cli(ctx, no_banner):
 
 @cli.command()
 @click.option('--target', '-t', required=True, help='Target URL to scan')
-@click.option('--wordlist', '-w', help='Wordlist file for directory fuzzing')
+@click.option('--wordlist', '-w', 'wordlist', multiple=True,
+              help='Wordlist file for directory fuzzing. Repeatable; merged and '
+                   'de-duplicated across all values. Use "-" to read entries from stdin.')
+@click.option('--openapi', 'openapi', multiple=True, type=click.Path(),
+              help='OpenAPI/Swagger document (JSON or YAML) to seed discovery from. Repeatable.')
+@click.option('--postman', 'postman', multiple=True, type=click.Path(),
+              help='Postman collection to seed discovery from. Repeatable.')
 @click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
               default='WARNING', help='Logging level')
@@ -607,10 +980,36 @@ def cli(ctx, no_banner):
               help='Global request budget for discovery (default: unbounded).')
 @click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
               help='Max concurrent in-flight discovery requests (default: 50).')
+@click.option('--confirm-hits', 'confirm_hits', type=int, default=None, callback=_validate_confirm_hits,
+              metavar='N',
+              help='Enable Hit_Confirmation: re-request each interesting candidate N times '
+                   'and record it only when the responses are consistent (must be >= 1; '
+                   'default: off).')
+@click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
+              help='Per-request timeout in seconds applied to every discovery request '
+                   '(must be > 0; default: 10).')
+@click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
+              help='Number of automatic retries for each failed discovery request '
+                   '(must be >= 0; default: 2).')
+@click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
+              help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
+                   'e.g. -x json,php or -x .json -x .php. Leading dots are optional.')
 @click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
 @click.option('--jwt', help='JWT token to use for authentication')
+@click.option('--header', '-H', 'header', multiple=True, metavar='"Name: Value"',
+              help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.')
+@click.option('--cookie', 'cookie', metavar='COOKIE',
+              help='Raw Cookie header string applied to every discovery request.')
+@click.option('--basic-auth', 'basic_auth', metavar='user:pass',
+              help='HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.')
+@click.option('--enumerate-methods', 'enumerate_methods', is_flag=True, default=False,
+              help='Enumerate allowed HTTP methods per discovered endpoint via an OPTIONS '
+                   'request (parses the Allow header; default: off).')
+@click.option('--graphql', 'graphql', is_flag=True, default=False,
+              help='Probe common GraphQL paths against the target and report whether '
+                   'introspection is enabled (read-only introspection query; default: off).')
 @click.option('--response', help='Filter by response codes (e.g., 200,301,404 or 200-300)')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
 @click.option('--match-size', 'match_size', multiple=True, metavar='EXPR',
@@ -639,12 +1038,59 @@ def cli(ctx, no_banner):
 @click.option('--load-session', 'load_session', type=click.Path(), help='Reload discovery results exclusively from a JSON session file (skips discovery)')
 @click.option('--export', 'export_format', type=click.Choice(['md', 'txt']), help='Write a human-readable discovery export in the selected format (md or txt)')
 @click.option('--export-file', 'export_file', type=click.Path(), help='Destination path for the human-readable export (extension selects the format)')
+@click.option('--output-format', 'output_format', type=click.Choice(['csv', 'jsonl']), help='Write a machine-readable discovery output in the selected format (csv or jsonl)')
+@click.option('--output-file', 'output_file', type=click.Path(), help='Destination path for the machine-readable output (extension selects the format)')
 @click.option('--interactive', '--triage', 'interactive', is_flag=True, help='Enable interactive triage mode (opt-in; auto-disabled in CI mode)')
+@click.option('--scan-scope', 'scan_scope', metavar='SCOPE', default=None,
+              help='Non-interactively define a Batch_Scan_Scope as all discovered records of a '
+                   'Status_Code_Class (2xx, 3xx, 4xx, 5xx) or an EndpointStatus (valid, '
+                   'auth_required) and run an OWASP scan over them. In CI mode this is the only '
+                   'way to define the scan scope (the interactive prompt never runs).')
 @click.option('--ci-mode', 'ci_mode', is_flag=True, help='Enable CI mode (disables the interactive triage prompt so it never blocks a pipeline)')
-@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
+@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets. SOCKS5 proxies with auth are supported, e.g. socks5://user:pass@host:port.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
+@click.option('--client-cert', 'client_cert', metavar='PATH[:KEY]', default=None, callback=_validate_client_cert,
+              help='Client certificate for mutual TLS, presented on every discovery request. '
+                   'A combined cert+key PEM PATH, or a cert:key pair of paths.')
+@click.option('--ca-bundle', 'ca_bundle', metavar='PATH', default=None, callback=_validate_ca_bundle,
+              help='Custom CA bundle used to verify target certificates for every discovery request.')
+@click.option('--allow-cross-domain-redirects', 'allow_cross_domain_redirects', is_flag=True, default=False,
+              help='Follow redirects to other domains during discovery. By default discovery '
+                   'follows redirects only to the same domain as the originating request.')
+@click.option('--resolve', 'resolve', metavar='host:ip', default=None, callback=_validate_resolve,
+              help='Override DNS resolution for the named host to the supplied IP for every '
+                   'discovery request (e.g. api.example.com:127.0.0.1).')
+@click.option('--detect-secrets', 'detect_secrets', is_flag=True, default=False,
+              help='Scan each discovery response body and headers for secrets/leaked '
+                   'credentials (read-only; default: off). Matched values are redacted.')
+@click.option('--secret-patterns', 'secret_patterns', metavar='PATH', default=None,
+              callback=_validate_secret_patterns,
+              help='Path to a JSON file mapping pattern names to regex strings used for '
+                   'secret detection. Defaults to the built-in patterns when not supplied.')
+@click.option('--include-path', 'include_path', multiple=True, metavar='REGEX',
+              help='Only persist discovered endpoints whose path or URL matches REGEX '
+                   '(storage-time scope). Repeatable. Exclude takes precedence over include.')
+@click.option('--exclude-path', 'exclude_path', multiple=True, metavar='REGEX',
+              help='Never persist discovered endpoints whose path or URL matches REGEX '
+                   '(storage-time scope). Repeatable. Takes precedence over --include-path.')
+@click.option('--include-status', 'include_status', metavar='SELECTION', default=None,
+              help='Only persist discovered endpoints whose status matches SELECTION: a '
+                   "status class like '2xx' or explicit codes/ranges like '200,404' or "
+                   "'200-300' (storage-time scope).")
+@click.option('--exclude-status', 'exclude_status', metavar='SELECTION', default=None,
+              help='Never persist discovered endpoints whose status matches SELECTION: a '
+                   "status class like '2xx' or explicit codes/ranges like '200,404' or "
+                   "'200-300' (storage-time scope). Takes precedence over --include-status.")
+@click.option('--recursion-status', 'recursion_status', metavar='CLASSES', default=None,
+              help='Restrict recursion to endpoints whose status class is in CLASSES: a '
+                   "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
+                   'default VALID/AUTH_REQUIRED recursion; never relaxes it.')
+@click.option('--recursion-type', 'recursion_type', metavar='TYPES', default=None,
+              help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
+                   "list of endpoint types like 'admin,api_version'. Only narrows the default "
+                   'recursion; never relaxes it.')
 @click.pass_context
-def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, export_format, export_file, interactive, ci_mode, proxy, proxy_verify_ssl):
+def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
     """Directory/endpoint fuzzing - discover hidden endpoints and directories
     
     \b
@@ -661,6 +1107,11 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
     
     # Validate user agent options
     validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
+
+    # Validate basic-auth conflicts/format before any discovery runs so a
+    # --basic-auth + --jwt conflict (Req 24.5) or a colon-less value (Req 24.6)
+    # exits before any Discovery_Request is issued.
+    validate_basic_auth_options(basic_auth, jwt)
     
     # Setup logging
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
@@ -696,19 +1147,76 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
+    # Parse the storage-time Path_Scope and Storage_Status_Selection up front so
+    # an invalid regex or out-of-range/unrecognized status value is surfaced as a
+    # descriptive CLI error naming the offending value and NO Endpoint_Discovery
+    # is performed (Requirements 33.1, 33.5, 33.8, 33.9). The Recursion_Scope is
+    # parsed alongside them so an unrecognized status class or endpoint type is
+    # likewise surfaced as a descriptive CLI error naming the value before any
+    # discovery runs (Requirements 34.1, 34.2, 34.8). Mirrors the
+    # exit-before-discovery handling used for response selectors above.
+    try:
+        path_scope = parse_path_scope(include_path, exclude_path)
+        storage_status = parse_storage_status_selection(
+            include_status, exclude_status
+        )
+        recursion_scope = parse_recursion_scope(recursion_status, recursion_type)
+    except (PathScopeError, StorageStatusError, RecursionScopeError) as exc:
+        logger.error("Invalid discovery scope value", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    # Validate the non-interactive Batch_Scan_Scope token up front so an
+    # unrecognized --scan-scope value is surfaced as a descriptive CLI error
+    # naming the value and NO scan (and no discovery) is performed
+    # (Requirement 36.7). The token validity is record-independent, so validate
+    # it against an empty record set here and select the matching records after
+    # discovery.
+    if scan_scope is not None:
+        try:
+            select_scope_records([], scan_scope)
+        except ScanScopeError as exc:
+            logger.error("Invalid scan scope value", error=str(exc))
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
+
+    # Resolve the discovery candidate set from any Spec_Import sources and the
+    # (repeatable, optionally stdin) wordlists before any discovery runs. An
+    # unparseable/unrecognized spec is surfaced as a CLI error performing no
+    # Endpoint_Discovery (Requirement 25.6).
+    try:
+        candidate_set, seed_methods, wordlist_path = _resolve_dir_candidates(
+            wordlist, openapi, postman
+        )
+    except SpecImportError as exc:
+        logger.error("Spec import failed", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    # An empty merged candidate set completes without issuing any
+    # Discovery_Request and reports that no candidates were available
+    # (Requirement 25.7). A reloaded session sources records from the session
+    # file and performs no discovery, so the check does not apply there.
+    if candidate_set is not None and not candidate_set and not load_session:
+        click.echo("No candidates available: no wordlist entries or spec seeds to scan.")
+        return
+
     # Discovery triage is an additive workflow layered on top of discovery. It is
     # only engaged when the user opts in via a triage flag; otherwise the command
     # behaves exactly as before and runs the standard enhanced scan. Supplying a
     # response matcher/filter also engages triage so the selection takes effect.
     triage_requested = bool(
-        save_session or load_session or export_format or export_file or interactive
-        or matchers or filters
+        save_session or load_session or export_format or export_file
+        or output_format or output_file or interactive
+        or scan_scope or matchers or filters
     )
 
     if triage_requested:
         _run_dir_triage(
             target=target,
-            wordlist=wordlist,
+            wordlist_path=wordlist_path,
+            candidate_set=candidate_set,
+            seed_methods=seed_methods,
             output=output,
             rate_limit=rate_limit,
             methods=methods,
@@ -716,6 +1224,9 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             user_agent_custom=user_agent_custom,
             user_agent_file=user_agent_file,
             jwt=jwt,
+            header=header,
+            cookie=cookie,
+            basic_auth=basic_auth,
             response=response,
             status_code=status_code,
             matchers=matchers,
@@ -726,10 +1237,21 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             load_session=load_session,
             export_format=export_format,
             export_file=export_file,
+            output_format=output_format,
+            output_file=output_file,
             interactive=interactive,
+            scan_scope=scan_scope,
             ci_mode=ci_mode,
             proxy=proxy,
             proxy_verify_ssl=proxy_verify_ssl,
+            client_cert=client_cert,
+            ca_bundle=ca_bundle,
+            allow_cross_domain_redirects=allow_cross_domain_redirects,
+            resolve=resolve,
+            detect_secrets=detect_secrets,
+            secret_patterns=secret_patterns,
+            path_scope=path_scope,
+            storage_status=storage_status,
             logger=logger,
         )
         return
@@ -758,10 +1280,35 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         # Parse status code filter for HTTP output
         status_code_filter = parse_status_codes(status_code) if status_code else None
         
+        # Parse operator-supplied discovery headers, cookie, and basic-auth
+        # (Requirement 24.1). The cookie is carried as a 'Cookie' header so it
+        # rides the same custom_headers path as --header (Requirement 24.3).
+        extra_headers = parse_header_options(header)
+        if cookie:
+            extra_headers['Cookie'] = cookie
+        basic_auth_creds = parse_basic_auth(basic_auth)
+        
         # Create default configuration for directory fuzzing
-        config_dict = create_default_config(target, wordlist, "dir", user_agent_config, output_filename, advanced_config, status_code_filter)
+        config_dict = create_default_config(target, wordlist_path, "dir", user_agent_config, output_filename, advanced_config, status_code_filter, extra_headers, basic_auth_creds)
         config_dict['proxy'] = proxy
         config_dict['proxy_verify_ssl'] = proxy_verify_ssl
+        # Thread transport/TLS options for discovery (Requirement 29). The CLI
+        # validators have already parsed/validated these before discovery: the
+        # client cert (str or (cert, key) tuple), CA bundle path, and the parsed
+        # --resolve (host, ip) tuple. The cross-domain redirect toggle is carried
+        # on the endpoints config consumed by _handle_redirect.
+        config_dict['client_cert'] = client_cert
+        config_dict['ca_bundle'] = ca_bundle
+        config_dict['resolve'] = resolve
+        config_dict['fuzzing']['endpoints']['allow_cross_domain_redirects'] = allow_cross_domain_redirects
+
+        # Thread the merged in-memory candidate set and per-seed methods into the
+        # fuzzing config when Spec_Import sources or repeated/stdin wordlists were
+        # supplied (Requirements 25.3, 25.4). When candidate_set is None the
+        # single-file wordlist path above is used, preserving prior behavior.
+        if candidate_set is not None:
+            config_dict['fuzzing']['endpoints']['candidate_set'] = candidate_set
+            config_dict['fuzzing']['endpoints']['seed_methods'] = seed_methods
         
         # Apply CLI overrides
         if rate_limit:
@@ -777,6 +1324,54 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             config_dict['fuzzing']['max_requests'] = max_requests
         if concurrency is not None:
             config_dict['fuzzing']['concurrency'] = concurrency
+        # Thread the Hit_Confirmation selection into the fuzzing config
+        # (Requirements 35.1, 35.7). Off by default (None) so discovery keeps its
+        # single-request behavior; when --confirm-hits N is supplied, enable
+        # confirmation with N re-requests. _build_fuzzing_config reads this key
+        # and accepts either a dict or a HitConfirmationConfig.
+        if confirm_hits is not None:
+            config_dict['fuzzing']['hit_confirmation'] = {'enabled': True, 'count': confirm_hits}
+        # Thread the storage-time Path_Scope and Storage_Status_Selection onto
+        # the fuzzing config so the EndpointFuzzer applies them at storage time
+        # (Requirements 33.1-33.7). _build_fuzzing_config reads these keys and
+        # sets them on the FuzzingConfig the fuzzer receives.
+        config_dict['fuzzing']['path_scope'] = path_scope
+        config_dict['fuzzing']['storage_status'] = storage_status
+        # Thread the Recursion_Scope onto the fuzzing config so recursion only
+        # descends into records the scope admits (Requirements 34.1-34.3).
+        # _build_fuzzing_config reads this key and sets it on the FuzzingConfig
+        # the orchestrator consults; None (no flags) preserves the default
+        # VALID/AUTH_REQUIRED recursion (34.4).
+        config_dict['fuzzing']['recursion_scope'] = recursion_scope
+        # Thread the per-request resilience controls into the config
+        # (Requirement 28). --timeout becomes the target read timeout consumed by
+        # HTTPRequestEngine (28.1); --retries becomes the Retry_Limit sourced into
+        # RetryConfig.max_attempts (28.2). Both fall back to the config defaults
+        # when not supplied.
+        if timeout is not None:
+            config_dict['target']['timeout'] = timeout
+        if retries is not None:
+            config_dict['fuzzing']['retries'] = retries
+        # Values are comma-separated AND repeatable: split each value on commas,
+        # flatten, then normalize to canonical single-dot form.
+        config_dict['fuzzing'].setdefault('endpoints', {})
+        config_dict['fuzzing']['endpoints']['extensions'] = normalize_extensions(
+            [ext for value in extensions for ext in value.split(',')]
+        )
+        # Thread the Method_Enumeration toggle into the fuzzing config
+        # (Requirement 26.1); default off unless --enumerate-methods is passed.
+        config_dict['fuzzing']['endpoints']['enumerate_methods'] = enumerate_methods
+        # Thread the GraphQL discovery toggle into the fuzzing config
+        # (Requirement 27.1); default off unless --graphql is passed.
+        config_dict['fuzzing']['endpoints']['graphql'] = graphql
+        # Thread the Secret_Detection toggle and optional custom Secret_Patterns
+        # into the secret_scan config (Requirement 30.1/30.6). Detection is off
+        # unless --detect-secrets is passed; when --secret-patterns supplies a
+        # name->regex map it overrides the built-in DEFAULT_SECRET_PATTERNS.
+        config_dict.setdefault('secret_scan', {})
+        config_dict['secret_scan']['enabled'] = detect_secrets
+        if secret_patterns is not None:
+            config_dict['secret_scan']['patterns'] = secret_patterns
         if depth == 0:
             config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only (17.3)
         if jwt:
@@ -797,8 +1392,15 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
                 click.echo(f"Error: {error}", err=True)
             sys.exit(1)
         
-        # Run the scan
-        asyncio.run(run_enhanced_apileak(apileak_config))
+        # Run the scan with a live Progress_Display gated by CI_Mode/TTY
+        # (Requirement 32). The display reports against the configured
+        # Request_Budget (max_requests) when one is set.
+        discovery_progress = _build_discovery_progress(
+            ci_mode, apileak_config.fuzzing.max_requests
+        )
+        asyncio.run(run_enhanced_apileak(
+            apileak_config, discovery_progress=discovery_progress
+        ))
         
     except Exception as e:
         logger.error("Directory fuzzing failed", error=str(e))
@@ -806,14 +1408,31 @@ def dir(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         sys.exit(1)
 
 
+def _build_discovery_progress(ci_mode, max_requests):
+    """Build the live Progress_Display for the ``dir`` command (Requirement 32).
+
+    The display is enabled only for an interactive session that is **not** in
+    CI_Mode and whose standard output is a TTY:
+    ``enabled = (not ci_mode) and sys.stdout.isatty()`` — the exact gating that
+    governs the interactive triage prompt. This disables it in CI_Mode
+    (Requirement 32.3) and when stdout is not a TTY so it never interferes with
+    piped output (Requirement 32.4). ``total`` is the Request_Budget
+    (``max_requests``); when ``None`` the display omits the consumed/remaining
+    budget figures (Requirement 32.5).
+    """
+    enabled = (not ci_mode) and sys.stdout.isatty()
+    return DiscoveryProgress(enabled=enabled, total=max_requests)
+
+
 def _echo_discovery_control_status(core):
     """Surface discovery recursion-control flags in the discovery summary.
 
-    Reports when the Request_Budget was reached (Requirement 18.5) or when
-    Catch_All_Response behavior was detected (Requirement 19.5). The flags are
-    read defensively via :meth:`APILeakCore.get_discovery_status`, so the
-    summary stays silent unless a flag is set (including before the underlying
-    fuzzer attributes exist).
+    Reports when the Request_Budget was reached (Requirement 18.5), when
+    Catch_All_Response behavior was detected (Requirement 19.5), and when a
+    GraphQL endpoint with introspection enabled was detected (Requirement 27.4).
+    The values are read defensively via :meth:`APILeakCore.get_discovery_status`,
+    so the summary stays silent unless a flag is set (including before the
+    underlying fuzzer attributes exist).
     """
     status = core.get_discovery_status()
     if status.get("budget_reached"):
@@ -826,9 +1445,79 @@ def _echo_discovery_control_status(core):
             "⚠️  Catch-all response detected: wildcard endpoints excluded "
             "from recursive discovery"
         )
+    graphql_endpoint = status.get("graphql_introspection_endpoint")
+    if graphql_endpoint:
+        click.echo(
+            f"🔎 GRAPHQL_INTROSPECTION_ENABLED: introspection is enabled on "
+            f"{graphql_endpoint}"
+        )
+    _echo_fuzzing_stats(core)
+    _echo_secret_findings(core)
 
 
-async def _discover_endpoints_for_triage(apileak_config):
+def _echo_fuzzing_stats(core):
+    """Surface the discovery :class:`FuzzingStats` summary line (Requirement 31.3).
+
+    Reads the fuzzing statistics defensively via
+    :meth:`APILeakCore.get_fuzzing_stats` (accessed through ``getattr`` so the
+    function stays safe when called with a fake/partial ``core`` that does not
+    expose the accessor, as in the discovery-control tests). When stats are
+    available, prints a single line reporting endpoints tested, endpoints
+    discovered, total requests, success rate, and recursion depth reached. Stays
+    silent when stats are unavailable (no discovery ran).
+    """
+    get_stats = getattr(core, "get_fuzzing_stats", None)
+    if get_stats is None:
+        return
+    stats = get_stats()
+    if stats is None:
+        return
+
+    endpoints_tested = getattr(stats, "endpoints_tested", 0)
+    endpoints_discovered = getattr(stats, "endpoints_discovered", 0)
+    total_requests = getattr(stats, "total_requests", 0)
+    success_rate = getattr(stats, "success_rate", 0.0)
+    recursive_depth = getattr(stats, "recursive_depth_reached", 0)
+
+    click.echo(
+        f"📊 Discovery stats: {endpoints_tested} endpoint(s) tested, "
+        f"{endpoints_discovered} discovered, {total_requests} request(s), "
+        f"{success_rate:.1f}% success rate, recursion depth "
+        f"{recursive_depth}"
+    )
+
+
+def _echo_secret_findings(core):
+    """Surface redacted secret findings in the discovery summary (Requirement 30).
+
+    Reads the :class:`SecretFinding` records collected during discovery via
+    :meth:`APILeakCore.get_secret_findings` (read defensively). Each finding is
+    displayed with its pattern name, originating endpoint/method, and the
+    already-redacted matched value, so the full secret value is never echoed
+    (Requirement 30.4). The summary stays silent when secret detection was
+    disabled or nothing matched (Requirement 30.7).
+    """
+    get_findings = getattr(core, "get_secret_findings", None)
+    if get_findings is None:
+        return
+    findings = get_findings()
+    if not findings:
+        return
+
+    click.echo(
+        f"🔑 SECRET_FINDINGS: {len(findings)} potential secret(s) detected "
+        f"in discovery responses (values redacted):"
+    )
+    for finding in findings:
+        endpoint = getattr(finding, "endpoint", "")
+        method = getattr(finding, "method", "")
+        pattern_name = getattr(finding, "pattern_name", "")
+        redacted = getattr(finding, "redacted", "")
+        location = f"{method} {endpoint}".strip()
+        click.echo(f"   - [{pattern_name}] {location}: {redacted}")
+
+
+async def _discover_endpoints_for_triage(apileak_config, discovery_progress=None):
     """Run discovery for the triage workflow and return endpoints + soft-404 baseline.
 
     Builds an :class:`APILeakCore`, executes a scan against the configured target
@@ -840,12 +1529,21 @@ async def _discover_endpoints_for_triage(apileak_config):
 
     Args:
         apileak_config: The loaded APILeak configuration.
+        discovery_progress: Optional live Progress_Display (Requirement 32),
+            attached to the core before discovery runs so the endpoint fuzzer can
+            render live progress. ``None`` (or a disabled instance) runs discovery
+            without a display.
 
     Returns:
         A ``(endpoints, soft_404_baseline)`` tuple. ``soft_404_baseline`` is
         ``None`` when the discovery probes did not yield a single signature.
     """
     core = APILeakCore(apileak_config)
+
+    # Attach the live Progress_Display (if any) before discovery runs so the
+    # endpoint fuzzer can render it (Requirement 32).
+    if discovery_progress is not None:
+        core.discovery_progress = discovery_progress
 
     health_status = await core.health_check()
     if health_status.get("status") != "healthy":
@@ -934,7 +1632,9 @@ def _select_records(
 def _run_dir_triage(
     *,
     target,
-    wordlist,
+    wordlist_path,
+    candidate_set,
+    seed_methods,
     output,
     rate_limit,
     methods,
@@ -942,6 +1642,9 @@ def _run_dir_triage(
     user_agent_custom,
     user_agent_file,
     jwt,
+    header,
+    cookie,
+    basic_auth,
     response,
     status_code,
     matchers,
@@ -952,10 +1655,21 @@ def _run_dir_triage(
     load_session,
     export_format,
     export_file,
+    output_format,
+    output_file,
     interactive,
+    scan_scope,
     ci_mode,
     proxy,
     proxy_verify_ssl,
+    client_cert=None,
+    ca_bundle=None,
+    allow_cross_domain_redirects=False,
+    resolve=None,
+    detect_secrets=False,
+    secret_patterns=None,
+    path_scope=None,
+    storage_status=None,
     logger,
 ):
     """Run the discovery triage workflow for the ``dir`` command.
@@ -1011,12 +1725,42 @@ def _run_dir_triage(
 
             status_code_filter = parse_status_codes(status_code) if status_code else None
 
+            # Parse operator-supplied discovery headers, cookie, and basic-auth
+            # so the triage discovery path applies them to every Discovery_Request
+            # exactly like the standard dir path (Requirements 24.2, 24.3, 24.4).
+            extra_headers = parse_header_options(header)
+            if cookie:
+                extra_headers['Cookie'] = cookie
+            basic_auth_creds = parse_basic_auth(basic_auth)
+
             config_dict = create_default_config(
-                target, wordlist, "dir", user_agent_config, output_filename,
-                advanced_config, status_code_filter,
+                target, wordlist_path, "dir", user_agent_config, output_filename,
+                advanced_config, status_code_filter, extra_headers, basic_auth_creds,
             )
             config_dict['proxy'] = proxy
             config_dict['proxy_verify_ssl'] = proxy_verify_ssl
+            # Thread transport/TLS options for discovery (Requirement 29) exactly
+            # like the standard dir path. The CLI validators have already
+            # parsed/validated these before any discovery runs.
+            config_dict['client_cert'] = client_cert
+            config_dict['ca_bundle'] = ca_bundle
+            config_dict['resolve'] = resolve
+            config_dict['fuzzing']['endpoints']['allow_cross_domain_redirects'] = allow_cross_domain_redirects
+
+            # Thread the Secret_Detection toggle and optional custom
+            # Secret_Patterns into the secret_scan config exactly like the
+            # standard dir path (Requirement 30.1/30.6).
+            config_dict.setdefault('secret_scan', {})
+            config_dict['secret_scan']['enabled'] = detect_secrets
+            if secret_patterns is not None:
+                config_dict['secret_scan']['patterns'] = secret_patterns
+
+            # Thread the merged in-memory candidate set and per-seed methods into
+            # the triage discovery config exactly like the standard dir path
+            # (Requirements 25.3, 25.4); None preserves the single-file path.
+            if candidate_set is not None:
+                config_dict['fuzzing']['endpoints']['candidate_set'] = candidate_set
+                config_dict['fuzzing']['endpoints']['seed_methods'] = seed_methods
 
             if rate_limit:
                 config_dict['rate_limiting']['requests_per_second'] = rate_limit
@@ -1030,6 +1774,15 @@ def _run_dir_triage(
             if response:
                 config_dict['fuzzing']['response_filter'] = parse_response_codes(response)
 
+            # Thread the storage-time Path_Scope and Storage_Status_Selection
+            # onto the triage discovery config exactly like the standard dir
+            # path so dropped records never enter the session/export/table
+            # (Requirements 33.1-33.7). Only the live-discovery branch applies
+            # these; the --load-session reload above sources records from the
+            # session file and performs no discovery.
+            config_dict['fuzzing']['path_scope'] = path_scope
+            config_dict['fuzzing']['storage_status'] = storage_status
+
             config_manager = ConfigurationManager()
             apileak_config = config_manager.load_config_from_dict(config_dict)
 
@@ -1041,7 +1794,12 @@ def _run_dir_triage(
                 sys.exit(1)
 
             endpoints, soft_404_baseline = asyncio.run(
-                _discover_endpoints_for_triage(apileak_config)
+                _discover_endpoints_for_triage(
+                    apileak_config,
+                    _build_discovery_progress(
+                        ci_mode, apileak_config.fuzzing.max_requests
+                    ),
+                )
             )
             records = [DiscoveryResult.from_endpoint(endpoint) for endpoint in endpoints]
             logger.info("Projected discovery results", records=len(records))
@@ -1092,11 +1850,26 @@ def _run_dir_triage(
             write_discovery_export(records, export_path)
             click.echo(f"📄 Discovery export written: {export_path}")
 
-        # Interactive triage selection (opt-in). The helper enforces the full
-        # contract: it is disabled by default, never prompts in CI mode, skips an
-        # empty (filtered) table, bounds invalid selections to 3 consecutive
-        # attempts, and launches exactly one Targeted_Follow_Up_Scan on a valid
-        # selection (Requirements 16.1-16.4, 16.6-16.8).
+        # Write the machine-readable discovery output (CSV/JSONL). This is
+        # additional to the JSON session file (which remains the reload source of
+        # truth) and to the human-readable export. The output path extension
+        # selects the format; an unsupported format is rejected without writing
+        # anything (Requirements 31.1, 31.4) and a write failure is surfaced as a
+        # CLI error (Requirement 31.5).
+        if output_format or output_file:
+            if output_file:
+                # Pass the user-supplied path through as-is and let
+                # write_discovery_output validate the extension.
+                output_path = output_file
+            else:
+                output_dir = "reports"
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, f"discovery_output.{output_format}")
+            write_discovery_output(records, output_path)
+            click.echo(f"📄 Discovery output written: {output_path}")
+
+        # Define the follow-up scan callables used by both the non-interactive
+        # --scan-scope path and the interactive triage selection below.
         def _follow_up(selected):
             _run_targeted_follow_up_scan(
                 selected,
@@ -1109,17 +1882,63 @@ def _run_dir_triage(
                 output=output,
                 detect_framework=detect_framework,
                 fuzz_versions=fuzz_versions,
+                header=header,
+                cookie=cookie,
+                basic_auth=basic_auth,
                 proxy=proxy,
                 proxy_verify_ssl=proxy_verify_ssl,
                 logger=logger,
             )
 
+        # Batch_Scan_Scope: launch one scoped OWASP scan over N selected records,
+        # rebuilding the same rate-limit/User-Agent/header/auth config the
+        # originating dir invocation used (Requirements 36.1, 36.3, 36.5). An
+        # empty determined scope is reported as "nothing to scan" by the helper
+        # (Requirement 36.6).
+        def _batch_follow_up(selected_records):
+            _run_scoped_owasp_scan(
+                selected_records,
+                target=target,
+                rate_limit=rate_limit,
+                user_agent_random=user_agent_random,
+                user_agent_custom=user_agent_custom,
+                user_agent_file=user_agent_file,
+                jwt=jwt,
+                response=response,
+                output=output,
+                detect_framework=detect_framework,
+                fuzz_versions=fuzz_versions,
+                header=header,
+                cookie=cookie,
+                basic_auth=basic_auth,
+                proxy=proxy,
+                proxy_verify_ssl=proxy_verify_ssl,
+                logger=logger,
+            )
+
+        # A non-interactive --scan-scope determines the Batch_Scan_Scope from all
+        # matching records and drives the scoped OWASP scan directly, with no
+        # interactive prompt. In CI_Mode this is the ONLY way the scope is
+        # determined and it never blocks (Requirements 36.2, 36.4). The token was
+        # already validated up front, so selection cannot raise here.
+        if scan_scope is not None:
+            scoped_records = select_scope_records(records, scan_scope)
+            _batch_follow_up(scoped_records)
+            return
+
+        # Interactive triage selection (opt-in). The helper enforces the full
+        # contract: it is disabled by default, never prompts in CI mode, skips an
+        # empty (filtered) table, bounds invalid selections to 3 consecutive
+        # attempts, launches exactly one Targeted_Follow_Up_Scan on a single
+        # valid selection, and launches one Batch_Scan_Scope OWASP scan on a
+        # multi-index selection (Requirements 16.1-16.4, 16.6-16.8, 36.1).
         run_interactive_triage(
             records,
             ci_mode,
             interactive,
             status_filter=status_filter,
             follow_up=_follow_up,
+            batch_follow_up=_batch_follow_up,
         )
 
     except ValueError as exc:
@@ -1137,10 +1956,108 @@ def _run_dir_triage(
         logger.error("Discovery export error", error=str(exc))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+    except DiscoveryOutputError as exc:
+        # Unsupported machine-readable output format or write failure —
+        # Requirements 31.4, 31.5. UnsupportedOutputFormatError is a subclass of
+        # DiscoveryOutputError, so both are surfaced here as a CLI error.
+        logger.error("Discovery output error", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
     except Exception as exc:  # noqa: BLE001 - surface any other failure as a CLI error
         logger.error("Directory triage failed", error=str(exc))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+class ScanScopeError(ValueError):
+    """Raised when a ``--scan-scope`` value is not a recognized Status_Code_Class
+    or EndpointStatus (Requirement 36.7).
+
+    Subclasses :class:`ValueError` so the existing ``dir`` triage error handling
+    surfaces it as a descriptive CLI error performing no scan.
+    """
+
+
+# Recognized non-interactive Batch_Scan_Scope selectors (Requirement 36.2): the
+# four Status_Code_Class tokens and the two selectable EndpointStatus values.
+SCAN_SCOPE_STATUS_CLASSES = ("2xx", "3xx", "4xx", "5xx")
+SCAN_SCOPE_ENDPOINT_STATUSES = ("valid", "auth_required")
+
+
+def select_scope_records(records, scan_scope):
+    """Return every :class:`DiscoveryResult` matching the Batch_Scan_Scope token.
+
+    The ``scan_scope`` token is one of the four Status_Code_Class values
+    (``2xx``/``3xx``/``4xx``/``5xx``) or one of the selectable EndpointStatus
+    values (``valid``/``auth_required``), selecting all matching records as the
+    scope for an OWASP scan (Requirement 36.2). An unrecognized token raises a
+    descriptive :class:`ScanScopeError` naming the value and selects nothing
+    (Requirement 36.7).
+
+    Args:
+        records: The in-memory ``DiscoveryResult`` records to filter.
+        scan_scope: The raw ``--scan-scope`` token.
+
+    Returns:
+        The list of records that match the scope (possibly empty).
+
+    Raises:
+        ScanScopeError: If ``scan_scope`` is not a recognized token.
+    """
+    token = (scan_scope or "").strip().lower()
+    if token in SCAN_SCOPE_STATUS_CLASSES:
+        return [r for r in records if status_code_class(r.status_code) == token]
+    if token in SCAN_SCOPE_ENDPOINT_STATUSES:
+        return [r for r in records if r.endpoint_status == token]
+    raise ScanScopeError(
+        f"Unrecognized --scan-scope value '{scan_scope}': expected one of "
+        f"2xx, 3xx, 4xx, 5xx, valid, auth_required."
+    )
+
+
+def _parse_selection_indices(selection, count):
+    """Parse a multi-index/range triage selection into sorted 1-based indices.
+
+    Accepts comma-separated indices and inclusive ranges, e.g. ``"1,3,5"`` or
+    ``"2-4"`` (and combinations like ``"1,3-5"``). Every index must fall within
+    ``[1, count]``. Returns a sorted list of unique indices, or ``None`` when the
+    selection is empty or contains any malformed/out-of-range token (so the
+    caller treats it as an invalid selection and re-prompts).
+    """
+    selection = (selection or "").strip()
+    if not selection:
+        return None
+
+    indices = set()
+    for token in selection.split(","):
+        token = token.strip()
+        if not token:
+            return None
+        if "-" in token:
+            parts = token.split("-")
+            if len(parts) != 2:
+                return None
+            start_raw, end_raw = parts[0].strip(), parts[1].strip()
+            if not (start_raw.isdigit() and end_raw.isdigit()):
+                return None
+            start, end = int(start_raw), int(end_raw)
+            if start > end:
+                return None
+            for index in range(start, end + 1):
+                if not 1 <= index <= count:
+                    return None
+                indices.add(index)
+        else:
+            if not token.isdigit():
+                return None
+            index = int(token)
+            if not 1 <= index <= count:
+                return None
+            indices.add(index)
+
+    if not indices:
+        return None
+    return sorted(indices)
 
 
 def run_interactive_triage(
@@ -1150,6 +2067,7 @@ def run_interactive_triage(
     *,
     status_filter=None,
     follow_up=None,
+    batch_follow_up=None,
     prompt_func=None,
     echo=None,
     max_invalid_attempts=3,
@@ -1164,14 +2082,17 @@ def run_interactive_triage(
     scan is initiated (Requirement 16.8).
 
     Otherwise the function presents the filtered records (in the same ascending
-    status-class order as the triage table) and prompts for exactly one endpoint
-    selection (Requirement 16.1). A valid selection invokes ``follow_up`` exactly
-    once with the chosen :class:`DiscoveryResult`, launching a single
-    ``Targeted_Follow_Up_Scan`` scoped to that endpoint (Requirement 16.2). An
-    invalid selection re-prompts without starting a scan, up to a maximum of 3
-    consecutive invalid attempts; after the 3rd the function exits interactive
-    mode without a scan and prints a "selection abandoned" message
-    (Requirements 16.6, 16.7).
+    status-class order as the triage table) and prompts for a selection
+    (Requirement 16.1). The selection may name a single index, or multiple
+    indices/ranges (e.g. ``1,3,5`` or ``2-4``). A single-index selection invokes
+    ``follow_up`` exactly once with the chosen :class:`DiscoveryResult`,
+    launching a single ``Targeted_Follow_Up_Scan`` scoped to that endpoint
+    (Requirement 16.2). A selection of two or more records instead invokes
+    ``batch_follow_up`` once with the selected records, defining a
+    ``Batch_Scan_Scope`` (Requirement 36.1). An invalid selection re-prompts
+    without starting a scan, up to a maximum of 3 consecutive invalid attempts;
+    after the 3rd the function exits interactive mode without a scan and prints a
+    "selection abandoned" message (Requirements 16.6, 16.7).
 
     Args:
         records: The in-memory discovery records (already the reload source of
@@ -1181,8 +2102,11 @@ def run_interactive_triage(
         status_filter: The parsed status filter so the selectable set matches the
             displayed (filtered) table.
         follow_up: Callable invoked with the selected record to launch the
-            targeted follow-up scan. Optional so the selection logic stays
-            testable in isolation.
+            single-endpoint targeted follow-up scan. Optional so the selection
+            logic stays testable in isolation.
+        batch_follow_up: Callable invoked with the list of selected records when
+            two or more are chosen, launching a Batch_Scan_Scope OWASP scan
+            (Requirement 36.1). Optional.
         prompt_func: Callable taking a prompt message and returning the raw user
             input; defaults to a ``click.prompt`` wrapper. Injectable for tests.
         echo: Callable used for output; defaults to :func:`click.echo`.
@@ -1190,8 +2114,9 @@ def run_interactive_triage(
             prompt is abandoned (defaults to 3, Requirement 16.6).
 
     Returns:
-        The selected :class:`DiscoveryResult` when a valid selection is made,
-        otherwise ``None`` (disabled, CI mode, empty table, or abandoned).
+        The selected :class:`DiscoveryResult` for a single-index selection, the
+        list of selected records for a multi-index selection, otherwise ``None``
+        (disabled, CI mode, empty table, or abandoned).
     """
     log = get_logger("dir")
     echo = echo or click.echo
@@ -1221,7 +2146,9 @@ def run_interactive_triage(
         def prompt_func(message):
             return click.prompt(message, default="", show_default=False)
 
-    echo("\nSelect an endpoint for a targeted follow-up scan:")
+    echo("\nSelect endpoint(s) for a follow-up scan:")
+    echo("  Enter a single index for a targeted scan, or multiple "
+         "indices/ranges (e.g. 1,3,5 or 2-4) for a batch OWASP scan.")
     for index, record in enumerate(displayed, start=1):
         echo(f"  {index}. [{record.status_code}] {record.method} {record.url}")
 
@@ -1233,13 +2160,9 @@ def run_interactive_triage(
             raw = ""
 
         selection = (raw or "").strip()
-        selected = None
-        if selection.isdigit():
-            index = int(selection)
-            if 1 <= index <= len(displayed):
-                selected = displayed[index - 1]
+        chosen_indices = _parse_selection_indices(selection, len(displayed))
 
-        if selected is None:
+        if chosen_indices is None:
             # Invalid selection: re-prompt without launching a scan (Req 16.6).
             invalid_attempts += 1
             remaining = max_invalid_attempts - invalid_attempts
@@ -1251,7 +2174,21 @@ def run_interactive_triage(
                 )
             continue
 
-        # Valid selection: launch exactly one Targeted_Follow_Up_Scan (Req 16.2).
+        selected_records = [displayed[index - 1] for index in chosen_indices]
+
+        if len(selected_records) >= 2:
+            # Two or more records: define a Batch_Scan_Scope (Req 36.1) and launch
+            # a single scoped OWASP scan over the selected set.
+            log.info(
+                "Interactive triage batch selection",
+                endpoints=len(selected_records),
+            )
+            if batch_follow_up is not None:
+                batch_follow_up(selected_records)
+            return selected_records
+
+        # Single record: launch exactly one Targeted_Follow_Up_Scan (Req 16.2).
+        selected = selected_records[0]
         log.info(
             "Interactive triage selection",
             url=selected.url,
@@ -1283,6 +2220,9 @@ def _run_targeted_follow_up_scan(
     output,
     detect_framework,
     fuzz_versions,
+    header=(),
+    cookie=None,
+    basic_auth=None,
     proxy=None,
     proxy_verify_ssl=False,
     logger,
@@ -1298,6 +2238,10 @@ def _run_targeted_follow_up_scan(
         rate_limit, user_agent_*, jwt, response, output, detect_framework,
         fuzz_versions: The same discovery options passed to the ``dir`` command,
             so the follow-up honors the user's original settings.
+        header, cookie, basic_auth: The same Discovery_Header_Option values
+            supplied to the originating ``dir`` invocation, re-applied to the
+            scoped config so the follow-up scan sends them on every request
+            (Requirement 24.7).
         logger: The command logger.
     """
     logger.info(
@@ -1326,10 +2270,19 @@ def _run_targeted_follow_up_scan(
         'framework_confidence': 0.6,
     }
 
+    # Re-apply the operator-supplied discovery headers, cookie, and basic-auth so
+    # the Targeted_Follow_Up_Scan inherits the same Discovery_Header_Option values
+    # as the originating dir invocation (Requirement 24.7). The cookie rides the
+    # same custom_headers path as --header.
+    extra_headers = parse_header_options(header)
+    if cookie:
+        extra_headers['Cookie'] = cookie
+    basic_auth_creds = parse_basic_auth(basic_auth)
+
     # Scope the scan to the single selected endpoint URL (no wordlist expansion).
     config_dict = create_default_config(
         selected.url, None, "dir", user_agent_config, output_filename,
-        advanced_config, None,
+        advanced_config, None, extra_headers, basic_auth_creds,
     )
     config_dict['proxy'] = proxy
     config_dict['proxy_verify_ssl'] = proxy_verify_ssl
@@ -1358,6 +2311,137 @@ def _run_targeted_follow_up_scan(
         return
 
     asyncio.run(run_enhanced_apileak(apileak_config))
+
+
+def _run_scoped_owasp_scan(
+    selected_records,
+    *,
+    target,
+    rate_limit,
+    user_agent_random,
+    user_agent_custom,
+    user_agent_file,
+    jwt,
+    response,
+    output,
+    detect_framework=False,
+    fuzz_versions=False,
+    header=(),
+    cookie=None,
+    basic_auth=None,
+    proxy=None,
+    proxy_verify_ssl=False,
+    logger,
+):
+    """Launch one OWASP scan scoped to ``selected_records`` (Batch_Scan_Scope, Req 36).
+
+    Generalizes :func:`_run_targeted_follow_up_scan` from a single endpoint to N
+    selected :class:`DiscoveryResult` records. The selected set is threaded into
+    ``run_enhanced_apileak(..., scope_endpoints=...)`` which seeds
+    ``APILeakCore.run_scan(scope_endpoints=...)``, so the OWASP modules consume
+    exactly the seeded endpoints and wordlist discovery is skipped
+    (Requirements 36.3, 36.8). The scan runs through the Full_Command engine scan
+    path so the OWASP_Modules execute against the seeded set.
+
+    The same Rate_Limit, User_Agent_Option, Discovery_Header_Option, and auth
+    values supplied to the originating ``dir`` invocation are rebuilt onto the
+    scoped config so every request the scan issues inherits them
+    (Requirement 36.5).
+
+    An empty determined scope performs no scan and reports that there is nothing
+    to scan (Requirement 36.6).
+
+    Args:
+        selected_records: The selected :class:`DiscoveryResult` records forming
+            the Batch_Scan_Scope.
+        target: The originating ``dir`` target URL, used as the scan's base URL.
+        rate_limit, user_agent_*, jwt, response, output, detect_framework,
+        fuzz_versions: The same discovery options supplied to the ``dir`` command,
+            re-applied so the scoped scan honors the operator's settings.
+        header, cookie, basic_auth: The same Discovery_Header_Option values
+            supplied to the originating ``dir`` invocation, re-applied so the
+            scoped scan sends them on every request (Requirement 36.5).
+        proxy, proxy_verify_ssl: Proxy settings carried through unchanged.
+        logger: The command logger.
+    """
+    # Empty determined scope: perform no scan, report nothing to scan (Req 36.6).
+    if not selected_records:
+        logger.info("Scoped OWASP scan skipped: empty scope")
+        click.echo("Nothing to scan: the selected scope contains no endpoints.")
+        return
+
+    logger.info(
+        "Scoped OWASP scan starting",
+        endpoints=len(selected_records),
+    )
+    click.echo(
+        f"🎯 Starting scoped OWASP scan over {len(selected_records)} endpoint(s)"
+    )
+
+    user_agent_config = None
+    if user_agent_random:
+        user_agent_config = {'random': True}
+    elif user_agent_custom:
+        user_agent_config = {'custom': user_agent_custom}
+    elif user_agent_file:
+        user_agents = load_user_agents_from_file(user_agent_file)
+        user_agent_config = {'file_list': user_agents}
+
+    output_filename = prepare_output_filename(output)
+
+    advanced_config = {
+        'detect_framework': detect_framework,
+        'fuzz_versions': fuzz_versions,
+        'framework_confidence': 0.6,
+    }
+
+    # Re-apply the operator-supplied discovery headers, cookie, and basic-auth so
+    # the scoped scan inherits the same Discovery_Header_Option values as the
+    # originating dir invocation (Requirement 36.5). The cookie rides the same
+    # custom_headers path as --header.
+    extra_headers = parse_header_options(header)
+    if cookie:
+        extra_headers['Cookie'] = cookie
+    basic_auth_creds = parse_basic_auth(basic_auth)
+
+    # Build a "full" engine config so the OWASP_Modules run against the seeded
+    # endpoints (Requirement 36.3). scope_endpoints seeds the discovery phase
+    # directly, so no wordlist is needed.
+    config_dict = create_enhanced_config(
+        target, None, "full", user_agent_config, output_filename,
+        advanced_config, None, False, "critical", False,
+        extra_headers, basic_auth_creds,
+    )
+    config_dict['proxy'] = proxy
+    config_dict['proxy_verify_ssl'] = proxy_verify_ssl
+
+    # Rebuild the same rate-limit override the originating dir used (Req 36.5).
+    if rate_limit:
+        config_dict['rate_limiting']['requests_per_second'] = rate_limit
+    if jwt:
+        config_dict['authentication']['contexts'][0]['token'] = jwt
+        config_dict['authentication']['contexts'][0]['type'] = 'bearer'
+    if response:
+        config_dict['fuzzing']['response_filter'] = parse_response_codes(response)
+
+    config_manager = ConfigurationManager()
+    apileak_config = config_manager.load_config_from_dict(config_dict)
+
+    validation_errors = config_manager.validate_configuration()
+    if validation_errors:
+        logger.error(
+            "Scoped OWASP scan configuration invalid",
+            errors=validation_errors,
+        )
+        for error in validation_errors:
+            click.echo(f"Error: {error}", err=True)
+        return
+
+    # Thread the selected set into the engine scan path so the OWASP modules
+    # consume exactly the seeded endpoints (Requirements 36.3, 36.8).
+    asyncio.run(
+        run_enhanced_apileak(apileak_config, scope_endpoints=selected_records)
+    )
 
 
 @cli.command()
@@ -1480,6 +2564,15 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
               help='Global request budget for discovery (default: unbounded).')
 @click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
               help='Max concurrent in-flight discovery requests (default: 50).')
+@click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
+              help='Per-request timeout in seconds applied to every discovery request '
+                   '(must be > 0; default: 10).')
+@click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
+              help='Number of automatic retries for each failed discovery request '
+                   '(must be >= 0; default: 2).')
+@click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
+              help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
+                   'e.g. -x json,php or -x .json -x .php. Leading dots are optional.')
 @click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
@@ -1502,8 +2595,16 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--baseline', type=click.Path(), help='Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.')
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
+@click.option('--recursion-status', 'recursion_status', metavar='CLASSES', default=None,
+              help='Restrict recursion to endpoints whose status class is in CLASSES: a '
+                   "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
+                   'default VALID/AUTH_REQUIRED recursion; never relaxes it.')
+@click.option('--recursion-type', 'recursion_type', metavar='TYPES', default=None,
+              help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
+                   "list of endpoint types like 'admin,api_version'. Only narrows the default "
+                   'recursion; never relaxes it.')
 @click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl):
+def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type):
     """Full comprehensive scan - includes fuzzing and OWASP testing
     
     \b
@@ -1524,6 +2625,18 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
     
     logger.info("APILeak full scan starting", version="0.1.0", ci_mode=ci_mode)
     
+    # Parse the Recursion_Scope up front so an unrecognized status class or
+    # endpoint type is surfaced as a descriptive CLI error naming the offending
+    # value and NO Endpoint_Discovery is performed (Requirements 34.1, 34.2,
+    # 34.8). This runs before the scan's try/except so the abort is explicit and
+    # is not swallowed by the broad failure handler below.
+    try:
+        recursion_scope = parse_recursion_scope(recursion_status, recursion_type)
+    except RecursionScopeError as exc:
+        logger.error("Invalid discovery scope value", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
     try:
         config_manager = ConfigurationManager()
         
@@ -1578,8 +2691,29 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
                 config_dict['fuzzing']['max_requests'] = max_requests
             if concurrency is not None:
                 config_dict['fuzzing']['concurrency'] = concurrency
+            # Thread the per-request resilience controls into the config
+            # (Requirement 28). --timeout becomes the target read timeout consumed
+            # by HTTPRequestEngine (28.1); --retries becomes the Retry_Limit sourced
+            # into RetryConfig.max_attempts (28.2). Both fall back to the config
+            # defaults when not supplied.
+            if timeout is not None:
+                config_dict['target']['timeout'] = timeout
+            if retries is not None:
+                config_dict['fuzzing']['retries'] = retries
+            # Thread the Extension_Set into the fuzzing config (Requirement 23.1).
+            # Values are comma-separated AND repeatable: split each value on
+            # commas, flatten, then normalize to canonical single-dot form.
+            config_dict['fuzzing'].setdefault('endpoints', {})
+            config_dict['fuzzing']['endpoints']['extensions'] = normalize_extensions(
+                [ext for value in extensions for ext in value.split(',')]
+            )
             if depth == 0:
                 config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only (17.3)
+            # Thread the Recursion_Scope onto the fuzzing config so recursion only
+            # descends into records the scope admits (Requirements 34.1-34.3).
+            # None (no flags) preserves the default VALID/AUTH_REQUIRED recursion
+            # (34.4).
+            config_dict['fuzzing']['recursion_scope'] = recursion_scope
             apileak_config = config_manager.load_config_from_dict(config_dict)
         
         # When --safe-mode is requested, ensure it is honored even when the
@@ -3503,7 +4637,7 @@ def evaluate_severity_gate(counts, fail_on):
     return 1
 
 
-async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseline=None):
+async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseline=None, discovery_progress=None, scope_endpoints=None):
     """
     Run enhanced APILeak scan with full integration of all components
     
@@ -3514,11 +4648,28 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
         baseline: Optional path to a baseline JSON report. When provided,
                   findings are classified into new vs known and the CI severity
                   gate evaluates only the New_Finding set (Requirements 11.1-11.5).
+        discovery_progress: Optional live Progress_Display (Requirement 32). When
+                  provided it is attached to the core so the endpoint fuzzer
+                  renders live discovery progress; otherwise discovery runs
+                  without a display.
+        scope_endpoints: Optional pre-selected discovered records
+                  (``DiscoveryResult`` objects) defining a Batch_Scan_Scope.
+                  When non-empty, the set is threaded into
+                  ``APILeakCore.run_scan(scope_endpoints=...)`` which seeds the
+                  discovery phase directly so the OWASP modules consume exactly
+                  the seeded endpoints, skipping wordlist discovery
+                  (Requirements 36.3, 36.8).
     """
     logger = get_logger("run_enhanced_apileak")
     
     # Initialize APILeak Core with enhanced orchestration
     core = APILeakCore(config)
+    
+    # Attach the live Progress_Display (if any) before discovery runs so the
+    # endpoint fuzzer can render it (Requirement 32). No-op/disabled instances
+    # are harmless.
+    if discovery_progress is not None:
+        core.discovery_progress = discovery_progress
     
     # Perform health check
     health_status = await core.health_check()
@@ -3575,7 +4726,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
     
     try:
         # Execute the enhanced scan with intelligent orchestration
-        results = await core.run_scan(target_url)
+        results = await core.run_scan(target_url, scope_endpoints=scope_endpoints)
         
         # Generate enhanced reports with all findings
         from utils.report_generator import ReportGenerator

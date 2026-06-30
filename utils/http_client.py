@@ -19,6 +19,63 @@ from core.config import AuthContext, AuthType, RateLimitConfig
 from core.logging import get_logger
 
 
+def parse_resolve(value: str) -> Tuple[str, str]:
+    """Parse a ``--resolve`` value of the form ``host:ip`` into ``(host, ip)``.
+
+    Implements the DNS-override parsing for Requirement 29.4/29.7. The value
+    must be a single ``host:ip`` pair: a non-empty host and a non-empty IP
+    separated by exactly one colon. Anything else (missing colon, empty host or
+    IP, extra colons) is rejected with a descriptive ``ValueError`` naming the
+    offending value so the CLI layer can exit before any Endpoint_Discovery
+    runs (Requirement 29.7).
+
+    Args:
+        value: The raw ``--resolve`` argument.
+
+    Returns:
+        A ``(host, ip)`` tuple.
+
+    Raises:
+        ValueError: If ``value`` is not a well-formed ``host:ip`` pair.
+    """
+    if value is None or value.count(":") != 1:
+        raise ValueError(
+            f"--resolve must be of the form host:ip (got {value!r})"
+        )
+    host, ip = value.split(":", 1)
+    host = host.strip()
+    ip = ip.strip()
+    if not host or not ip:
+        raise ValueError(
+            f"--resolve must be of the form host:ip (got {value!r})"
+        )
+    return host, ip
+
+
+class _ResolveOverrideTransport(httpx.AsyncHTTPTransport):
+    """httpx transport that overrides DNS resolution for a single host.
+
+    Mounted for the ``--resolve`` host so that every Discovery_Request for that
+    host connects to the supplied IP while the original ``Host`` header and SNI
+    are preserved (Requirement 29.4). Requests to other hosts never reach this
+    transport because it is mounted under an ``all://<host>`` pattern.
+    """
+
+    def __init__(self, resolve_host: str, resolve_ip: str, **kwargs):
+        super().__init__(**kwargs)
+        self._resolve_host = resolve_host
+        self._resolve_ip = resolve_ip
+
+    async def handle_async_request(self, request: httpx.Request):
+        if request.url.host == self._resolve_host:
+            # Preserve the original Host header so virtual-host routing and TLS
+            # SNI continue to target the named host, then rewrite the connection
+            # host to the override IP.
+            request.headers.setdefault("Host", request.url.host)
+            request.url = request.url.copy_with(host=self._resolve_ip)
+        return await super().handle_async_request(request)
+
+
 class UserAgentRotator:
     """
     User Agent rotation manager for WAF evasion
@@ -337,7 +394,11 @@ class HTTPRequestEngine:
     
     def __init__(self, rate_limiter: RateLimiter, retry_config: RetryConfig, 
                  timeout: float = 30.0, verify_ssl: bool = True, user_agent_rotator: UserAgentRotator = None,
-                 status_code_filter: List[int] = None, proxy: Optional[str] = None):
+                 status_code_filter: List[int] = None, proxy: Optional[str] = None,
+                 default_headers: Dict[str, str] = None,
+                 cert: Optional[Union[str, Tuple[str, str]]] = None,
+                 ca_bundle: Optional[str] = None,
+                 resolve: Optional[Tuple[str, str]] = None):
         self.rate_limiter = rate_limiter
         self.retry_config = retry_config
         self.timeout = timeout
@@ -346,8 +407,24 @@ class HTTPRequestEngine:
         # terminates TLS with its own CA, so certificate verification must be
         # disabled for HTTPS targets unless the user explicitly opts back in.
         self.verify_ssl = verify_ssl
+        # Transport/TLS options for discovery (Requirement 29):
+        #   cert: mTLS client certificate presented on every request — a path
+        #     string, or a (cert, key) tuple when a cert:key form is supplied
+        #     (29.1).
+        #   ca_bundle: custom CA bundle path used to verify target certificates;
+        #     overrides the boolean verify_ssl only when supplied (29.2).
+        #   resolve: a (host, ip) DNS override applied to every request for the
+        #     named host (29.4).
+        self.cert = cert
+        self.ca_bundle = ca_bundle
+        self.resolve = resolve
         self.user_agent_rotator = user_agent_rotator or UserAgentRotator()
         self.status_code_filter = status_code_filter  # Filter for status codes to display
+        # Engine-level headers applied to every request unless overridden per
+        # call (e.g. operator-supplied discovery headers and the Cookie string).
+        # User-Agent is intentionally excluded by callers so it stays managed by
+        # the user_agent_rotator.
+        self.default_headers = default_headers or {}
         
         self.logger = get_logger(__name__).bind(component="http_engine")
         self.metrics = PerformanceMetrics()
@@ -398,13 +475,49 @@ class HTTPRequestEngine:
                 http2=False  # Disable HTTP/2 to avoid h2 dependency
             )
 
+            # Custom CA bundle (Requirement 29.2): when a CA path is supplied it
+            # overrides the boolean verify so target certificates are verified
+            # against the supplied trust store. When absent the boolean
+            # verify=self.verify_ssl behavior above is preserved intact.
+            if self.ca_bundle:
+                client_kwargs["verify"] = self.ca_bundle
+
+            # mTLS client certificate (Requirement 29.1): presented on every
+            # request when provided. Accepts a path string or a (cert, key)
+            # tuple.
+            if self.cert:
+                client_kwargs["cert"] = self.cert
+
             # Route all traffic through an intercepting proxy when configured
             # (Burp Suite, Caido, Hetty, etc.), so requests and responses can be
             # captured/inspected. httpx >= 0.26 uses the singular ``proxy`` kwarg.
+            # A socks5://user:pass@host:port URL routes every request through the
+            # SOCKS5 proxy with proxy auth (Requirement 29.5) — supported via the
+            # httpx[socks] extra.
             if self.proxy:
                 client_kwargs["proxy"] = self.proxy
                 self.logger.info("Routing HTTP traffic through proxy",
                                  proxy=self.proxy, verify_ssl=self.verify_ssl)
+
+            # DNS override (Requirement 29.4): override resolution for the named
+            # host to the supplied IP for every Discovery_Request by mounting a
+            # transport for that host. The mounted transport inherits the same
+            # verify/cert/proxy so mTLS and custom-CA behavior is preserved for
+            # the overridden host; all other hosts use the default transport.
+            if self.resolve:
+                resolve_host, resolve_ip = self.resolve
+                transport_kwargs = dict(verify=client_kwargs["verify"])
+                if self.cert:
+                    transport_kwargs["cert"] = self.cert
+                if self.proxy:
+                    transport_kwargs["proxy"] = self.proxy
+                client_kwargs["mounts"] = {
+                    f"all://{resolve_host}": _ResolveOverrideTransport(
+                        resolve_host, resolve_ip, **transport_kwargs
+                    )
+                }
+                self.logger.info("Overriding DNS resolution",
+                                 host=resolve_host, ip=resolve_ip)
 
             self.client = httpx.AsyncClient(**client_kwargs)
             
@@ -439,6 +552,11 @@ class HTTPRequestEngine:
             timeout=kwargs.get('timeout'),
             auth_context=kwargs.get('auth_context')
         )
+        
+        # Apply engine-level default headers (operator-supplied discovery headers
+        # and the Cookie string) without overriding any per-request header.
+        for _name, _value in self.default_headers.items():
+            request.headers.setdefault(_name, _value)
         
         # Apply user agent rotation if not already set
         if 'User-Agent' not in request.headers:
