@@ -7,7 +7,7 @@ import os
 import yaml
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Set, Union, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pydantic import BaseModel, ValidationError, validator
 from enum import Enum
@@ -179,6 +179,32 @@ class BOLAConfig:
     enabled: bool = True
     id_patterns: List[str] = field(default_factory=lambda: ["sequential", "guid", "uuid"])
     test_contexts: List[str] = field(default_factory=lambda: ["anonymous", "user", "admin"])
+    # Upper bound for ownership-aware id enumeration (Requirement 4.2). Bounds the
+    # sequential-id range probed by enumeration so it stays well-scoped; defaults
+    # to 25 to preserve a modest, safe enumeration window.
+    enumeration_bound: int = 25
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
+    # Advanced BOLA hardening options (Requirement 34). All default to the
+    # current read-only behavior so existing YAML configs that omit these fields
+    # load unchanged and resolve to safe defaults (Requirement 34.5).
+    #   allow_destructive: gate for issuing destructive verbs; off by default (34.2).
+    #   destructive_methods: verbs treated as destructive when allow_destructive
+    #     is enabled. DELETE is intentionally excluded from the default set (34.2).
+    #   enable_composite / enable_id_leakage: opt-in advanced probes, off by
+    #     default (34.2).
+    #   verb_tampering / parameter_pollution: opt-in tampering techniques, off by
+    #     default (34.2).
+    #   dry_run: when True, plan destructive actions without issuing them.
+    allow_destructive: bool = False
+    destructive_methods: Set[str] = field(default_factory=lambda: {"PATCH", "PUT"})
+    enable_composite: bool = False
+    enable_id_leakage: bool = False
+    verb_tampering: bool = False
+    parameter_pollution: bool = False
+    dry_run: bool = False
 
 
 @dataclass
@@ -188,6 +214,20 @@ class AuthTestingConfig:
     jwt_testing: bool = True
     weak_secrets_wordlist: str = "wordlists/jwt_secrets.txt"
     test_logout_invalidation: bool = True
+    # Operator-supplied public key material used for the JWT algorithm-confusion
+    # attack (Requirement 6.1). When provided, it is preferred over fetching a
+    # JWKS. Defaults to None so no placeholder key is ever used.
+    public_key_material: Optional[str] = None
+    # JWKS endpoint URL used to fetch RSA public key material for algorithm
+    # confusion when no key material is supplied directly (Requirement 6.2).
+    jwks_url: Optional[str] = None
+    # Known signing secret used to construct a validly-signed-but-expired token
+    # for expiration testing (Requirement 8.1). Defaults to None so the test is
+    # skipped (and logged) when no signing key is known.
+    signing_secret: Optional[str] = None
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False.
+    safe_mode: bool = False
 
 
 @dataclass
@@ -200,6 +240,9 @@ class PropertyTestingConfig:
     mass_assignment_fields: List[str] = field(default_factory=lambda: [
         "is_admin", "role", "permissions", "user_id"
     ])
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False.
+    safe_mode: bool = False
 
 
 @dataclass

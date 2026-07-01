@@ -101,6 +101,51 @@ def encode_jwt(header: Dict[str, Any], payload: Dict[str, Any], secret: str = "s
         raise ValueError(f"Failed to encode JWT: {str(e)}")
 
 
+def verify_hmac_secret(token: str, secret: str) -> bool:
+    """
+    Verify an HMAC-signed JWT against a candidate secret (Req 16.1/16.2/16.3).
+
+    HMAC-signs the ORIGINAL raw `header.payload` segments (never re-encodes the
+    full token) and compares the resulting base64url-encoded digest to the
+    original signature segment using a constant-time comparison.
+
+    Args:
+        token: JWT token string
+        secret: Candidate secret key to test
+
+    Returns:
+        True if the candidate secret produces a signature matching the token's
+        original signature segment, False otherwise (including malformed tokens
+        and unsupported/non-HMAC algorithms).
+    """
+    parts = token.split('.')
+    if len(parts) != 3:
+        return False
+
+    # HMAC over the ORIGINAL raw header.payload segments (no re-encoding).
+    signing_input = f"{parts[0]}.{parts[1]}".encode('utf-8')
+
+    # Select the digest based on the header's declared algorithm.
+    try:
+        header = json.loads(base64url_decode(parts[0]).decode('utf-8'))
+        alg = str(header.get('alg', 'HS256')).upper()
+    except Exception:
+        return False
+
+    digestmod = {
+        'HS256': hashlib.sha256,
+        'HS384': hashlib.sha384,
+        'HS512': hashlib.sha512,
+    }.get(alg)
+    if digestmod is None:
+        return False
+
+    computed = base64url_encode(
+        hmac.new(secret.encode('utf-8'), signing_input, digestmod).digest()
+    )
+    return hmac.compare_digest(computed, parts[2])
+
+
 def get_random_user_agents() -> list:
     """Get list of random user agents for WAF evasion"""
     return [

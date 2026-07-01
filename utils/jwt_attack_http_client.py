@@ -15,8 +15,14 @@ from .jwt_attack_models import RequestDetails, ResponseDetails
 
 class JWTAttackHTTPClient:
     """
-    HTTP client specialized for JWT attack testing
-    
+    HTTP client specialized for JWT attack testing.
+
+    Retained only as a standalone fallback (Requirement 14.4): the scan/CLI
+    paths route JWT HTTP through the shared ``HTTPRequestEngine`` via
+    :class:`~utils.jwt_attack_engine.JWTAttackEngine`. This client remains
+    available for standalone ``jwt`` use without a configured engine and is not
+    imported by the consolidated attack pipeline.
+
     Features:
     - JWT token injection in Authorization header
     - Custom header support

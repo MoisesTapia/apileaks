@@ -23,6 +23,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 ### OWASP Modules Documentation
 - **[OWASP Coverage](owasp-coverage.md)** - OWASP API Security Top 10 coverage analysis
 - **[OWASP Modules Guide](owasp-modules-guide.md)** - Complete OWASP testing modules guide
+- **[BOLA Testing (API1)](owasp/bola-testing.md)** - Broken Object Level Authorization testing
 - **[Property Level Auth](owasp/property-level-auth.md)** - Property Level Authorization testing
 
 ### Advanced Topics

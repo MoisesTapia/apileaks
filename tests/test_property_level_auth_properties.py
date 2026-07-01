@@ -200,45 +200,52 @@ class TestPropertyLevelAuthProperties:
     def test_mass_assignment_detection_property(self, baseline_response, test_response, field_name, test_value):
         """
         **Feature: apileak-owasp-enhancement, Property 8: Mass Assignment Detection**
-        **Validates: Requirements 3.2, 3.3**
-        
-        For any baseline response and test response, mass assignment detection should 
-        correctly identify when dangerous fields are accepted and processed.
+        **Validates: Requirements 10.1**
+
+        Corrected behavior: `_is_mass_assignment_successful` is async with
+        signature (test_response, endpoint, field_name, test_value) and returns
+        a persistence-evidence STRING iff the injected field/value is reflected
+        in the write response (or a safe GET re-read), otherwise None. Success is
+        never driven by size/time deltas.
         """
+        import asyncio
+
         auth_contexts = [AuthContext(name="test", type=AuthType.BEARER, token="test", privilege_level=1)]
         module = PropertyLevelAuthModule(self.config, self.mock_http_client, auth_contexts)
-        
-        # Only test with successful responses and JSON content
-        if (baseline_response.status_code != 200 or test_response.status_code != 200 or
-            "application/json" not in baseline_response.headers.get("content-type", "") or
-            "application/json" not in test_response.headers.get("content-type", "")):
-            return  # Skip invalid responses
-        
-        try:
-            # Test mass assignment detection
-            result = module._is_mass_assignment_successful(
-                baseline_response, test_response, field_name, test_value
-            )
-            
-            # Property: Result should always be a boolean
-            assert isinstance(result, bool)
-            
-            # Property: If test response contains the test field with test value, should return True
-            try:
-                test_data = json.loads(test_response.text)
-                if isinstance(test_data, dict) and field_name in test_data:
-                    if str(test_data[field_name]) == str(test_value):
-                        assert result is True
-            except (json.JSONDecodeError, ValueError):
-                pass
-            
-            # Property: If test response failed (4xx/5xx), should return False
-            if test_response.status_code >= 400:
-                assert result is False
-                
-        except Exception:
-            # Skip responses that cause parsing errors
-            pass
+
+        # Only test with successful, JSON write responses.
+        if (test_response.status_code < 200 or test_response.status_code >= 300 or
+                "application/json" not in test_response.headers.get("content-type", "")):
+            return
+
+        # Force the safe GET re-read to yield nothing so that success depends
+        # solely on whether the write response reflects the injected value.
+        failed_reread = Response(
+            status_code=404,
+            headers={"content-type": "application/json"},
+            content=b'{}',
+            text='{}',
+            url="https://api.example.com/object",
+            elapsed=0.1,
+            request_method="GET"
+        )
+        self.mock_http_client.request = AsyncMock(return_value=failed_reread)
+
+        endpoint = "https://api.example.com/object"
+        result = asyncio.run(
+            module._is_mass_assignment_successful(test_response, endpoint, field_name, test_value)
+        )
+
+        # Property: result is always None or a non-empty evidence string.
+        assert result is None or (isinstance(result, str) and len(result) > 0)
+
+        # Property: success iff the injected field/value is reflected in the
+        # write response (with the re-read yielding nothing).
+        reflected = module._reflects_injected_value(test_response, field_name, test_value)
+        if reflected:
+            assert isinstance(result, str) and len(result) > 0
+        else:
+            assert result is None
     
     @given(
         field_name=st.text(min_size=1, max_size=50, alphabet=st.characters(whitelist_categories=('Lu', 'Ll', 'Nd', 'Pc'))),
@@ -347,9 +354,16 @@ class TestPropertyLevelAuthProperties:
         if sensitive_field.sensitivity_type == 'financial':
             assert severity == Severity.CRITICAL
         
-        # Property: Personal data exposure to low-privilege users should be HIGH or CRITICAL
-        if sensitive_field.sensitivity_type == 'personal_data' and auth_context.privilege_level < 2:
-            assert severity in [Severity.HIGH, Severity.CRITICAL]
+        # Property: Personal data severity is driven by requesting privilege
+        # (corrected behavior, Req 12.2):
+        #   privilege_level <= 0 -> HIGH, == 1 -> MEDIUM, >= 2 -> LOW.
+        if sensitive_field.sensitivity_type == 'personal_data':
+            if auth_context.privilege_level <= 0:
+                assert severity == Severity.HIGH
+            elif auth_context.privilege_level < 2:
+                assert severity == Severity.MEDIUM
+            else:
+                assert severity == Severity.LOW
     
     @given(
         test_values=st.lists(

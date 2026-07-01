@@ -161,31 +161,14 @@ python apileaks.py full
 
 ### 1. 🔐 BOLA Testing (API1)
 
-**What does it detect?**
-- Unauthorized access to other users' objects
-- Sequential ID enumeration
-- Horizontal privilege escalation
+Detects unauthorized access to other users' objects, sequential ID enumeration, and horizontal privilege escalation.
 
 ```bash
-# Basic BOLA test
+# Basic read-only BOLA test
 python apileaks.py full --target https://api.example.com --modules bola
-
-# BOLA with multiple authentication contexts
-python apileaks.py full --target https://api.example.com --modules bola \
-  --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
-
-# BOLA with low rate limiting for sensitive APIs
-python apileaks.py full --target https://api.example.com --modules bola \
-  --rate-limit 2
 ```
 
-**Example of detected vulnerability:**
-```
-🚨 CRITICAL: BOLA_ANONYMOUS_ACCESS
-Endpoint: https://api.example.com/users/123
-Evidence: Object 123 accessible without authentication. Status: 200, Size: 245 bytes
-Recommendation: Implement proper authentication checks for object access.
-```
+For the full command reference — including multi-user contexts (`--auth-context`), Safe Mode, and the advanced probes (`--allow-write-bola`, `--bola-composite`, `--bola-id-leakage`, `--bola-verb-tampering`, `--bola-parameter-pollution`, `--bola-dry-run`) — see **[BOLA Testing (API1)](owasp/bola-testing.md)**.
 
 ### 2. 🔑 Authentication Testing (API2)
 

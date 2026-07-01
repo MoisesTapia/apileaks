@@ -141,6 +141,18 @@ your-256-bit-secret
         with patch("builtins.open", mock_open(read_data=mock_wordlist)):
             with patch("pathlib.Path.exists", return_value=True):
                 return AuthenticationTestingModule(auth_config, mock_http_client, auth_contexts)
+
+    @pytest.fixture
+    def make_auth_module(self, auth_contexts, mock_http_client, mock_wordlist):
+        """Factory to build a module with a custom AuthTestingConfig."""
+        def _make(config, contexts=None):
+            with patch("builtins.open", mock_open(read_data=mock_wordlist)):
+                with patch("pathlib.Path.exists", return_value=True):
+                    return AuthenticationTestingModule(
+                        config, mock_http_client,
+                        contexts if contexts is not None else auth_contexts
+                    )
+        return _make
     
     def test_module_initialization(self, auth_module, auth_contexts):
         """Test authentication module initialization"""
@@ -250,83 +262,63 @@ your-256-bit-secret
         assert auth_module._is_endpoint_accessible_anonymously(auth_error_response) == False
     
     def test_classify_anonymous_access_severity(self, auth_module):
-        """Test anonymous access severity classification"""
-        # Mock response with sensitive data (long enough to trigger sensitive data check)
-        sensitive_response = Response(
-            status_code=200,
-            headers={},
-            content=b'{"users": [{"id": 1, "name": "John Doe", "email": "user@example.com", "password": "hashed_password_123", "token": "secret_token_abc123", "phone": "+1-555-0123", "address": "123 Main St", "role": "admin", "permissions": ["read", "write", "delete"]}]}',
-            text='{"users": [{"id": 1, "name": "John Doe", "email": "user@example.com", "password": "hashed_password_123", "token": "secret_token_abc123", "phone": "+1-555-0123", "address": "123 Main St", "role": "admin", "permissions": ["read", "write", "delete"]}]}',
-            url="",
-            elapsed=0.1,
-            request_method="GET"
+        """Test evidence-based anonymous access severity classification (Req 7.2).
+
+        Severity is driven by the kind of exposed data (credential-grade fields
+        escalate to CRITICAL) and endpoint sensitivity, NOT the presence of a
+        single keyword such as ``email``.
+        """
+        resp = Response(
+            status_code=200, headers={}, content=b'{}', text='{}',
+            url="", elapsed=0.1, request_method="GET"
         )
-        
-        # Mock response without sensitive data (long enough to trigger check)
-        normal_response = Response(
-            status_code=200,
-            headers={},
-            content=b'{"products": [{"id": 1, "name": "Product A", "description": "A great product for testing purposes", "category": "electronics", "price": 99.99, "availability": "in_stock", "manufacturer": "Test Corp", "model": "TC-001"}]}',
-            text='{"products": [{"id": 1, "name": "Product A", "description": "A great product for testing purposes", "category": "electronics", "price": 99.99, "availability": "in_stock", "manufacturer": "Test Corp", "model": "TC-001"}]}',
-            url="",
-            elapsed=0.1,
-            request_method="GET"
-        )
-        
-        # Short response (won't trigger sensitive data check)
-        short_response = Response(
-            status_code=200,
-            headers={},
-            content=b'{"data": "test"}',
-            text='{"data": "test"}',
-            url="",
-            elapsed=0.1,
-            request_method="GET"
-        )
-        
-        # Critical endpoints (admin, management, users, etc.)
-        critical_endpoints = [
+
+        # Credential-grade data exposed anonymously => CRITICAL even on an
+        # otherwise-benign endpoint.
+        assert auth_module._classify_anonymous_access_severity(
+            "https://api.example.com/public/info", resp, ["password"]
+        ) == Severity.CRITICAL
+        assert auth_module._classify_anonymous_access_severity(
+            "https://api.example.com/v1/items", resp, ["token"]
+        ) == Severity.CRITICAL
+
+        # Sensitive endpoints (admin/users/etc.) => CRITICAL.
+        for endpoint in [
             "https://api.example.com/admin/settings",
             "https://api.example.com/management/config",
-            "https://api.example.com/api/admin/settings",
-            "https://api.example.com/users",  # /users pattern is critical
-            "https://api.example.com/api/users"  # /api/users pattern is critical
-        ]
-        
-        for endpoint in critical_endpoints:
-            severity = auth_module._classify_anonymous_access_severity(endpoint, short_response)
-            assert severity == Severity.CRITICAL
-        
-        # High severity endpoints (API endpoints without critical patterns)
-        high_endpoints = [
-            "https://api.example.com/api/products",
-            "https://api.example.com/v1/items",
-            "https://api.example.com/rest/catalog"
-        ]
-        
-        for endpoint in high_endpoints:
-            # With sensitive data should be CRITICAL
-            severity = auth_module._classify_anonymous_access_severity(endpoint, sensitive_response)
-            assert severity == Severity.CRITICAL
-            
-            # Without sensitive data but long response should be HIGH
-            severity = auth_module._classify_anonymous_access_severity(endpoint, normal_response)
-            assert severity == Severity.HIGH
-            
-            # With short response should be MEDIUM (falls through to default)
-            severity = auth_module._classify_anonymous_access_severity(endpoint, short_response)
-            assert severity == Severity.MEDIUM
-        
-        # Medium severity endpoints
-        medium_endpoints = [
-            "https://api.example.com/public/info",
-            "https://api.example.com/status",
-            "https://example.com/home"
-        ]
-        
-        for endpoint in medium_endpoints:
-            severity = auth_module._classify_anonymous_access_severity(endpoint, short_response)
-            assert severity == Severity.MEDIUM
+            "https://api.example.com/users",
+            "https://api.example.com/api/users",
+        ]:
+            assert auth_module._classify_anonymous_access_severity(
+                endpoint, resp, ["email"]
+            ) == Severity.CRITICAL
+
+        # API endpoints exposing personal (non-credential) data => HIGH.
+        for endpoint in [
+            "https://api.example.com/api/profile",
+            "https://api.example.com/v1/info",
+            "https://api.example.com/rest/catalog",
+        ]:
+            assert auth_module._classify_anonymous_access_severity(
+                endpoint, resp, ["email"]
+            ) == Severity.HIGH
+
+        # Other endpoints exposing protected data => MEDIUM.
+        assert auth_module._classify_anonymous_access_severity(
+            "https://example.com/home", resp, ["email"]
+        ) == Severity.MEDIUM
+
+        # A single 'email' keyword on a benign endpoint must NOT escalate to
+        # CRITICAL (the corrected behavior).
+        severity = auth_module._classify_anonymous_access_severity(
+            "https://example.com/home", resp, ["email"]
+        )
+        assert severity != Severity.CRITICAL
+
+        # No protected fields => MEDIUM (lowest anonymous-access classification).
+        assert auth_module._classify_anonymous_access_severity(
+            "https://example.com/home", resp, []
+        ) == Severity.MEDIUM
     
     def test_is_logout_endpoint(self, auth_module):
         """Test logout endpoint detection"""
@@ -615,12 +607,14 @@ your-256-bit-secret
             MockEndpoint("https://api.example.com/logout", "POST")
         ]
         
-        # Mock accessible response for anonymous access
+        # Mock accessible response for anonymous access. Includes protected data
+        # (a 'users' collection with email/id) so the corrected, evidence-based
+        # anonymous-access detection reports it (Requirement 7.3).
         mock_response = Response(
             status_code=200,
             headers={"content-type": "application/json"},
-            content=b'{"data": "accessible"}',
-            text='{"data": "accessible"}',
+            content=b'{"users": [{"id": 1, "email": "john@example.com", "role": "user"}]}',
+            text='{"users": [{"id": 1, "email": "john@example.com", "role": "user"}]}',
             url="https://api.example.com/users",
             elapsed=0.1,
             request_method="GET"
@@ -649,6 +643,420 @@ your-256-bit-secret
             assert hasattr(finding, 'severity')
             assert hasattr(finding, 'owasp_category')
             assert finding.owasp_category == "API2"  # All auth findings should be API2
+
+
+    # ------------------------------------------------------------------
+    # Task 6.1 - Algorithm-confusion key sourcing (Requirements 6.1-6.4)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_resolve_public_key_prefers_operator_material(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Operator-supplied public_key_material takes precedence over JWKS (Req 6.1)."""
+        auth_config.public_key_material = (
+            "-----BEGIN PUBLIC KEY-----\nMIIBmaterial\n-----END PUBLIC KEY-----"
+        )
+        auth_config.jwks_url = "https://api.example.com/.well-known/jwks.json"
+        module = make_auth_module(auth_config)
+
+        key_bytes = await module._resolve_public_key_bytes()
+
+        assert key_bytes == auth_config.public_key_material.encode("utf-8")
+        # JWKS must NOT be fetched when material is supplied.
+        mock_http_client.request.assert_not_called()
+        # Never a literal placeholder.
+        assert key_bytes != b"public_key"
+        assert b"BEGIN PUBLIC KEY" in key_bytes
+
+    @pytest.mark.asyncio
+    async def test_resolve_public_key_from_jwks(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """JWKS RSA key (n/e) is fetched and converted to PEM bytes (Req 6.2)."""
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_numbers = private_key.public_key().public_numbers()
+
+        def int_to_b64(value):
+            length = (value.bit_length() + 7) // 8
+            return base64.urlsafe_b64encode(value.to_bytes(length, "big")).decode().rstrip("=")
+
+        jwks = {"keys": [{
+            "kty": "RSA",
+            "n": int_to_b64(public_numbers.n),
+            "e": int_to_b64(public_numbers.e),
+        }]}
+        jwks_text = json.dumps(jwks)
+
+        jwks_response = Response(
+            status_code=200, headers={"content-type": "application/json"},
+            content=jwks_text.encode(), text=jwks_text,
+            url="https://api.example.com/jwks.json", elapsed=0.1, request_method="GET"
+        )
+        mock_http_client.request.return_value = jwks_response
+
+        auth_config.public_key_material = None
+        auth_config.jwks_url = "https://api.example.com/jwks.json"
+        module = make_auth_module(auth_config)
+
+        key_bytes = await module._resolve_public_key_bytes()
+
+        assert key_bytes is not None
+        # The PEM converts back to the same public key numbers.
+        recovered = load_pem_public_key(key_bytes).public_numbers()
+        assert recovered.n == public_numbers.n
+        assert recovered.e == public_numbers.e
+
+    @pytest.mark.asyncio
+    async def test_algorithm_confusion_skipped_without_public_key(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """No public key available => algorithm-confusion test is skipped (Req 6.3)."""
+        auth_config.public_key_material = None
+        auth_config.jwks_url = None
+        module = make_auth_module(auth_config)
+
+        rs256_token = self._build_rs256_token()
+        jwt_token = module._parse_jwt_token(rs256_token)
+        assert jwt_token is not None and jwt_token.algorithm == "RS256"
+
+        endpoints = [MockEndpoint("https://api.example.com/test")]
+        findings = await module._test_jwt_algorithm_confusion(
+            jwt_token=jwt_token,
+            auth_context=AuthContext(name="rs", type=AuthType.JWT, token=rs256_token),
+            endpoints=endpoints,
+        )
+
+        assert findings == []
+        # No attack request issued when there is no key.
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_algorithm_confusion_uses_real_key_no_placeholder(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Confusion token is HMAC-signed with the REAL key bytes, never a
+        placeholder (Req 6.1, 6.4)."""
+        material = "-----BEGIN PUBLIC KEY-----\nREALKEYBYTES\n-----END PUBLIC KEY-----"
+        auth_config.public_key_material = material
+        auth_config.jwks_url = None
+        module = make_auth_module(auth_config)
+
+        rs256_token = self._build_rs256_token()
+        jwt_token = module._parse_jwt_token(rs256_token)
+
+        success = Response(
+            status_code=200, headers={}, content=b'{"data": "ok"}', text='{"data": "ok"}',
+            url="https://api.example.com/test", elapsed=0.1, request_method="GET"
+        )
+        mock_http_client.request.return_value = success
+
+        endpoints = [MockEndpoint("https://api.example.com/test")]
+        findings = await module._test_jwt_algorithm_confusion(
+            jwt_token=jwt_token,
+            auth_context=AuthContext(name="rs", type=AuthType.JWT, token=rs256_token),
+            endpoints=endpoints,
+        )
+
+        assert len(findings) == 1
+        assert findings[0].category == "JWT_ALGORITHM_CONFUSION"
+
+        # The confused token must be HMAC-signed with the real key bytes.
+        confused_auth = mock_http_client.set_auth_context.call_args[0][0]
+        confused_token = confused_auth.token
+        header_b64, payload_b64, signature_b64 = confused_token.split(".")
+        expected_sig = base64.urlsafe_b64encode(
+            hmac.new(material.encode("utf-8"),
+                     f"{header_b64}.{payload_b64}".encode(),
+                     hashlib.sha256).digest()
+        ).decode().rstrip("=")
+        assert signature_b64 == expected_sig
+
+        # And NOT signed with any literal placeholder string.
+        for placeholder in ("public_key", "-----BEGIN PUBLIC KEY-----", "cert"):
+            placeholder_sig = base64.urlsafe_b64encode(
+                hmac.new(placeholder.encode(),
+                         f"{header_b64}.{payload_b64}".encode(),
+                         hashlib.sha256).digest()
+            ).decode().rstrip("=")
+            assert signature_b64 != placeholder_sig
+
+    # ------------------------------------------------------------------
+    # Task 6.2 - Evidence-based anonymous access (Requirements 7.1-7.4)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_anonymous_access_reported_when_equivalent_and_protected(
+        self, auth_module, mock_http_client
+    ):
+        """Protected data + equivalent anon/auth responses => reported (Req 7.3)."""
+        body = '{"users": [{"id": 1, "email": "john@example.com", "role": "user"}]}'
+        resp = Response(
+            status_code=200, headers={}, content=body.encode(), text=body,
+            url="https://api.example.com/api/profile", elapsed=0.1, request_method="GET"
+        )
+        # Anonymous request, then authenticated baseline (identical => equivalent).
+        mock_http_client.request.side_effect = [resp, resp]
+
+        findings = await auth_module._test_anonymous_access(
+            [MockEndpoint("https://api.example.com/api/profile")]
+        )
+
+        assert len(findings) == 1
+        assert findings[0].category == "AUTH_ANONYMOUS_ACCESS"
+        assert findings[0].owasp_category == "API2"
+        assert "equivalent: True" in findings[0].evidence
+        assert "email" in findings[0].evidence
+
+    @pytest.mark.asyncio
+    async def test_anonymous_access_not_reported_when_responses_differ(
+        self, auth_module, mock_http_client
+    ):
+        """Protected data but anon/auth differ (distinct identity) => not reported (Req 7.1)."""
+        anon_body = '{"users": [{"id": 1, "email": "anon@example.com"}]}'
+        auth_body = '{"users": [{"id": 2, "email": "real@example.com"}]}'
+        anon = Response(200, {}, anon_body.encode(), anon_body,
+                        "https://api.example.com/api/profile", 0.1, "GET")
+        auth = Response(200, {}, auth_body.encode(), auth_body,
+                        "https://api.example.com/api/profile", 0.1, "GET")
+        mock_http_client.request.side_effect = [anon, auth]
+
+        findings = await auth_module._test_anonymous_access(
+            [MockEndpoint("https://api.example.com/api/profile")]
+        )
+
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_anonymous_access_not_reported_without_protected_data(
+        self, auth_module, mock_http_client
+    ):
+        """Accessible response with no protected data => not reported (Req 7.3)."""
+        body = '{"items": [{"sku": "abc", "price": 10, "category": "tools"}]}'
+        resp = Response(200, {}, body.encode(), body,
+                        "https://api.example.com/api/items", 0.1, "GET")
+        mock_http_client.request.return_value = resp
+
+        findings = await auth_module._test_anonymous_access(
+            [MockEndpoint("https://api.example.com/api/items")]
+        )
+
+        assert findings == []
+
+    # ------------------------------------------------------------------
+    # Task 6.3 - Validly-signed-but-expired token (Requirements 8.1-8.5)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_expired_token_accepted_with_known_secret(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """A validly-signed expired token accepted => JWT_EXPIRED_TOKEN_ACCEPTED (Req 8.1, 8.2)."""
+        from utils import jwt_utils
+
+        auth_config.signing_secret = "known-secret"
+        module = make_auth_module(auth_config)
+
+        # A current (non-expired) HS256 token to derive header/payload from.
+        token = encode_simple_jwt({"alg": "HS256", "typ": "JWT"},
+                                  {"sub": "u1", "exp": int(time.time()) + 3600},
+                                  "known-secret")
+        jwt_token = module._parse_jwt_token(token)
+
+        success = Response(200, {}, b'{"ok": true}', '{"ok": true}',
+                           "https://api.example.com/test", 0.1, "GET")
+        mock_http_client.request.return_value = success
+
+        findings = await module._test_with_expired_token(
+            auth_context=AuthContext(name="u1", type=AuthType.JWT, token=token),
+            jwt_token=jwt_token,
+            endpoints=[MockEndpoint("https://api.example.com/test")],
+        )
+
+        assert len(findings) == 1
+        assert findings[0].category == "JWT_EXPIRED_TOKEN_ACCEPTED"
+
+        # The token sent was validly signed with the known secret and expired.
+        sent_auth = mock_http_client.set_auth_context.call_args[0][0]
+        assert jwt_utils.verify_hmac_secret(sent_auth.token, "known-secret") is True
+        decoded = jwt_utils.decode_jwt(sent_auth.token)
+        assert decoded["payload"]["exp"] < int(time.time())
+
+    @pytest.mark.asyncio
+    async def test_expired_token_test_skipped_without_signing_key(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """No signing key known => expiration test is skipped, no request issued (Req 8.4)."""
+        auth_config.signing_secret = None
+        module = make_auth_module(auth_config)
+        module._recovered_secret = None
+
+        token = encode_simple_jwt({"alg": "HS256", "typ": "JWT"},
+                                  {"sub": "u1", "exp": int(time.time()) + 3600},
+                                  "whatever")
+        jwt_token = module._parse_jwt_token(token)
+
+        findings = await module._test_with_expired_token(
+            auth_context=AuthContext(name="u1", type=AuthType.JWT, token=token),
+            jwt_token=jwt_token,
+            endpoints=[MockEndpoint("https://api.example.com/test")],
+        )
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_expired_token_emission_failure_aborts(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """A finding-emission failure must propagate (not be swallowed) (Req 8.3)."""
+        auth_config.signing_secret = "known-secret"
+        module = make_auth_module(auth_config)
+
+        token = encode_simple_jwt({"alg": "HS256", "typ": "JWT"},
+                                  {"sub": "u1", "exp": int(time.time()) + 3600},
+                                  "known-secret")
+        jwt_token = module._parse_jwt_token(token)
+
+        success = Response(200, {}, b'{"ok": true}', '{"ok": true}',
+                           "https://api.example.com/test", 0.1, "GET")
+        mock_http_client.request.return_value = success
+
+        with patch("modules.owasp.auth_testing.Finding",
+                   side_effect=RuntimeError("emit failure")):
+            with pytest.raises(RuntimeError):
+                await module._test_with_expired_token(
+                    auth_context=AuthContext(name="u1", type=AuthType.JWT, token=token),
+                    jwt_token=jwt_token,
+                    endpoints=[MockEndpoint("https://api.example.com/test")],
+                )
+
+    def test_recovered_weak_secret_used_as_signing_key(
+        self, make_auth_module, auth_config
+    ):
+        """A recovered weak secret is used when no operator secret is set (Req 8.1)."""
+        auth_config.signing_secret = None
+        module = make_auth_module(auth_config)
+        assert module._get_signing_secret() is None
+        module._recovered_secret = "recovered"
+        assert module._get_signing_secret() == "recovered"
+        # Operator-supplied secret takes precedence.
+        auth_config.signing_secret = "operator"
+        assert module._get_signing_secret() == "operator"
+
+    # ------------------------------------------------------------------
+    # Task 6.4 - Context-aware weak-algorithm labeling (Requirements 9.1, 9.2)
+    # ------------------------------------------------------------------
+
+    def test_weak_algorithm_labeling_context_aware(self, auth_module):
+        """Only 'none' (or demonstrated weak HMAC) is weak; HS256/RS256 are not (Req 9.1, 9.2)."""
+        # 'none' is always weak.
+        assert auth_module._is_weak_algorithm("none") is True
+        assert auth_module._is_weak_algorithm("NONE") is True
+
+        # HS256/RS256 are NOT inherently weak.
+        assert auth_module._is_weak_algorithm("HS256") is False
+        assert auth_module._is_weak_algorithm("RS256") is False
+        assert auth_module._is_weak_algorithm("HS512") is False
+
+        # HMAC algorithm with a demonstrated recovered weak secret IS weak.
+        assert auth_module._is_weak_algorithm("HS256", recovered_secret="secret") is True
+
+        # A recovered secret does not make RS256 (non-HMAC) weak.
+        assert auth_module._is_weak_algorithm("RS256", recovered_secret="secret") is False
+
+        # Defensive: None / empty.
+        assert auth_module._is_weak_algorithm(None) is False
+        assert auth_module._is_weak_algorithm("") is False
+
+    # ------------------------------------------------------------------
+    # Task 6.5 - Safe-Mode-gated logout test (Requirements 9.3-9.5, 21.x)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_logout_invalidation_skipped_in_safe_mode(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Safe Mode on => logout-invalidation test is skipped (Req 9.3, 21.2)."""
+        auth_config.safe_mode = True
+        auth_config.test_logout_invalidation = True
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_logout_invalidation(
+            [MockEndpoint("https://api.example.com/logout", "POST")]
+        )
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_logout_invalidation_skipped_when_disabled(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """config.test_logout_invalidation == False => skipped regardless of Safe Mode (Req 9.5)."""
+        auth_config.safe_mode = False
+        auth_config.test_logout_invalidation = False
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_logout_invalidation(
+            [MockEndpoint("https://api.example.com/logout", "POST")]
+        )
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_logout_invalidation_runs_when_safe_mode_off(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Safe Mode off => logout-invalidation test runs and can report (Req 9.4)."""
+        auth_config.safe_mode = False
+        auth_config.test_logout_invalidation = True
+        module = make_auth_module(auth_config)
+
+        logout = Response(200, {}, b'{"message": "ok"}', '{"message": "ok"}',
+                          "https://api.example.com/logout", 0.1, "POST")
+        access = Response(200, {}, b'{"user": {"id": 1}}', '{"user": {"id": 1}}',
+                          "https://api.example.com/users", 0.1, "GET")
+
+        def side_effect(method, url):
+            return logout if "logout" in url else access
+
+        mock_http_client.request.side_effect = side_effect
+
+        endpoints = [
+            MockEndpoint("https://api.example.com/logout", "POST"),
+            MockEndpoint("https://api.example.com/users", "GET"),
+        ]
+        findings = await module._test_logout_invalidation(endpoints)
+
+        assert any(f.category == "JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT" for f in findings)
+
+    def _build_rs256_token(self) -> str:
+        """Build an RS256-headed token (signature value is irrelevant for the
+        confusion test, which re-signs with HS256)."""
+        header = {"alg": "RS256", "typ": "JWT"}
+        payload = {"sub": "user123", "role": "admin"}
+        header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+        payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        return f"{header_b64}.{payload_b64}.{'A' * 32}"
+
+
+def encode_simple_jwt(header: dict, payload: dict, secret: str) -> str:
+    """Helper: encode an HS256 JWT for tests."""
+    header_b64 = base64.urlsafe_b64encode(
+        json.dumps(header, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(secret.encode(), f"{header_b64}.{payload_b64}".encode(),
+                         hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{header_b64}.{payload_b64}.{sig_b64}"
 
 
 if __name__ == "__main__":

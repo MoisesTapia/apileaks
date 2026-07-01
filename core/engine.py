@@ -566,7 +566,31 @@ class APILeakCore:
         return owasp_results
     
     async def _initialize_owasp_modules(self) -> None:
-        """Initialize OWASP testing modules"""
+        """Initialize OWASP testing modules.
+
+        Module naming reconciliation (Requirement 23.2)
+        ------------------------------------------------
+        Three distinct identifiers exist for each module and intentionally do
+        not all match. They are reconciled here so engine keys, module names,
+        and config field names do not silently diverge:
+
+            engine registration key | get_module_name() value | config field name
+            ------------------------ | ----------------------- | -----------------
+            bola                     | bola_testing            | bola_testing
+            auth                     | auth_testing            | auth_testing
+            property                 | property_level_auth     | property_testing
+
+        The engine registration keys ``bola``, ``auth`` and ``property`` are
+        preserved exactly and MUST NOT be renamed (Requirements 23.1, 26.3).
+
+        Note on ``registry.OWASPModuleRegistry`` (Requirement 23.3)
+        -----------------------------------------------------------
+        ``registry.OWASPModuleRegistry`` is unused by the engine. The engine
+        registers modules directly via ``register_owasp_module`` (see the
+        ``register_owasp_module`` calls below); it does not consult the
+        registry. The registry is retained as a standalone helper and is not
+        part of this engine's module wiring.
+        """
         self.logger.debug("Initializing OWASP modules")
         
         try:
@@ -619,7 +643,10 @@ class APILeakCore:
             # Propagate the global Safe Mode flag onto each OWASP module's
             # configuration object so modules can honor it via self.config.
             # When enabled, modules skip state-changing probes and restrict to
-            # safe methods (Requirements 10.1, 10.2).
+            # safe methods (Requirements 10.1, 10.2). In particular, the BOLA,
+            # Auth, and Property modules (bola_testing, auth_testing,
+            # property_testing configs) read safe_mode from their config per
+            # Requirement 21.1.
             safe_mode = getattr(self.config, 'safe_mode', False)
             owasp_cfg = self.config.owasp_testing
             for module_cfg in (

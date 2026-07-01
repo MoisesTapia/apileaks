@@ -42,6 +42,8 @@ BOLA vulnerabilities occur when APIs fail to properly validate that users can on
 python apileaks.py full --target https://api.example.com --modules bola
 ```
 
+See the full command reference, advanced probes, configuration, and finding categories in **[BOLA Testing (API1)](owasp/bola-testing.md)**.
+
 ### API2: Broken Authentication ✅
 **Status**: Complete  
 **Module**: `modules/owasp/auth_testing.py`  
