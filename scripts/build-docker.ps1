@@ -2,7 +2,7 @@
 # Builds multi-architecture Docker images for APILeak OWASP Enhancement
 
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.2.0",
     [string]$Registry = $env:DOCKER_REGISTRY,
     [string]$Platforms = "linux/amd64,linux/arm64",
     [switch]$Push = $false,

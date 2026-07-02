@@ -2,7 +2,7 @@
 
 ## Overview
 
-APILeak v0.1.0 includes advanced framework detection and API version fuzzing capabilities that allow identifying specific technologies and mapping different API versions for more comprehensive security analysis.
+APILeak v0.2.0 includes advanced framework detection and API version fuzzing capabilities that allow identifying specific technologies and mapping different API versions for more comprehensive security analysis.
 
 ## Framework Detection
 
@@ -61,13 +61,13 @@ advanced_discovery:
 
 ```bash
 # Enable framework detection
-python apileaks.py full --target https://api.example.com --detect-framework
+python apileaks.py scan --target https://api.example.com --detect-framework
 
 # Use short flag
-python apileaks.py full --target https://api.example.com --df
+python apileaks.py scan --target https://api.example.com --df
 
 # Configure confidence threshold
-python apileaks.py full --target https://api.example.com --df --framework-confidence 0.8
+python apileaks.py scan --target https://api.example.com --df --framework-confidence 0.8
 
 # Combine with directory fuzzing
 python apileaks.py dir --target https://api.example.com --df
@@ -171,16 +171,16 @@ advanced_discovery:
 
 ```bash
 # Enable version fuzzing
-python apileaks.py full --target https://api.example.com --fuzz-versions
+python apileaks.py scan --target https://api.example.com --fuzz-versions
 
 # Use short flag
-python apileaks.py full --target https://api.example.com --fv
+python apileaks.py scan --target https://api.example.com --fv
 
 # Custom patterns
-python apileaks.py full --target https://api.example.com --fv --version-patterns "/v1,/v2,/api/v1"
+python apileaks.py scan --target https://api.example.com --fv --version-patterns "/v1,/v2,/api/v1"
 
 # Combine with framework detection
-python apileaks.py full --target https://api.example.com --df --fv
+python apileaks.py scan --target https://api.example.com --df --fv
 
 # Directory mode only
 python apileaks.py dir --target https://api.example.com --fv
@@ -329,13 +329,13 @@ export APILEAK_VERSION_PATTERNS="/v1,/v2,/api/v1,/api/v2"
 ### 1. Initial Reconnaissance
 ```bash
 # Identify technology and available versions
-python apileaks.py full --target https://api.example.com --df --fv
+python apileaks.py scan --target https://api.example.com --df --fv
 ```
 
 ### 2. Framework-Specific Testing
 ```bash
 # Detect framework and use specific payloads
-python apileaks.py full --target https://api.example.com --df --framework-confidence 0.8
+python apileaks.py scan --target https://api.example.com --df --framework-confidence 0.8
 ```
 
 ### 3. Legacy Version Analysis
@@ -347,14 +347,14 @@ python apileaks.py dir --target https://api.example.com --fv --version-patterns 
 ### 4. CI/CD Integration
 ```bash
 # Verify no development versions are exposed
-python apileaks.py full --target $API_URL --fv --rate-limit 5 --json-logs
+python apileaks.py scan --target $API_URL --fv --rate-limit 5 --json-logs
 ```
 
 ## Best Practices
 
 ### Framework Detection
 1. **Use appropriate confidence threshold**: 0.6-0.8 for balance between precision and coverage
-2. **Combine with fuzzing**: Use `--df` together with `dir` or `full` for better context
+2. **Combine with fuzzing**: Use `--df` together with `dir` or `scan` for better context
 3. **Review specific payloads**: Payloads automatically adapt to detected framework
 
 ### Version Fuzzing
@@ -390,7 +390,7 @@ python apileaks.py full --target $API_URL --fv --rate-limit 5 --json-logs
 
 ```bash
 # Enable detailed logs
-python apileaks.py full --target https://api.example.com --df --fv --log-level DEBUG --log-file debug.log
+python apileaks.py scan --target https://api.example.com --df --fv --log-level DEBUG --log-file debug.log
 ```
 
 ## Roadmap

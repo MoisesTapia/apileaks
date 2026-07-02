@@ -1,6 +1,6 @@
 # 📖 APILeak CLI Reference
 
-Complete command-line interface reference for APILeak v0.1.0 - Enterprise API security testing tool.
+Complete command-line interface reference for APILeak v0.2.0 - Enterprise API security testing tool.
 
 ## Table of Contents
 
@@ -28,7 +28,8 @@ Complete command-line interface reference for APILeak v0.1.0 - Enterprise API se
   - [Examples](#examples)
   - [Rate Limiting and User-Agent in Discovery and Triage](#rate-limiting-and-user-agent-in-discovery-and-triage)
 - [Parameter Fuzzing (`par`)](#parameter-fuzzing-par)
-- [Full Security Scan (`full`)](#full-security-scan-full)
+- [Security Scan (`scan`)](#security-scan-scan)
+- [OWASP Module Commands (`owasp`)](#owasp-module-commands-owasp)
 - [JWT Utilities](#jwt-utilities)
 - [Proxy Integration](#proxy-integration)
 - [Environment Variables](#environment-variables)
@@ -52,8 +53,11 @@ APILeak provides the following main commands:
 |---------|---------|----------|
 | `dir` | Directory/endpoint fuzzing | Discover hidden endpoints and directories |
 | `par` | Parameter fuzzing | Find hidden parameters in API endpoints |
-| `full` | Full comprehensive scan | Complete OWASP API Security Top 10 testing |
+| `scan` | Orchestrated OWASP scan (primary) | Runs discovery + all registered OWASP modules and drives the CI gate |
+| `owasp` | OWASP module group | List modules, or run exactly one OWASP module in isolation (`owasp <key>`) |
 | `jwt` | JWT security utilities | JWT token manipulation and security testing |
+
+> **Deprecation.** `full` and `main` are deprecated, hidden aliases of `scan`. They still work and forward to `scan` (printing a one-line deprecation notice to stderr), but you should migrate scripts to `scan`. Module selection through the alias also migrates: `full --modules bola` → `apileaks owasp bola`.
 
 ### Help System
 
@@ -64,7 +68,8 @@ APILeak provides comprehensive help at multiple levels:
 python apileaks.py --help
 
 # Command-specific help - shows all options for a specific command
-python apileaks.py full --help
+python apileaks.py scan --help
+python apileaks.py owasp --help
 python apileaks.py dir --help
 python apileaks.py par --help
 
@@ -166,7 +171,7 @@ See [Proxy Integration](#proxy-integration) for details.
 
 ### Discovery Robustness Options
 
-These flags harden and broaden discovery: they widen the candidate set (seeds and extensions), attach request context (headers/cookies/auth), refine which results are kept (response matchers/filters), enumerate methods and GraphQL surfaces, control per-request resilience and transport/TLS, scan responses for secrets, and emit machine-readable output. Unless noted otherwise these options apply to the `dir` command. The shared options `-x`/`--extensions`, `--timeout`, and `--retries` are also accepted by the `full` command.
+These flags harden and broaden discovery: they widen the candidate set (seeds and extensions), attach request context (headers/cookies/auth), refine which results are kept (response matchers/filters), enumerate methods and GraphQL surfaces, control per-request resilience and transport/TLS, scan responses for secrets, and emit machine-readable output. Unless noted otherwise these options apply to the `dir` command. The shared options `-x`/`--extensions`, `--timeout`, and `--retries` are also accepted by the `scan` command.
 
 #### Seed Inputs and Extensions
 
@@ -175,7 +180,7 @@ These flags harden and broaden discovery: they widen the candidate set (seeds an
 | `--wordlist`, `-w` | Wordlist file for discovery. **Repeatable**; values are merged and de-duplicated after normalization. Pass `-` to read entries from stdin (empty lines and `#` comment lines are skipped) | `wordlists/endpoints.txt` | `-w a.txt -w b.txt` / `cat list.txt \| ... -w -` |
 | `--openapi` | OpenAPI/Swagger document (JSON or YAML) to seed discovery from. **Repeatable** | - | `--openapi api.yaml` |
 | `--postman` | Postman collection to seed discovery from. **Repeatable** | - | `--postman collection.json` |
-| `--extensions`, `-x` | File extensions appended to each wordlist entry (comma-separated, **repeatable**). Leading dots are optional, so `-x json,php` and `-x .json -x .php` are equivalent. Also available on `full` | - | `-x json,php` |
+| `--extensions`, `-x` | File extensions appended to each wordlist entry (comma-separated, **repeatable**). Leading dots are optional, so `-x json,php` and `-x .json -x .php` are equivalent. Also available on `scan` | - | `-x json,php` |
 
 Notes:
 
@@ -265,7 +270,7 @@ Both are off by default, and each extra request they issue counts toward `--max-
 
 #### Per-Request Resilience
 
-These options apply to both `dir` and `full`.
+These options apply to both `dir` and `scan`.
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
@@ -328,7 +333,7 @@ These options decide which discovered records are ever **persisted**, applied at
 
 #### Recursion Scope
 
-These options narrow which discovered endpoints recursion descends into. They are accepted by both `dir` and `full`. They only ever *narrow* the default VALID/AUTH_REQUIRED recursion eligibility — they never relax it.
+These options narrow which discovered endpoints recursion descends into. They are accepted by both `dir` and `scan`. They only ever *narrow* the default VALID/AUTH_REQUIRED recursion eligibility — they never relax it.
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
@@ -392,7 +397,7 @@ Key behaviors:
 Discovery can feed an OWASP scan directly over a set of discovered endpoints, so you don't have to launch a single-endpoint follow-up for each result. The batch scope can be selected interactively or non-interactively.
 
 - **Interactive multi-select.** In interactive triage (`--interactive`), entering two or more record indices — a comma list like `1,3,5` or a range like `2-4` — selects a batch scan scope and runs an OWASP scan over exactly those records. A single index keeps the existing single-endpoint follow-up.
-- **Non-interactive `--scan-scope`.** `--scan-scope <2xx|3xx|4xx|5xx|valid|auth_required>` selects all discovered records of the chosen status class or EndpointStatus (`valid` selects all VALID records, `auth_required` selects all AUTH_REQUIRED records) and runs an OWASP scan over them through the `full` command engine path.
+- **Non-interactive `--scan-scope`.** `--scan-scope <2xx|3xx|4xx|5xx|valid|auth_required>` selects all discovered records of the chosen status class or EndpointStatus (`valid` selects all VALID records, `auth_required` selects all AUTH_REQUIRED records) and runs an OWASP scan over them through the `scan` command engine path.
 - **CI-only non-interactive.** Under `--ci-mode` the batch scope is determined *only* from `--scan-scope`; the interactive selection prompt never runs and never blocks the pipeline.
 - **Inherited request settings.** The batch scan applies the same `--rate-limit`, User-Agent option, and `--header`/`--cookie`/`--basic-auth` request context supplied to the originating `dir` invocation.
 - **Empty scope.** If the determined scope is empty (no records match the token, or an empty multi-select), no scan runs and the command reports that there is nothing to scan.
@@ -708,14 +713,18 @@ python apileaks.py par \
   --output error-parameters
 ```
 
-## Full Security Scan (`full`)
+## Security Scan (`scan`)
 
-Comprehensive OWASP API Security Top 10 testing with advanced features.
+The `scan` command is APILeak's **primary orchestrator**. It runs endpoint discovery and then executes **all registered OWASP API Security Top 10 modules by default**, aggregating every finding through the unified reporting pipeline and driving the CI/CD severity gate. Use `--modules a,b` to restrict the run to selected module keys.
+
+To run a **single** OWASP module in isolation (red-team focus), use the [`owasp <key>`](#owasp-module-commands-owasp) command instead.
+
+> **Deprecation.** `full` and `main` are deprecated, hidden aliases of `scan`. They forward to `scan` unchanged (emitting a one-line stderr deprecation notice) and are retained only for backward compatibility — migrate scripts to `scan`. A single-module alias invocation such as `full --modules bola` should become `apileaks owasp bola`.
 
 ### Syntax
 
 ```bash
-python apileaks.py full [OPTIONS]
+python apileaks.py scan [OPTIONS]
 ```
 
 ### Required Options
@@ -799,7 +808,7 @@ These flags tune recursive discovery so you can trade breadth for speed. They ke
 
 #### Recursion Scope
 
-The `full` command accepts the same recursion-scope options as `dir` to narrow which discovered endpoints recursion descends into. They only narrow the default VALID/AUTH_REQUIRED recursion; they never relax it.
+The `scan` command accepts the same recursion-scope options as `dir` to narrow which discovered endpoints recursion descends into. They only narrow the default VALID/AUTH_REQUIRED recursion; they never relax it.
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
@@ -810,7 +819,7 @@ An unrecognized `--recursion-status` status class or `--recursion-type` endpoint
 
 ### Discovery Robustness Options
 
-The `full` command shares the discovery seed and per-request resilience controls described in detail under the `dir` command's [Discovery Robustness Options](#discovery-robustness-options). The following are accepted by `full`:
+The `scan` command shares the discovery seed and per-request resilience controls described in detail under the `dir` command's [Discovery Robustness Options](#discovery-robustness-options). The following are accepted by `scan`:
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
@@ -825,65 +834,65 @@ Invalid `--timeout` or `--retries` values are rejected with a descriptive error 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
 | `--ci-mode` | Enable CI/CD mode with deterministic exit codes and artifact generation | `false` | `--ci-mode` |
-| `--fail-on` | Fail on findings of this severity or higher | `critical` | `--fail-on high` |
+| `--fail-on` | Fail on findings of this severity or higher | `high` | `--fail-on high` |
 | `--sarif` | Generate a SARIF 2.1.0 report (for code scanning / CI integration) | `false` | `--sarif` |
 | `--safe-mode` | Non-destructive scan: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict to safe methods | `false` | `--safe-mode` |
 | `--baseline` | Path to a baseline JSON report; only new findings drive the severity gate (missing path treats all findings as new) | - | `--baseline baseline.json` |
 
 Available severity levels: `critical`, `high`, `medium`, `low`
 
+> **Default gate.** The severity gate default is now `high` (it was previously `critical`). Runs without an explicit `--fail-on` fail on high or critical findings. Pass `--fail-on critical` to keep the old behavior.
+
 ### Examples
 
 ```bash
-# Basic full scan
-python apileaks.py full --target https://api.example.com
+# Basic scan (runs discovery + all OWASP modules by default)
+python apileaks.py scan --target https://api.example.com
 
 # With specific OWASP modules and a JWT
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 
-# Run all ten OWASP API Security Top 10 modules
-python apileaks.py full \
-  --target https://api.example.com \
-  --modules bola,auth,property,resource,function_auth,business_flow,ssrf,security_misconfig,inventory,unsafe_consumption
+# All ten OWASP API Security Top 10 modules run by default — a plain scan is enough
+python apileaks.py scan --target https://api.example.com
 
 # Advanced scan with all discovery features
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --enable-advanced \
   --user-agent-random \
   --output advanced-security-scan
 
 # Non-destructive scan against a shared/production-like environment
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --safe-mode \
   --modules bola,auth,security_misconfig
 
 # Generate a SARIF report for code-scanning dashboards
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --sarif \
   --output scan-results
 
 # CI/CD gate: fail on high+ findings and emit SARIF
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --ci-mode \
   --fail-on high \
   --sarif
 
 # CI/CD with a baseline: only newly introduced findings fail the pipeline
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --ci-mode \
   --fail-on medium \
   --baseline reports/previous-scan.json
 
 # CI/CD, non-destructive, baseline-gated, with SARIF artifact
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --ci-mode \
   --fail-on high \
@@ -892,10 +901,64 @@ python apileaks.py full \
   --baseline reports/baseline.json
 
 # Using a configuration file
-python apileaks.py full \
+python apileaks.py scan \
   --config config/production_api.yaml \
   --target https://api.example.com
 ```
+
+## OWASP Module Commands (`owasp`)
+
+The `owasp` command group exposes each OWASP API Security Top 10 detection module as a first-class subcommand so you can run **exactly one module in isolation** (a red-team focus), rather than the full orchestrated `scan`.
+
+- `apileaks owasp` (no subcommand) prints one line per registered module — its key, OWASP category, and a one-line summary.
+- `apileaks owasp <key> --target URL` runs **only** that module against the target.
+
+Each module subcommand accepts the shared transversal options; `bola` and `auth` additionally accept their own module-specific options (the other eight modules accept transversal options only).
+
+### Available modules
+
+| Key | OWASP | Summary |
+|-----|-------|---------|
+| `bola` | API1 | Broken Object Level Authorization (BOLA) detection |
+| `auth` | API2 | Broken Authentication detection |
+| `property` | API3 | Broken Object Property Level Authorization detection |
+| `resource` | API4 | Unrestricted Resource Consumption detection |
+| `function_auth` | API5 | Broken Function Level Authorization detection |
+| `business_flow` | API6 | Unrestricted Access to Sensitive Business Flows detection |
+| `ssrf` | API7 | Server-Side Request Forgery (SSRF) detection |
+| `security_misconfig` | API8 | Security Misconfiguration detection |
+| `inventory` | API9 | Improper Inventory Management detection |
+| `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+
+### Syntax
+
+```bash
+# List every module (key, OWASP category, summary)
+python apileaks.py owasp
+
+# Run exactly one module in isolation
+python apileaks.py owasp <key> --target URL [OPTIONS]
+```
+
+### Examples
+
+```bash
+# List all available modules
+python apileaks.py owasp
+
+# Run only the BOLA module against a target
+python apileaks.py owasp bola --target https://api.example.com
+
+# Run only Broken Authentication detection with a JWT
+python apileaks.py owasp auth \
+  --target https://api.example.com \
+  --jwt "eyJ0eXAiOiJKV1Q..."
+
+# Run only the SSRF module
+python apileaks.py owasp ssrf --target https://api.example.com
+```
+
+> **When to use which.** Prefer `scan` for full-coverage assessments and CI gating (it runs discovery + all modules and drives `--ci-mode`/`--fail-on`/`--sarif`/`--baseline`/`--safe-mode`). Reach for `owasp <key>` when you want to focus on a single vulnerability class. Use `scan --modules a,b` when you want a subset of two or more modules aggregated in one report. A deprecated `full --modules bola` invocation maps directly to `apileaks owasp bola`.
 
 ## JWT Utilities
 
@@ -909,12 +972,17 @@ All JWT utilities are accessed through the `jwt` command group:
 python apileaks.py jwt [SUBCOMMAND] [OPTIONS]
 ```
 
+> This is a brief reference. For the full JWT attack methodology and deep-dive walkthroughs, see [JWT Attacks](jwt-attacks.md).
+
 #### Available Subcommands
 
 | Subcommand | Purpose | Description |
 |------------|---------|-------------|
 | `decode` | Token Analysis | Decode and analyze JWT tokens |
 | `encode` | Token Generation | Create JWT tokens for testing |
+| `verify` | Signature Verification | Verify a token's signature (HMAC secret or public key) |
+| `genkey` | Key Generation | Generate an RSA or EC keypair for testing |
+| `jwks-to-key` | JWKS Conversion | Convert a JWKS entry to a PEM public key |
 | `test-alg-none` | Algorithm Confusion | Test alg:none vulnerability |
 | `test-null-signature` | Null Signature | Test null signature bypass |
 | `brute-secret` | Secret Brute-force | Crack weak HMAC secrets |
@@ -1194,7 +1262,7 @@ APILeak can route all of its HTTP traffic (discovery, parameter/header fuzzing, 
 
 | Option | Description |
 |--------|-------------|
-| `--proxy URL` | Send all traffic through the proxy at `URL` (e.g. `http://127.0.0.1:8080`). Available on `dir`, `par`, and `full`. |
+| `--proxy URL` | Send all traffic through the proxy at `URL` (e.g. `http://127.0.0.1:8080`). Available on `dir`, `par`, and `scan`. |
 | `--proxy-verify-ssl` | Keep TLS certificate verification enabled while proxying. |
 
 ### TLS behavior
@@ -1229,13 +1297,13 @@ python apileaks.py par \
   --proxy http://127.0.0.1:8080
 
 # Full OWASP scan through Hetty
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,ssrf \
   --proxy http://127.0.0.1:8080
 
 # Proxy with TLS verification kept on (after installing the proxy CA)
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --proxy http://127.0.0.1:8080 \
   --proxy-verify-ssl
@@ -1275,7 +1343,7 @@ export APILEAK_JWT_TOKEN="eyJ0eXAiOiJKV1Q..."
 export APILEAK_RATE_LIMIT="5"
 
 # Run scan with environment variables
-python apileaks.py full
+python apileaks.py scan
 ```
 
 ## Exit Codes
@@ -1291,17 +1359,20 @@ APILeak uses specific exit codes to indicate scan results:
 
 ### CI/CD Integration
 
-In CI/CD mode (`--ci-mode`), exit codes are determined by the `--fail-on` setting:
+In CI/CD mode (`--ci-mode`), exit codes are determined by the `--fail-on` setting. The default is now `high` (previously `critical`), so a run without an explicit `--fail-on` fails on high or critical findings:
 
 ```bash
-# Fail only on critical findings
-python apileaks.py full --target URL --ci-mode --fail-on critical
+# Default gate (high): a plain --ci-mode run fails on high or critical findings
+python apileaks.py scan --target URL --ci-mode
 
-# Fail on high or critical findings
-python apileaks.py full --target URL --ci-mode --fail-on high
+# Fail only on critical findings (previous default; still available explicitly)
+python apileaks.py scan --target URL --ci-mode --fail-on critical
+
+# Fail on high or critical findings (the new default, stated explicitly)
+python apileaks.py scan --target URL --ci-mode --fail-on high
 
 # Fail on medium, high, or critical findings
-python apileaks.py full --target URL --ci-mode --fail-on medium
+python apileaks.py scan --target URL --ci-mode --fail-on medium
 ```
 
 ## Examples
@@ -1318,7 +1389,7 @@ python apileaks.py par \
   --jwt "eyJ0eXAiOiJKV1Q..."
 
 # Full security scan
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property
 ```
@@ -1327,21 +1398,21 @@ python apileaks.py full \
 
 ```bash
 # WAF evasion with random user agents
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --enable-waf-evasion \
   --rate-limit 3
 
 # Framework detection and version fuzzing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --detect-framework \
   --fuzz-versions \
   --framework-confidence 0.8
 
 # Comprehensive scan with all advanced features
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --enable-advanced \
   --jwt "eyJ0eXAiOiJKV1Q..." \
@@ -1352,7 +1423,7 @@ python apileaks.py full \
 
 ```bash
 # GitHub Actions - SARIF artifact for code scanning, baseline-gated
-python apileaks.py full \
+python apileaks.py scan \
   --target ${{ vars.API_TARGET_URL }} \
   --jwt ${{ secrets.API_JWT_TOKEN }} \
   --ci-mode \
@@ -1362,7 +1433,7 @@ python apileaks.py full \
   --output github-scan-${{ github.run_id }}
 
 # GitLab CI - non-destructive scan that fails on high+ findings
-python apileaks.py full \
+python apileaks.py scan \
   --target $API_TARGET_URL \
   --jwt $API_JWT_TOKEN \
   --ci-mode \
@@ -1372,7 +1443,7 @@ python apileaks.py full \
   --output gitlab-scan-$CI_PIPELINE_ID
 
 # Jenkins
-python apileaks.py full \
+python apileaks.py scan \
   --target ${API_TARGET_URL} \
   --jwt ${API_JWT_TOKEN} \
   --ci-mode \
@@ -1394,10 +1465,10 @@ python apileaks.py dir \
 
 ```bash
 # Using YAML configuration
-python apileaks.py full --config config/production_api.yaml
+python apileaks.py scan --config config/production_api.yaml
 
 # Override config with CLI parameters
-python apileaks.py full \
+python apileaks.py scan \
   --config config/base_config.yaml \
   --target https://staging-api.example.com \
   --modules bola,auth
@@ -1433,19 +1504,19 @@ python apileaks.py jwt attack-test TOKEN --url https://api.example.com/protected
 
 ```bash
 # Debug logging to file
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --log-level DEBUG \
   --log-file debug-scan.log
 
 # JSON structured logging
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --json-logs \
   --log-file structured.log
 
 # Custom output filename
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --output my-security-audit-2024
 ```

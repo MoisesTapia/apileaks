@@ -13,7 +13,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="apileak-owasp-enhancement",
-    version="0.1.0",
+    version="0.2.0",
     author="APILeak Team",
     author_email="team@apileak.com",
     description="Enterprise-grade API fuzzing and OWASP testing tool",

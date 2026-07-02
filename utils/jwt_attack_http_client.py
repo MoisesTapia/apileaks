@@ -103,7 +103,7 @@ class JWTAttackHTTPClient:
         """
         headers = {
             'Authorization': f'Bearer {jwt_token}',
-            'User-Agent': 'APILeak-JWT-Attack-Tester/0.1.0',
+            'User-Agent': 'APILeak-JWT-Attack-Tester/0.2.0',
             'Accept': 'application/json'
         }
         
@@ -368,7 +368,7 @@ class JWTAttackHTTPClient:
                         method, 
                         self.base_url, 
                         timeout=10.0,
-                        headers={'User-Agent': 'APILeak-JWT-Attack-Tester/0.1.0'}
+                        headers={'User-Agent': 'APILeak-JWT-Attack-Tester/0.2.0'}
                     )
                     
                     self.logger.info("Connectivity test successful",

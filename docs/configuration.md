@@ -125,7 +125,7 @@ target:
   
   # Optional: Custom headers for all requests
   headers:
-    User-Agent: "APILeak/0.1.0"
+    User-Agent: "APILeak/0.2.0"
     Accept: "application/json"
 ```
 
@@ -1010,7 +1010,7 @@ APILeak supports multiple user agent strategies for bypassing WAF detection:
 # Use built-in random user agents
 python apileaks.py dir --target https://api.example.com --user-agent-random
 python apileaks.py par --target https://api.example.com --user-agent-random
-python apileaks.py full --target https://api.example.com --user-agent-random
+python apileaks.py scan --target https://api.example.com --user-agent-random
 ```
 
 #### 2. Custom User Agent (CLI)
@@ -1026,7 +1026,7 @@ python apileaks.py par --target https://api.example.com --user-agent-custom "Sec
 ```bash
 # Rotate through user agents from file
 python apileaks.py dir --target https://api.example.com --user-agent-file wordlists/user_agents.txt
-python apileaks.py full --target https://api.example.com --user-agent-file custom_agents.txt
+python apileaks.py scan --target https://api.example.com --user-agent-file custom_agents.txt
 ```
 
 ### Configuration File Setup
@@ -1223,7 +1223,7 @@ python apileaks.py par \
   --output googlebot_param_scan
 
 # Full scan with user agent file rotation
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-file wordlists/stealth_agents.txt \
   --rate-limit 1 \

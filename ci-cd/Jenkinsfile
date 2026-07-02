@@ -194,7 +194,7 @@ pipeline {
                                     -e APILEAK_MODULES="${params.OWASP_MODULES}" \
                                     -v $(pwd)/reports:/app/reports \
                                     -v $(pwd)/config:/app/config:ro \
-                                    ${DOCKER_IMAGE} full \
+                                    ${DOCKER_IMAGE} scan \
                                     --target "${params.API_TARGET_URL}" \
                                     --output apileak-full-${BUILD_ID} \
                                     --log-level ${APILEAK_LOG_LEVEL} \

@@ -151,7 +151,7 @@ stage('Full Security Scan') {
             docker run --rm \
                 -e APILEAK_MODULES="bola,auth,property,function_auth" \
                 -v $(pwd)/reports:/app/reports \
-                apileak:latest full \
+                apileak:latest scan \
                 --target "${API_TARGET_URL}" \
                 --modules "bola,auth,property,function_auth"
         '''
@@ -238,7 +238,7 @@ Use custom APILeak configuration:
 ```yaml
 volumes:
   - ./config/apileak-config.yaml:/app/config/apileak-config.yaml:ro
-command: ["full", "--config", "config/apileak-config.yaml"]
+command: ["scan", "--config", "config/apileak-config.yaml"]
 ```
 
 ### WAF Evasion

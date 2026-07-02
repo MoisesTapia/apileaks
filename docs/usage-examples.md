@@ -195,7 +195,7 @@ python apileaks.py dir \
 
 ### Discovery Robustness: Seeds, Matchers, Secrets, and Machine Output
 
-These flags harden and broaden discovery and compose freely with the discovery-control (`--depth`, `--max-requests`, `--concurrency`) and triage (`--status-code`, `--save-session`, `--export`, `--interactive`, `--ci-mode`) flags. See the [CLI Reference](cli-reference.md#discovery-robustness-options) for full semantics. The shared `-x`/`--extensions`, `--timeout`, and `--retries` options also work with `full`.
+These flags harden and broaden discovery and compose freely with the discovery-control (`--depth`, `--max-requests`, `--concurrency`) and triage (`--status-code`, `--save-session`, `--export`, `--interactive`, `--ci-mode`) flags. See the [CLI Reference](cli-reference.md#discovery-robustness-options) for full semantics. The shared `-x`/`--extensions`, `--timeout`, and `--retries` options also work with `scan`.
 
 ```bash
 # Seed from a spec + multiple wordlists (merged & de-duplicated) and expand
@@ -297,8 +297,8 @@ python apileaks.py dir \
   --output-file reports/discovery.csv \
   --ci-mode
 
-# full scan reusing the shared robustness flags (extensions, timeout, retries)
-python apileaks.py full \
+# scan reusing the shared robustness flags (extensions, timeout, retries)
+python apileaks.py scan \
   --target https://api.example.com \
   --extensions json,php \
   --timeout 20 \
@@ -348,8 +348,8 @@ python apileaks.py dir \
   --recursion-status 2xx,3xx \
   --recursion-type admin,api_version
 
-# Recursion scope also works on the full scan
-python apileaks.py full \
+# Recursion scope also works on the scan command
+python apileaks.py scan \
   --target https://api.example.com \
   --depth 3 \
   --recursion-type admin,api_version \
@@ -512,17 +512,19 @@ python apileaks.py par \
   --output framework_aware_param_scan
 ```
 
-## Full Comprehensive Scan
+## Security Scan (`scan`)
 
-Full scans combine endpoint discovery, parameter fuzzing, and OWASP security testing for comprehensive coverage.
+The `scan` command is APILeak's primary orchestrator: it combines endpoint discovery, parameter fuzzing, and OWASP security testing for comprehensive coverage, running **all** registered OWASP modules by default (restrict with `--modules a,b`). To run a single module in isolation, use `owasp <key>` (see [OWASP Security Testing](#owasp-security-testing) below).
 
-### Basic Full Scan
+> **Deprecation.** `full` and `main` are deprecated, hidden aliases of `scan`. They still forward to `scan` (with a one-line stderr notice) — migrate scripts to `scan`. A single-module alias call like `full --modules bola` becomes `apileaks owasp bola`.
+
+### Basic Scan
 ```bash
-# Simple full scan
-python apileaks.py full --target https://api.example.com
+# Simple scan (runs discovery + all OWASP modules by default)
+python apileaks.py scan --target https://api.example.com
 
 # With configuration file
-python apileaks.py full \
+python apileaks.py scan \
   --config config/api_config.yaml \
   --target https://api.example.com
 ```
@@ -530,7 +532,7 @@ python apileaks.py full \
 ### Advanced Full Scan
 ```bash
 # With WAF evasion and OWASP modules
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-file wordlists/user_agents.txt \
   --modules bola,auth,property \
@@ -538,44 +540,43 @@ python apileaks.py full \
   --output comprehensive_security_scan
 
 # With custom user agent and status filtering
-python apileaks.py full \
+python apileaks.py scan \
   --config config/api_config.yaml \
   --target https://api.example.com \
   --user-agent-custom "Enterprise Security Scanner" \
   --status-code 200,401,403,500 \
   --output enterprise_scan
 
-# With framework and version detection
-python apileaks.py full \
+# With framework and version detection (all modules run by default)
+python apileaks.py scan \
   --target https://api.example.com \
   --detect-framework \
   --fuzz-versions \
   --framework-confidence 0.8 \
   --user-agent-random \
-  --modules all \
   --output advanced_discovery_scan
 ```
 
-### Recursive Discovery Control (Full Scan)
+### Recursive Discovery Control (Scan)
 
-The same discovery-control flags work with `full`, so you can tune how aggressively the scan discovers endpoints before running OWASP tests. They keep recursion agile — shallow/fast vs deep/thorough — and stay bounded by the request budget and catch-all detection. Depth precedence is CLI `--depth` > `APILEAK_MAX_DEPTH` env var > default `3`.
+The same discovery-control flags work with `scan`, so you can tune how aggressively the scan discovers endpoints before running OWASP tests. They keep recursion agile — shallow/fast vs deep/thorough — and stay bounded by the request budget and catch-all detection. Depth precedence is CLI `--depth` > `APILEAK_MAX_DEPTH` env var > default `3`.
 
 ```bash
 # Shallow + fast discovery ahead of the OWASP modules
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --depth 1 \
   --modules bola,auth
 
 # Deep + thorough discovery with a request budget as a safety net
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --depth 6 \
   --max-requests 5000 \
   --concurrency 100
 
 # Skip recursive discovery entirely (depth-0 pass only)
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --no-recursive
 ```
@@ -585,14 +586,14 @@ python apileaks.py full \
 ### Framework Detection Only
 ```bash
 # Detect API framework
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --detect-framework \
   --framework-confidence 0.8 \
   --output framework_detection
 
 # Framework detection with confidence threshold
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --detect-framework \
   --framework-confidence 0.9 \
@@ -602,14 +603,14 @@ python apileaks.py full \
 ### Version Fuzzing Only
 ```bash
 # Discover API versions
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --fuzz-versions \
   --version-patterns "/v1,/v2,/api/v1,/api/v2" \
   --output version_discovery
 
 # Version fuzzing with custom patterns
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --fuzz-versions \
   --version-patterns "/version1,/version2,/rest/v1,/rest/v2" \
@@ -619,7 +620,7 @@ python apileaks.py full \
 ### Combined Advanced Discovery
 ```bash
 # Framework detection and version fuzzing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --detect-framework \
   --fuzz-versions \
@@ -637,7 +638,7 @@ python apileaks.py dir \
   --output integrated_discovery
 
 # Short flags for convenience
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --df \
   --fv \
@@ -650,7 +651,7 @@ python apileaks.py full \
 ### JWT Token Testing
 ```bash
 # Basic JWT authentication
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --modules auth,bola \
@@ -676,7 +677,7 @@ python apileaks.py dir \
 ### API Key Testing
 ```bash
 # API key in header
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --header "X-API-Key: your-api-key" \
   --modules auth,bola \
@@ -691,31 +692,41 @@ python apileaks.py par \
 
 ## OWASP Security Testing
 
-### Specific OWASP Modules
+`scan` runs every OWASP API Security Top 10 module by default. To list the modules or run one in isolation, use the `owasp` command group:
+
 ```bash
-# BOLA (Broken Object Level Authorization) testing
-python apileaks.py full \
+# List every module (key, OWASP category, one-line summary)
+python apileaks.py owasp
+
+# Run exactly one module against a target
+python apileaks.py owasp <key> --target https://api.example.com
+```
+
+### Specific OWASP Modules
+
+To focus on a single vulnerability class, run the module in isolation with `owasp <key>`:
+
+```bash
+# BOLA (Broken Object Level Authorization) testing — single module in isolation
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --output bola_security_test
 
-# Authentication testing
-python apileaks.py full \
+# Authentication testing — single module in isolation
+python apileaks.py owasp auth \
   --target https://api.example.com \
-  --modules auth \
   --user-agent-random \
   --output auth_security_test
 
-# Property-level authorization testing
-python apileaks.py full \
+# Property-level authorization testing — single module in isolation
+python apileaks.py owasp property \
   --target https://api.example.com \
-  --modules property \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --output property_auth_test
 
-# Multiple OWASP modules
-python apileaks.py full \
+# Multiple OWASP modules — aggregate a subset through scan
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
@@ -725,10 +736,10 @@ python apileaks.py full \
 
 ### All Available OWASP Modules
 ```bash
-# Run all implemented OWASP modules
-python apileaks.py full \
+# Run all implemented OWASP modules (scan runs every module by default,
+# so no --modules flag is needed)
+python apileaks.py scan \
   --target https://api.example.com \
-  --modules all \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --user-agent-random \
   --rate-limit 8 \
@@ -783,7 +794,7 @@ python apileaks.py dir \
   --output auth_responses
 
 # Mixed authentication and success responses
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --status-code 200,401,403 \
   --modules bola,auth \
@@ -814,7 +825,7 @@ python apileaks.py par \
 ### Conservative Scanning
 ```bash
 # Slow and careful scanning
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --rate-limit 2 \
   --user-agent-random \
@@ -835,12 +846,12 @@ python apileaks.py par \
 ### Traditional Configuration-Based Usage
 ```bash
 # Traditional usage with config file
-python apileaks.py \
+python apileaks.py scan \
   --config config/api_config.yaml \
   --target https://api.example.com
 
 # With custom configuration
-python apileaks.py \
+python apileaks.py scan \
   --config config/comprehensive_config.yaml \
   --target https://api.example.com \
   --output legacy_scan
@@ -848,7 +859,7 @@ python apileaks.py \
 
 ## Command Options Reference
 
-The full, authoritative list of options for every command — `dir`, `par`, `full`, and `jwt` — lives in the [CLI Reference](cli-reference.md). For the `dir` command specifically:
+The full, authoritative list of options for every command — `dir`, `par`, `scan`, `owasp`, and `jwt` — lives in the [CLI Reference](cli-reference.md). For the `dir` command specifically:
 
 - [`dir` options overview](cli-reference.md#directory-fuzzing-dir)
 - [Discovery Control](cli-reference.md#discovery-control-options) · [Robustness](cli-reference.md#discovery-robustness-options) · [Triage](cli-reference.md#discovery-triage-options) · [Batch Scan Scope](cli-reference.md#discovery-to-scan-integration-batch-scan-scope)
@@ -860,7 +871,7 @@ You can also run `python apileaks.py dir --help` for the inline option list.
 ### E-commerce API Testing
 ```bash
 # Comprehensive e-commerce API security assessment
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.ecommerce.example.com \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --modules bola,auth,property \
@@ -873,7 +884,7 @@ python apileaks.py full \
 ### Banking API Security Test
 ```bash
 # Conservative banking API testing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.bank.example.com \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --modules bola,auth,property \
@@ -886,7 +897,7 @@ python apileaks.py full \
 ### Mobile App API Testing
 ```bash
 # Mobile app backend API testing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://mobile-api.example.com \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --modules bola,auth,property \
@@ -899,14 +910,14 @@ python apileaks.py full \
 ### Microservices Testing
 ```bash
 # Individual microservice testing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://user-service.example.com \
   --modules bola,auth \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --user-agent-random \
   --output user_service_test
 
-python apileaks.py full \
+python apileaks.py scan \
   --target https://payment-service.example.com \
   --modules bola,auth,property \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
@@ -939,7 +950,7 @@ python apileaks.py par \
 ### Large Response Handling
 ```bash
 # For APIs with large responses
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --status-code 200-299 \
   --rate-limit 5 \

@@ -299,7 +299,7 @@ async def main():
         
         print("\nNext steps:")
         print("🔧 Try with your own APIs using the CLI flags:")
-        print("   python apileaks.py full --target YOUR_API --detect-framework --fuzz-versions")
+        print("   python apileaks.py scan --target YOUR_API --detect-framework --fuzz-versions")
         print("🔧 Customize configuration files for specific testing scenarios")
         print("🔧 Integrate into CI/CD pipelines for continuous security testing")
         

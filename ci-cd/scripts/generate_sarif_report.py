@@ -162,7 +162,7 @@ def generate_sarif_report(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "tool": {
                 "driver": {
                     "name": tool_name,
-                    "version": "0.1.0",
+                    "version": "0.2.0",
                     "informationUri": "https://github.com/apileak/apileak",
                     "organization": "APILeak Team",
                     "shortDescription": {

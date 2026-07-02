@@ -308,7 +308,7 @@ class APILeakCore:
                 user_agent_rotator = UserAgentRotator(mode="rotate", user_agent_list=headers_config.user_agent_list)
             elif headers_config.custom_headers.get('User-Agent'):
                 custom_ua = headers_config.custom_headers['User-Agent']
-                if custom_ua != 'APILeak/0.1.0':  # Only use custom if it's not the default
+                if custom_ua != 'APILeak/0.2.0':  # Only use custom if it's not the default
                     user_agent_rotator = UserAgentRotator(mode="custom", custom_user_agent=custom_ua)
             
             # Get status code filter for HTTP output
@@ -628,7 +628,7 @@ class APILeakCore:
                 user_agent_rotator = UserAgentRotator(mode="rotate", user_agent_list=headers_config.user_agent_list)
             elif headers_config.custom_headers.get('User-Agent'):
                 custom_ua = headers_config.custom_headers['User-Agent']
-                if custom_ua != 'APILeak/0.1.0':  # Only use custom if it's not the default
+                if custom_ua != 'APILeak/0.2.0':  # Only use custom if it's not the default
                     user_agent_rotator = UserAgentRotator(mode="custom", custom_user_agent=custom_ua)
             
             # Get status code filter for HTTP output
@@ -754,7 +754,7 @@ class APILeakCore:
                 user_agent_rotator = UserAgentRotator(mode="rotate", user_agent_list=headers_config.user_agent_list)
             elif headers_config.custom_headers.get('User-Agent'):
                 custom_ua = headers_config.custom_headers['User-Agent']
-                if custom_ua != 'APILeak/0.1.0':
+                if custom_ua != 'APILeak/0.2.0':
                     user_agent_rotator = UserAgentRotator(mode="custom", custom_user_agent=custom_ua)
             
             # Get status code filter for HTTP output

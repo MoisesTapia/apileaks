@@ -50,18 +50,21 @@ python apileaks.py dir --target https://api.example.com
 python apileaks.py par --target https://api.example.com
 
 # Full security scan with OWASP modules
-python apileaks.py full --target https://api.example.com --modules bola,auth,property
+python apileaks.py scan --target https://api.example.com --modules bola,auth,property
 ```
 
 ## Basic Usage
 
 ### Command Structure
 
-APILeak supports three main scanning modes:
+APILeak's main commands:
 
 1. **Directory Fuzzing (`dir`)** - Discover hidden endpoints
 2. **Parameter Fuzzing (`par`)** - Find hidden parameters
-3. **Full Scan (`full`)** - Comprehensive security testing
+3. **Security Scan (`scan`)** - Primary orchestrator: runs discovery + **all** OWASP modules by default (or a subset via `--modules a,b`) and drives the CI gate
+4. **OWASP Module (`owasp <key>`)** - Run exactly one OWASP module in isolation (red-team focus)
+
+> **Deprecation.** `full` and `main` are deprecated, hidden aliases of `scan`. They still forward to `scan` (emitting a one-line stderr notice) — migrate scripts to `scan`. A single-module alias invocation like `full --modules bola` becomes `apileaks owasp bola`.
 
 ### Directory Fuzzing
 
@@ -111,22 +114,22 @@ python apileaks.py par \
   --wordlist wordlists/parameters.txt
 ```
 
-### Full Security Scan
+### Security Scan
 
-Comprehensive security testing with OWASP modules:
+Comprehensive security testing with OWASP modules. `scan` runs discovery and all registered OWASP modules by default:
 
 ```bash
-# Basic full scan
-python apileaks.py full --target https://api.example.com
+# Basic scan (runs discovery + all OWASP modules by default)
+python apileaks.py scan --target https://api.example.com
 
 # With specific OWASP modules
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 # With configuration file
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/rest_api_config.yaml \
   --target https://api.example.com
 ```
@@ -139,13 +142,13 @@ Automatically detect API frameworks and adapt testing strategies:
 
 ```bash
 # Enable framework detection
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --detect-framework \
   --framework-confidence 0.8
 
 # Short flag version
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --df \
   --framework-confidence 0.9
@@ -167,18 +170,18 @@ Discover and test multiple API versions:
 
 ```bash
 # Enable version fuzzing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --fuzz-versions \
   --version-patterns "/v1,/v2,/api/v1,/api/v2"
 
 # Short flag version
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --fv
 
 # Combined framework and version detection
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --df --fv \
   --output comprehensive_discovery
@@ -200,7 +203,7 @@ python apileaks.py par \
   --status-code 401,403
 
 # Error analysis
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --status-code 500-599 \
   --modules bola,auth
@@ -215,14 +218,13 @@ APILeak provides specialized modules for each OWASP API Security Top 10 category
 Test for unauthorized access to objects:
 
 ```bash
-# BOLA testing only
-python apileaks.py full \
+# BOLA testing only (single module in isolation)
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 # With multiple authentication contexts
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/bola_testing_config.yaml \
   --target https://api.example.com
 ```
@@ -239,14 +241,13 @@ python apileaks.py full \
 Test authentication mechanisms and JWT security:
 
 ```bash
-# Authentication testing
-python apileaks.py full \
+# Authentication testing (single module in isolation)
+python apileaks.py owasp auth \
   --target https://api.example.com \
-  --modules auth \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 # JWT-specific testing
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/auth_testing_config.yaml \
   --target https://api.example.com
 ```
@@ -263,14 +264,13 @@ python apileaks.py full \
 Test for excessive data exposure and mass assignment:
 
 ```bash
-# Property-level authorization testing
-python apileaks.py full \
+# Property-level authorization testing (single module in isolation)
+python apileaks.py owasp property \
   --target https://api.example.com \
-  --modules property \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 # Comprehensive property testing
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/property_testing_config.yaml \
   --target https://api.example.com
 ```
@@ -287,14 +287,13 @@ python apileaks.py full \
 Test for DoS vulnerabilities and rate limiting:
 
 ```bash
-# Resource consumption testing
-python apileaks.py full \
+# Resource consumption testing (single module in isolation)
+python apileaks.py owasp resource \
   --target https://api.example.com \
-  --modules resource \
   --rate-limit 20  # Higher rate for resource testing
 
 # Comprehensive resource testing
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/resource_testing_example.yaml \
   --target https://api.example.com
 ```
@@ -311,14 +310,13 @@ python apileaks.py full \
 Test for privilege escalation and admin access:
 
 ```bash
-# Function-level authorization testing
-python apileaks.py full \
+# Function-level authorization testing (single module in isolation)
+python apileaks.py owasp function_auth \
   --target https://api.example.com \
-  --modules function_auth \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 # Admin endpoint testing
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/function_auth_testing_config.yaml \
   --target https://api.example.com
 ```
@@ -336,15 +334,14 @@ Run multiple OWASP modules together:
 
 ```bash
 # Core P0 modules
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property,function_auth \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
-# All available modules
-python apileaks.py full \
+# All available modules (scan runs every module by default, so a plain scan is enough)
+python apileaks.py scan \
   --target https://api.example.com \
-  --modules all \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
@@ -384,12 +381,12 @@ reporting:
 
 ```bash
 # Use configuration file
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/rest_api_config.yaml \
   --target https://api.example.com
 
 # Override configuration with CLI arguments
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/rest_api_config.yaml \
   --target https://api.example.com \
   --rate-limit 5 \
@@ -407,7 +404,7 @@ export APILEAK_AUTH_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 export APILEAK_RATE_LIMIT="5"
 
 # Run with environment variables
-python apileaks.py full --config config/examples/ci_cd_config.yaml
+python apileaks.py scan --config config/examples/ci_cd_config.yaml
 ```
 
 ## WAF Evasion Techniques
@@ -428,7 +425,7 @@ python apileaks.py par \
   --user-agent-custom "Mozilla/5.0 (compatible; Googlebot/2.1)"
 
 # User agent rotation from file
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-file wordlists/user_agents.txt \
   --modules bola,auth
@@ -438,14 +435,14 @@ python apileaks.py full \
 
 ```bash
 # Conservative rate limiting
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --rate-limit 1 \
   --user-agent-random \
   --modules bola,auth
 
 # Adaptive rate limiting
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/waf_protected_api_config.yaml \
   --target https://api.example.com
 ```
@@ -474,7 +471,7 @@ rate_limiting:
 
 ```bash
 # CI/CD friendly command
-python apileaks.py full \
+python apileaks.py scan \
   --target "${API_ENDPOINT}" \
   --jwt "${JWT_TOKEN}" \
   --modules bola,auth,property \
@@ -482,7 +479,7 @@ python apileaks.py full \
   --no-banner
 
 # With exit code handling
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/ci_cd_config.yaml \
   --target "${API_ENDPOINT}" || exit 1
 ```
@@ -513,7 +510,7 @@ jobs:
           API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
           JWT_TOKEN: ${{ secrets.JWT_TOKEN }}
         run: |
-          python apileaks.py full \
+          python apileaks.py scan \
             --target "${API_ENDPOINT}" \
             --jwt "${JWT_TOKEN}" \
             --modules bola,auth,property \
@@ -538,7 +535,7 @@ api_security_scan:
   image: python:3.11
   script:
     - pip install -r requirements.txt
-    - python apileaks.py full
+    - python apileaks.py scan
         --target "${API_ENDPOINT}"
         --jwt "${JWT_TOKEN}"
         --modules bola,auth,property
@@ -570,7 +567,7 @@ python apileaks.py dir \
   --user-agent-random
 
 # Use adaptive rate limiting
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --rate-limit 5 \
   --modules bola \
@@ -586,7 +583,7 @@ python apileaks.py par \
   --user-agent-custom "Mozilla/5.0 (compatible; Googlebot/2.1)"
 
 # Conservative testing
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --rate-limit 2 \
   --user-agent-file wordlists/legitimate_agents.txt \
@@ -597,7 +594,7 @@ python apileaks.py full \
 
 ```bash
 # Disable SSL verification (not recommended for production)
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --no-verify-ssl
 
@@ -610,12 +607,12 @@ target:
 
 ```bash
 # Test with different authentication methods
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --header "X-API-Key: your-api-key"
 
 # Use configuration file for complex auth
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/auth_testing_config.yaml \
   --target https://api.example.com
 ```
@@ -624,13 +621,13 @@ python apileaks.py full \
 
 ```bash
 # Enable debug logging
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --log-level DEBUG \
   --log-file debug.log
 
 # JSON structured logging
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --json-logs \
   --log-file structured.log
@@ -649,13 +646,13 @@ python apileaks.py full \
 2. **Use Legitimate User Agents**
    ```bash
    # Avoid suspicious user agents
-   python apileaks.py full --target https://api.example.com --user-agent-random
+   python apileaks.py scan --target https://api.example.com --user-agent-random
    ```
 
 3. **Test with Proper Authorization**
    ```bash
    # Always use valid tokens when available
-   python apileaks.py full \
+   python apileaks.py scan \
      --target https://api.example.com \
      --jwt "valid-jwt-token" \
      --modules bola,auth
@@ -689,7 +686,7 @@ python apileaks.py full \
 
 1. **Use Multiple Formats**
    ```bash
-   python apileaks.py full \
+   python apileaks.py scan \
      --target https://api.example.com \
      --output comprehensive_scan
    # Generates: .json, .html, .xml, .txt
@@ -697,7 +694,7 @@ python apileaks.py full \
 
 2. **Structured Output for Automation**
    ```bash
-   python apileaks.py full \
+   python apileaks.py scan \
      --target https://api.example.com \
      --json-logs \
      --output automation_scan
@@ -705,7 +702,7 @@ python apileaks.py full \
 
 3. **Include Context in Filenames**
    ```bash
-   python apileaks.py full \
+   python apileaks.py scan \
      --target https://api.example.com \
      --output "production_api_$(date +%Y%m%d)"
    ```

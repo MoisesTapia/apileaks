@@ -6,10 +6,14 @@ Property-Based Tests for JWT attack-vector executability.
 executable generation path**
 
 Property 9 (from design.md / Requirements 15.3, 15.4):
-    For all nine ``AttackType`` members, ``JWTAttackEngine.generate_token``
-    returns a non-empty list containing at least one non-empty token string,
-    and every member is covered by an executable generation path (the dispatch
-    table in ``generate_token``). No vector is silently unimplemented.
+    For every ``AttackType`` member, ``JWTAttackEngine.generate_token``
+    returns a non-empty list containing at least one non-empty token string
+    when the vector is exercised under an engine that satisfies its documented
+    precondition, and every member is covered by an executable generation path
+    (the dispatch table in ``generate_token``). No vector is silently
+    unimplemented. Most vectors are executable from any HMAC base token; the
+    ECDSA-only PSYCHIC_SIGNATURE vector requires an ES* base token (Req 59.2)
+    and CLAIM_FUZZING requires an operator-supplied fuzz target/values (Req 63.1).
 
 These tests drive the real ``JWTAttackEngine.generate_token`` in
 ``utils.jwt_attack_engine``. A valid base JWT is built with Hypothesis-generated
@@ -26,10 +30,11 @@ Requirements covered: 15.3, 15.4.
 
 import pytest
 from hypothesis import given, settings, strategies as st
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from utils.jwt_attack_engine import JWTAttackEngine
 from utils.jwt_attack_models import AttackType
-from utils.jwt_utils import encode_jwt
+from utils.jwt_utils import ES_CURVES, encode_jwt, encode_jwt_ecdsa
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +119,68 @@ def base_tokens(draw):
     return encode_jwt(header, payload, BASE_SECRET)
 
 
-def _make_engine(base_token, signing_secret=None):
+# A single fixed EC private key reused across examples: PSYCHIC_SIGNATURE is an
+# ECDSA-only vector (CVE-2022-21449), so its executable path requires an ES*
+# base token. Generating one key once keeps the property fast without narrowing
+# the input space (the payload still varies per example).
+_EC_PRIVATE_KEY = ec.generate_private_key(ES_CURVES["ES256"]())
+
+
+@st.composite
+def es_base_tokens(draw):
+    """Build a valid ES256-signed base JWT (for the ECDSA-only psychic vector)."""
+    payload = draw(base_payloads())
+    header = {"alg": "ES256", "typ": "JWT"}
+    return encode_jwt_ecdsa(header, payload, _EC_PRIVATE_KEY)
+
+
+# Vectors with a documented precondition beyond "any HMAC base token":
+#   * PSYCHIC_SIGNATURE needs an ECDSA base token (Property 35 / Req 59.2).
+#   * CLAIM_FUZZING needs an operator-supplied fuzz target + values (Req 63.1).
+# Every other vector is executable from a plain HMAC base token with no extra
+# configuration. The Property 9 executability guarantee therefore holds when
+# each vector is exercised under an engine that satisfies its precondition.
+ECDSA_ONLY = {AttackType.PSYCHIC_SIGNATURE}
+REQUIRES_FUZZ = {AttackType.CLAIM_FUZZING}
+FUZZ_TARGET = "role"
+FUZZ_VALUES = ("admin", "root", "superuser")
+
+
+def _make_engine(base_token, signing_secret=None, fuzz_target=None, fuzz_values=None):
     return JWTAttackEngine(
         target_url="https://target.example/api",
         original_token=base_token,
         http_engine=_StubHTTPEngine(),
         signing_secret=signing_secret,
+        fuzz_target=fuzz_target,
+        fuzz_values=fuzz_values,
     )
+
+
+def _engine_for(attack_type, hmac_token, es_token, *, signing_secret=None):
+    """Build an engine configured to satisfy ``attack_type``'s precondition.
+
+    ECDSA-only vectors get an ES* base token; fuzzing vectors get a configured
+    fuzz target/values; every other vector uses the plain HMAC base token.
+    """
+    if attack_type in ECDSA_ONLY:
+        return _make_engine(es_token, signing_secret=signing_secret)
+    if attack_type in REQUIRES_FUZZ:
+        return _make_engine(hmac_token, signing_secret=signing_secret,
+                            fuzz_target=FUZZ_TARGET, fuzz_values=list(FUZZ_VALUES))
+    return _make_engine(hmac_token, signing_secret=signing_secret)
+
+
+def _fully_capable_engine(es_token, signing_secret=None):
+    """An engine whose base token + config satisfy EVERY vector at once.
+
+    An ES256 base token supports the ECDSA-only psychic vector, and configuring
+    a fuzz target/values supports CLAIM_FUZZING; every other vector is executable
+    from an ES256 base token too, so ``generate_all_tokens`` yields a non-empty
+    list for every member.
+    """
+    return _make_engine(es_token, signing_secret=signing_secret,
+                        fuzz_target=FUZZ_TARGET, fuzz_values=list(FUZZ_VALUES))
 
 
 # ---------------------------------------------------------------------------
@@ -129,24 +189,26 @@ def _make_engine(base_token, signing_secret=None):
 
 
 @settings(max_examples=200)
-@given(base_token=base_tokens())
-def test_every_attack_type_generates_a_nonempty_token(base_token):
-    """For all nine ``AttackType`` members, ``generate_token`` returns a
-    non-empty list with at least one non-empty token string.
+@given(hmac_token=base_tokens(), es_token=es_base_tokens())
+def test_every_attack_type_generates_a_nonempty_token(hmac_token, es_token):
+    """For every ``AttackType`` member, ``generate_token`` returns a non-empty
+    list with at least one non-empty token string, when the vector is exercised
+    under an engine that satisfies its documented precondition.
 
-    Driven across varied base tokens (identity/role/expiration claims and
-    header algorithms) so the executable-path guarantee holds for any valid
-    base token, not just a fixed one.
+    Most vectors are executable from any HMAC base token; the ECDSA-only psychic
+    vector uses an ES* base token and CLAIM_FUZZING uses a configured fuzz
+    target/values (see ``_engine_for``). Driven across varied payloads so the
+    executable-path guarantee holds for any valid base token, not a fixed one.
 
     **Validates: Requirements 15.3, 15.4**
     """
-    engine = _make_engine(base_token)
-
     members = list(AttackType)
-    # Guard the "nine members" assumption the property is written against.
-    assert len(members) == 9
+    # Guard against a vector being added without an executable generation path:
+    # the dispatch table must cover exactly the enum members.
+    assert set(_fully_capable_engine(es_token).generate_all_tokens().keys()) == set(members)
 
     for attack_type in members:
+        engine = _engine_for(attack_type, hmac_token, es_token)
         tokens = engine.generate_token(attack_type)
 
         # Executable path exists and produced output for this vector.
@@ -168,21 +230,23 @@ def test_every_attack_type_generates_a_nonempty_token(base_token):
 
 
 @settings(max_examples=100)
-@given(base_token=base_tokens())
-def test_generate_all_tokens_covers_every_attack_type(base_token):
+@given(es_token=es_base_tokens())
+def test_generate_all_tokens_covers_every_attack_type(es_token):
     """``generate_all_tokens`` returns an entry for every ``AttackType`` and each
     entry is a non-empty list of non-empty tokens.
 
     This pins the "single generation path per vector" guarantee: no member maps
-    to a missing/empty generator.
+    to a missing/empty generator. It uses a fully-capable engine (ES256 base
+    token + configured fuzz target/values) so every vector's precondition is
+    satisfied in a single ``generate_all_tokens`` call.
 
     **Validates: Requirements 15.3, 15.4**
     """
-    engine = _make_engine(base_token)
+    engine = _fully_capable_engine(es_token)
 
     all_tokens = engine.generate_all_tokens()
 
-    # Exactly the nine members are present as keys.
+    # Every enum member is present as a key.
     assert set(all_tokens.keys()) == set(AttackType)
 
     for attack_type, tokens in all_tokens.items():
@@ -197,17 +261,22 @@ def test_generate_all_tokens_covers_every_attack_type(base_token):
 
 
 @settings(max_examples=100)
-@given(base_token=base_tokens(), signing_secret=st.text(min_size=1, max_size=32))
-def test_executable_path_holds_with_signing_secret(base_token, signing_secret):
+@given(hmac_token=base_tokens(), es_token=es_base_tokens(),
+       signing_secret=st.text(min_size=1, max_size=32))
+def test_executable_path_holds_with_signing_secret(hmac_token, es_token, signing_secret):
     """Every vector remains executable whether or not an operator signing secret
     is supplied (signature-requiring vectors use the key; key-less vectors do
     not), so the executability guarantee is independent of key availability.
 
+    Each vector is exercised under an engine that satisfies its precondition
+    (ES* base token for the ECDSA-only psychic vector, configured fuzz
+    target/values for CLAIM_FUZZING), with the signing secret threaded through.
+
     **Validates: Requirements 15.3, 15.4**
     """
-    engine = _make_engine(base_token, signing_secret=signing_secret)
-
     for attack_type in AttackType:
+        engine = _engine_for(attack_type, hmac_token, es_token,
+                             signing_secret=signing_secret)
         tokens = engine.generate_token(attack_type)
         assert tokens, f"{attack_type} produced no tokens with a signing secret"
         assert any(isinstance(t, str) and t for t in tokens)

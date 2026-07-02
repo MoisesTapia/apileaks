@@ -41,7 +41,7 @@ python apileaks.py dir --target https://api.example.com --status-code 404
 python apileaks.py par --target https://api.example.com --status-code 200,201,404
 
 # Show status code ranges
-python apileaks.py full --target https://api.example.com --status-code 200-299,400-499
+python apileaks.py scan --target https://api.example.com --status-code 200-299,400-499
 ```
 
 ### Practical Examples
@@ -81,13 +81,13 @@ python apileaks.py par \
 #### Full Scan - Comprehensive Analysis
 ```bash
 # Monitor only critical responses during full scan
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --status-code 200,401,403,500 \
   --modules bola,auth,property
 
 # Focus on redirect chains and successful responses
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --status-code 200-299,300-399 \
   --detect-framework \
@@ -163,7 +163,7 @@ docker run --rm \
 docker run --rm \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/api_config.yaml \
   --target https://api.example.com \
   --user-agent-random \

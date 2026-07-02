@@ -2,6 +2,8 @@
 
 This guide covers the most common issues when using APILeak and their solutions.
 
+> **Command note:** `scan` is the primary command (discovery plus all OWASP modules by default; use `--modules a,b` to restrict). Run a single module in isolation with `apileaks owasp <key>`. The `full` and `main` commands are deprecated, hidden aliases of `scan` — they still work and forward to `scan`, but examples below use `scan`. For a single module, `full --modules bola` becomes `apileaks owasp bola`.
+
 ## 📋 Table of Contents
 
 1. [Connection Issues](#connection-issues)
@@ -36,7 +38,7 @@ requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.example.com', 
 
 ```bash
 # 1. Increase timeout
-python apileaks.py full --target https://api.example.com --config config/high_timeout.yaml
+python apileaks.py scan --target https://api.example.com --config config/high_timeout.yaml
 ```
 
 ```yaml
@@ -52,7 +54,7 @@ curl -I https://api.example.com
 ping api.example.com
 
 # 3. Try with very low rate limiting
-python apileaks.py full --target https://api.example.com --rate-limit 1
+python apileaks.py scan --target https://api.example.com --rate-limit 1
 ```
 
 ### Error: SSL Certificate verification failed
@@ -73,7 +75,7 @@ target:
 
 ```bash
 # Better solution: Add certificate to trust store
-python apileaks.py full --target https://api.example.com --config config/no_ssl_verify.yaml
+python apileaks.py scan --target https://api.example.com --config config/no_ssl_verify.yaml
 ```
 
 ### Error: Name resolution failed
@@ -92,7 +94,7 @@ nslookup api.example.com
 dig api.example.com
 
 # 2. Use direct IP if necessary
-python apileaks.py full --target https://192.168.1.100
+python apileaks.py scan --target https://192.168.1.100
 
 # 3. Check /etc/hosts (Linux/Mac)
 cat /etc/hosts
@@ -138,7 +140,7 @@ Authentication context 'anonymous' failed
 curl -H "Authorization: Bearer $JWT_TOKEN" https://api.example.com/
 
 # 2. Try without authentication first
-python apileaks.py full --target https://api.example.com --modules bola
+python apileaks.py scan --target https://api.example.com --modules bola
 
 # 3. Use configuration with multiple contexts
 ```
@@ -193,10 +195,10 @@ Rate limit exceeded
 
 ```bash
 # 1. Drastically reduce rate limiting
-python apileaks.py full --target https://api.example.com --rate-limit 1
+python apileaks.py scan --target https://api.example.com --rate-limit 1
 
 # 2. Use adaptive mode (default)
-python apileaks.py full --target https://api.example.com --modules bola
+python apileaks.py scan --target https://api.example.com --modules bola
 ```
 
 ```yaml
@@ -240,11 +242,11 @@ Server temporarily overloaded
 ```bash
 # 1. Wait and retry
 sleep 300  # 5 minutes
-python apileaks.py full --target https://api.example.com --rate-limit 1
+python apileaks.py scan --target https://api.example.com --rate-limit 1
 
 # 2. Run modules separately
-python apileaks.py full --target https://api.example.com --modules bola --rate-limit 1
-python apileaks.py full --target https://api.example.com --modules auth --rate-limit 1
+python apileaks.py scan --target https://api.example.com --modules bola --rate-limit 1
+python apileaks.py scan --target https://api.example.com --modules auth --rate-limit 1
 ```
 
 ---
@@ -313,10 +315,10 @@ Available modules: bola, auth, property, resource, function_auth
 
 ```bash
 # 1. Check available modules
-python apileaks.py full --help
+python apileaks.py scan --help
 
 # 2. Use only valid modules
-python apileaks.py full --target https://api.example.com --modules bola,auth,property
+python apileaks.py scan --target https://api.example.com --modules bola,auth,property
 
 # 3. Check spelling
 # Correct: bola, auth, property, resource, function_auth
@@ -415,7 +417,7 @@ mkdir -p reports
 chmod 755 reports
 
 # 3. Use alternative directory
-python apileaks.py full --target https://api.example.com --output /tmp/apileak-reports
+python apileaks.py scan --target https://api.example.com --output /tmp/apileak-reports
 ```
 
 ### Error: Disk space full
@@ -435,7 +437,7 @@ df -h
 find reports/ -name "*.json" -mtime +7 -delete
 
 # 3. Use directory with more space
-python apileaks.py full --target https://api.example.com --output /var/tmp/apileak-reports
+python apileaks.py scan --target https://api.example.com --output /var/tmp/apileak-reports
 ```
 
 ### Error: Invalid JSON in report
@@ -455,7 +457,7 @@ tail reports/scan.json
 grep -i "error\|exception" apileak.log
 
 # 3. Re-run the scan
-python apileaks.py full --target https://api.example.com --log-level DEBUG
+python apileaks.py scan --target https://api.example.com --log-level DEBUG
 ```
 
 ---
@@ -480,7 +482,7 @@ curl https://api.example.com/users/1
 curl https://api.example.com/api/v1/users/1
 
 # 3. Use specific BOLA configuration
-python apileaks.py full --config config/examples/bola_testing_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/examples/bola_testing_config.yaml --target https://api.example.com
 ```
 
 ### Error: Auth module - JWT secrets not found
@@ -539,7 +541,7 @@ owasp_testing:
 ```bash
 # Run with memory limits
 ulimit -v 1000000  # Limit virtual memory
-python apileaks.py full --target https://api.example.com --modules resource
+python apileaks.py owasp resource --target https://api.example.com
 ```
 
 ---
@@ -558,13 +560,13 @@ No progress visible
 
 ```bash
 # 1. Use specific modules
-python apileaks.py full --target https://api.example.com --modules bola,auth
+python apileaks.py scan --target https://api.example.com --modules bola,auth
 
 # 2. Reduce scope
 python apileaks.py dir --target https://api.example.com --wordlist wordlists/small_endpoints.txt
 
 # 3. Increase rate limiting if server allows
-python apileaks.py full --target https://api.example.com --rate-limit 20
+python apileaks.py scan --target https://api.example.com --rate-limit 20
 ```
 
 ### Error: High memory usage
@@ -583,7 +585,7 @@ ulimit -v 2000000  # 2GB virtual memory limit
 
 # 2. Run modules separately
 for module in bola auth property; do
-  python apileaks.py full --target https://api.example.com --modules $module
+  python apileaks.py scan --target https://api.example.com --modules $module
 done
 
 # 3. Use configuration with less concurrency
@@ -628,7 +630,7 @@ echo "* hard nofile 8192" >> /etc/security/limits.conf
 
 ```bash
 # Complete logging
-python apileaks.py full --target https://api.example.com \
+python apileaks.py scan --target https://api.example.com \
   --log-level DEBUG \
   --log-file debug.log \
   --json-logs
@@ -655,7 +657,7 @@ logging.getLogger().setLevel(logging.DEBUG)
 requests_log = logging.getLogger('requests.packages.urllib3')
 requests_log.setLevel(logging.DEBUG)
 requests_log.propagate = True
-" && python apileaks.py full --target https://api.example.com --modules bola
+" && python apileaks.py scan --target https://api.example.com --modules bola
 ```
 
 ### Configuration Debugging
@@ -731,7 +733,7 @@ When reporting an issue, include:
 
 1. **Command executed:**
 ```bash
-python apileaks.py full --target https://api.example.com --modules bola --log-level DEBUG
+python apileaks.py scan --target https://api.example.com --modules bola --log-level DEBUG
 ```
 
 2. **Configuration used:**

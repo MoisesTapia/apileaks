@@ -181,21 +181,21 @@ owasp_testing:
 
 ```bash
 # Full scan with Advanced Discovery enabled
-python apileaks.py full --target https://api.example.com
+python apileaks.py scan --target https://api.example.com
 ```
 
 ### 2. **With Configuration File**
 
 ```bash
 # Use custom configuration
-python apileaks.py full --config config/advanced_discovery.yaml
+python apileaks.py scan --config config/advanced_discovery.yaml
 ```
 
 ### 3. **With Additional Parameters**
 
 ```bash
 # With rate limiting and authentication
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --rate-limit 5 \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..." \
@@ -206,7 +206,7 @@ python apileaks.py full \
 
 ```bash
 # With random User-Agent to evade WAF
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --rate-limit 3
@@ -216,7 +216,7 @@ python apileaks.py full \
 
 ```bash
 # With logging for debugging
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --log-level DEBUG \
   --log-file advanced_discovery.log
@@ -228,7 +228,7 @@ python apileaks.py full \
 
 ```bash
 # Configuration for a corporate API with multiple subdomains
-python apileaks.py full \
+python apileaks.py scan \
   --config config/corporate_api.yaml \
   --target https://api.company.com \
   --rate-limit 5 \
@@ -271,7 +271,7 @@ rate_limiting:
 
 ```bash
 # Security analysis only, without fuzzing
-python apileaks.py full \
+python apileaks.py scan \
   --config config/security_only.yaml \
   --target https://api.example.com
 ```
@@ -305,7 +305,7 @@ owasp_testing:
 
 ```bash
 # Exhaustive discovery with a custom wordlist
-python apileaks.py full \
+python apileaks.py scan \
   --config config/infrastructure_discovery.yaml \
   --target https://example.com \
   --rate-limit 3 \
@@ -421,7 +421,7 @@ jobs:
       
       - name: Run Advanced Discovery
         run: |
-          python apileaks.py full \
+          python apileaks.py scan \
             --config config/ci_advanced_discovery.yaml \
             --target ${{ secrets.API_TARGET }} \
             --output ci_scan_${{ github.run_number }} \
@@ -447,7 +447,7 @@ advanced-discovery:
   script:
     - pip install -r requirements.txt
     - |
-      python apileaks.py full \
+      python apileaks.py scan \
         --config config/ci_advanced_discovery.yaml \
         --target $API_TARGET \
         --output ci_scan_$CI_PIPELINE_ID \
@@ -473,7 +473,7 @@ export APILEAK_OUTPUT_DIR="reports"
 export APILEAK_TIMEOUT="15"
 
 # Run with variables
-python apileaks.py full --config config/advanced_discovery.yaml
+python apileaks.py scan --config config/advanced_discovery.yaml
 ```
 
 ## Troubleshooting
@@ -540,7 +540,7 @@ rate_limiting:
 
 ```bash
 # Run with full debug
-python apileaks.py full \
+python apileaks.py scan \
   --config config/debug_advanced_discovery.yaml \
   --target https://api.example.com \
   --log-level DEBUG \

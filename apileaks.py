@@ -89,6 +89,16 @@ from utils.spec_import import (
 )
 from utils.spec_import import _parse_document as _parse_spec_document
 
+from cli.owasp_descriptors import (
+    OWASP_MODULE_DESCRIPTORS,
+    OwaspModuleDescriptor,
+    all_keys,
+    get_descriptor,
+    iter_descriptors,
+)
+from cli.shared_options import transversal_options
+from cli.module_options import auth_options, bola_options
+
 
 def parse_response_codes(response_filter: str) -> list:
     """Parse response code filter string into list of integers"""
@@ -649,13 +659,23 @@ def print_banner():
  .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b 
 o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P' 
 
-APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+APILeak v0.2.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
 """
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None):
-    """Create an enhanced configuration with all advanced features integrated"""
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None, module_configs=None):
+    """Create an enhanced configuration with all advanced features integrated
+
+    ``module_configs`` generalizes the per-module pre-load config channel: it is
+    a mapping of ``OWASPConfig`` field name (e.g. ``"bola_testing"``) to a plain
+    dict of config values threaded into that module's ``owasp_testing`` sub-dict.
+    The legacy ``bola_config`` parameter is retained as a backward-compatible
+    alias that maps into ``module_configs['bola_testing']`` (preserving the exact
+    BOLA assembly the ``full`` command relied on). When both are empty/None the
+    ``owasp_testing`` sub-dicts are omitted entirely so every module resolves to
+    its safe dataclass defaults and existing behavior is preserved byte-for-byte.
+    """
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
     
@@ -675,7 +695,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     
     # Configure user agent settings with environment variable support
     user_agent_settings = {
-        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.1.0'),
+        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.2.0'),
         'Accept': 'application/json'
     }
     random_user_agent = False
@@ -763,6 +783,16 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     owasp_testing = {
         'enabled_modules': owasp_modules
     }
+
+    # Normalize the per-module pre-load config channel. The legacy ``bola_config``
+    # alias is transformed into the same ``bola_testing`` sub-dict the ``full``
+    # command produced and merged into ``module_configs`` (an explicit
+    # ``module_configs['bola_testing']`` takes precedence). Each field's dict is
+    # then threaded into ``owasp_testing`` so ConfigurationManager builds the
+    # corresponding config dataclass. When no module config is supplied the
+    # sub-dicts are omitted so every module resolves to its safe defaults
+    # (Requirements 34.2-34.4 preserved).
+    normalized_module_configs = dict(module_configs) if module_configs else {}
     if bola_config:
         bola_testing = {
             'allow_destructive': bola_config.get('allow_destructive', False),
@@ -775,7 +805,11 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         destructive_methods = bola_config.get('destructive_methods')
         if destructive_methods:
             bola_testing['destructive_methods'] = destructive_methods
-        owasp_testing['bola_testing'] = bola_testing
+        normalized_module_configs.setdefault('bola_testing', bola_testing)
+
+    for config_field, field_values in normalized_module_configs.items():
+        if field_values:
+            owasp_testing[config_field] = dict(field_values)
 
     config = {
         'target': {
@@ -908,7 +942,7 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
     
     # Configure user agent settings with environment variable support
     user_agent_settings = {
-        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.1.0'),
+        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.2.0'),
         'Accept': 'application/json'
     }
     random_user_agent = False
@@ -1051,7 +1085,7 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
 @click.option('--no-banner', is_flag=True, help='Suppress banner output')
 @click.pass_context
 def cli(ctx, no_banner):
-    """APILeak v0.1.0 - Enterprise API Fuzzing Tool
+    """APILeak v0.2.0 - Enterprise API Fuzzing Tool
     
     \b
     Performs comprehensive security testing of APIs including:
@@ -1066,25 +1100,33 @@ def cli(ctx, no_banner):
     • JWT token manipulation and analysis
     
     \b
-    Basic Commands:
-      python apileaks.py dir --target URL              # Directory fuzzing
-      python apileaks.py par --target URL              # Parameter fuzzing  
-      python apileaks.py full --target URL             # Full security scan
+    Discovery & fuzzing:
+      python apileaks.py dir --target URL              # Directory/endpoint fuzzing
+      python apileaks.py par --target URL              # Parameter fuzzing
     
     \b
-    Advanced Examples:
-      python apileaks.py full --target URL --enable-advanced
-      python apileaks.py full --target URL --detect-framework --fuzz-versions
-      python apileaks.py full --target URL --user-agent-random --enable-waf-evasion
+    OWASP API Security Top 10:
+      python apileaks.py owasp                          # List every OWASP module
+      python apileaks.py owasp bola --target URL        # Run a single module (isolated)
+      python apileaks.py owasp auth --target URL        # Run only the Auth module
+      python apileaks.py scan --target URL              # Orchestrated scan (all modules)
+      python apileaks.py scan --target URL --modules bola,auth   # Selected modules
     
     \b
-    CI/CD Integration:
-      python apileaks.py full --target URL --ci-mode --fail-on critical
+    Advanced examples:
+      python apileaks.py scan --target URL --enable-advanced
+      python apileaks.py scan --target URL --detect-framework --fuzz-versions
+      python apileaks.py scan --target URL --user-agent-random --enable-waf-evasion
     
     \b
-    JWT Utilities:
+    CI/CD integration (severity gate, SARIF, baseline):
+      python apileaks.py scan --target URL --ci-mode --fail-on high --sarif
+    
+    \b
+    JWT utilities (manual toolkit):
       python apileaks.py jwt decode TOKEN
       python apileaks.py jwt encode '{"sub":"user"}' --secret key
+      python apileaks.py jwt --help                     # Full JWT toolkit listing
     """
     ctx.ensure_object(dict)
     ctx.obj['no_banner'] = no_banner
@@ -1271,7 +1313,7 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("dir")
     
-    logger.info("APILeak directory fuzzing starting", version="0.1.0", target=target)
+    logger.info("APILeak directory fuzzing starting", version="0.2.0", target=target)
 
     # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
     # grammar understood by parse_selectors. Status matching continues to use the
@@ -2779,7 +2821,7 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("par")
     
-    logger.info("APILeak parameter fuzzing starting", version="0.1.0", target=target)
+    logger.info("APILeak parameter fuzzing starting", version="0.2.0", target=target)
     
     try:
         # Prepare user agent configuration
@@ -2841,524 +2883,791 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         sys.exit(1)
 
 
-@cli.command()
-@click.option('--config', '-c', type=click.Path(exists=True), 
-              help='Configuration file path (YAML or JSON) - optional')
-@click.option('--target', '-t', help='Target URL to scan (overrides config)')
-@click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
-@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
-              default='WARNING', help='Logging level')
-@click.option('--log-file', help='Log file path (optional)')
-@click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
-@click.option('--modules', help='Comma-separated list of OWASP modules to enable')
-@click.option('--rate-limit', type=int, help='Requests per second limit')
-@click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
-              help='Max recursion depth for discovery (0 = no recursion). '
-                   'Overrides APILEAK_MAX_DEPTH and the config default (3).')
-@click.option('--recursive/--no-recursive', 'recursive', default=None,
-              help='Enable or disable recursive discovery (default: enabled).')
-@click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
-              help='Global request budget for discovery (default: unbounded).')
-@click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
-              help='Max concurrent in-flight discovery requests (default: 50).')
-@click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
-              help='Per-request timeout in seconds applied to every discovery request '
-                   '(must be > 0; default: 10).')
-@click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
-              help='Number of automatic retries for each failed discovery request '
-                   '(must be >= 0; default: 2).')
-@click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
-              help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
-                   'e.g. -x json,php or -x .json -x .php. Leading dots are optional.')
-@click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
-@click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
-@click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
-@click.option('--jwt', help='JWT token to use for authentication')
-@click.option('--auth-context', 'auth_context', multiple=True, metavar='user:token[:privilege]',
-              help='Authenticated identity supplied as user:token with an optional '
-                   ':privilege suffix. Repeatable: pass once per user to run multi-user '
-                   'authorization tests (e.g. --auth-context alice:eyJ...:1 '
-                   '--auth-context bob:eyJ...:1).')
-@click.option('--public-key', 'public_key', metavar='PATH_OR_PEM',
-              help='RSA public key material (PEM/DER path or inline PEM) used by the '
-                   'algorithm-confusion test to HMAC-sign with the real key bytes.')
-@click.option('--jwks-url', 'jwks_url', metavar='URL',
-              help='JWKS endpoint URL used to fetch RSA public key material for the '
-                   'algorithm-confusion test when no --public-key is supplied.')
-@click.option('--signing-secret', 'signing_secret', metavar='SECRET',
-              help='Known HMAC signing secret used to construct a validly-signed but '
-                   'expired token for the expired-token-acceptance test.')
-@click.option('--allow-aggressive-auth', 'allow_aggressive_auth', is_flag=True, default=False,
-              help='Aggressive_Opt_In: authorize the Auth_Module to issue high-volume or '
-                   'concurrency probes (anti-automation / rate-limit burst and the '
-                   'token-revocation race). Off by default; when omitted these probes are '
-                   'skipped regardless of other flags.')
-@click.option('--auth-rate-limit-attempts', 'auth_rate_limit_attempts', type=int, default=None,
-              help='Number of bounded login attempts used by the anti-automation / '
-                   'rate-limiting probe when aggressive auth testing is enabled '
-                   '(default: 10).')
-@click.option('--auth-revocation-race-requests', 'auth_revocation_race_requests', type=int, default=None,
-              help='Bounded number of concurrent requests used by the token-revocation '
-                   'race probe when aggressive auth testing is enabled (default: 8).')
-@click.option('--auth-benign-username', 'auth_benign_username', metavar='USER', default=None,
-              help='Benign account username used by the anti-automation probe (varied '
-                   'passwords against one benign account so real accounts are not locked '
-                   'out). When omitted, input-driven probes requiring it are skipped.')
-@click.option('--mfa-provisional-token', 'mfa_provisional_token', metavar='TOKEN', default=None,
-              help='Provisional_Token issued before the MFA step, submitted to a '
-                   'protected endpoint by the MFA-bypass probe. Requires '
-                   '--mfa-protected-endpoint; when omitted the MFA-bypass test is skipped.')
-@click.option('--mfa-protected-endpoint', 'mfa_protected_endpoint', metavar='URL', default=None,
-              help='Protected endpoint URL the MFA-bypass probe targets with the '
-                   'provisional token. Requires --mfa-provisional-token; when omitted the '
-                   'MFA-bypass test is skipped.')
-@click.option('--oauth-authorize-url', 'oauth_authorize_url', metavar='URL', default=None,
-              help='OAuth authorization endpoint URL exercised by the OAuth-flow abuse '
-                   'probes. When no OAuth inputs are supplied, OAuth-flow testing is skipped.')
-@click.option('--oauth-attacker-redirect', 'oauth_attacker_redirect', metavar='URL', default=None,
-              help='Attacker-controlled or unregistered Redirect_URI submitted by the '
-                   'OAuth redirect-URI manipulation probe.')
-@click.option('--oauth-foreign-aud-token', 'oauth_foreign_aud_token', metavar='TOKEN', default=None,
-              help='Token issued for a different application, presented by the OAuth '
-                   'audience-confusion probe to detect missing aud-claim validation.')
-@click.option('--reset-token-sample', 'reset_token_sample', multiple=True, metavar='TOKEN',
-              help='Observed Password_Reset_Token to analyze for predictability. '
-                   'Repeatable: pass once per sample. When none are supplied, reset-token '
-                   'analysis is skipped.')
-@click.option('--reset-token-known-input', 'reset_token_known_input', multiple=True, metavar='VALUE',
-              help='Known input (e.g. an account email) used to classify a reset token as '
-                   'a hash-of-known-input. Repeatable: pass once per value.')
-@click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
-@click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection (FastAPI, Express, Django, Flask, etc.)')
-@click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing (/v1, /v2, /api/v1, etc.)')
-@click.option('--framework-confidence', type=float, default=0.6, help='Minimum confidence threshold for framework detection (0.0-1.0)')
-@click.option('--version-patterns', help='Custom version patterns for fuzzing (comma-separated, e.g., /v1,/v2,/api/v1)')
-@click.option('--enable-advanced', is_flag=True, help='Enable all advanced features (framework detection, version fuzzing, subdomain discovery, CORS analysis)')
-@click.option('--enable-payload-encoding', is_flag=True, help='Enable advanced payload encoding and obfuscation techniques')
-@click.option('--enable-waf-evasion', is_flag=True, help='Enable WAF detection and evasion techniques')
-@click.option('--enable-subdomain-discovery', is_flag=True, help='Enable subdomain discovery and testing')
-@click.option('--enable-cors-analysis', is_flag=True, help='Enable CORS policy analysis and security headers testing')
-@click.option('--ci-mode', is_flag=True, help='Enable CI/CD mode with appropriate exit codes and artifact generation')
-@click.option('--fail-on', type=click.Choice(['critical', 'high', 'medium', 'low']), 
-              default='critical', help='Fail CI pipeline on findings of this severity or higher')
-@click.option('--sarif', is_flag=True, help='Generate a SARIF 2.1.0 report (for code scanning / CI integration)')
-@click.option('--safe-mode', is_flag=True, help='Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)')
-@click.option('--baseline', type=click.Path(), help='Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.')
-@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
-@click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
-@click.option('--recursion-status', 'recursion_status', metavar='CLASSES', default=None,
-              help='Restrict recursion to endpoints whose status class is in CLASSES: a '
-                   "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
-                   'default VALID/AUTH_REQUIRED recursion; never relaxes it.')
-@click.option('--recursion-type', 'recursion_type', metavar='TYPES', default=None,
-              help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
-                   "list of endpoint types like 'admin,api_version'. Only narrows the default "
-                   'recursion; never relaxes it.')
-@click.option('--allow-write-bola', 'allow_write_bola', is_flag=True, default=False,
-              help='Destructive_Opt_In: authorize the BOLA module to issue destructive '
-                   '(state-changing) probes. Off by default; when omitted the BOLA module '
-                   'issues only safe-method probes (read-only).')
-@click.option('--bola-destructive-methods', 'bola_destructive_methods', metavar='METHODS', default=None,
-              help='Comma-separated HTTP methods treated as destructive when '
-                   '--allow-write-bola is set (e.g. PATCH,PUT,DELETE). Values are '
-                   'uppercased. Defaults to PATCH,PUT (DELETE excluded) when omitted.')
-@click.option('--bola-composite', 'bola_composite', is_flag=True, default=False,
-              help='Enable the composite-key BOLA probe (off by default).')
-@click.option('--bola-id-leakage', 'bola_id_leakage', is_flag=True, default=False,
-              help='Enable the object-identifier leakage BOLA probe (off by default).')
-@click.option('--bola-verb-tampering', 'bola_verb_tampering', is_flag=True, default=False,
-              help='Enable the HTTP verb-tampering BOLA technique (off by default).')
-@click.option('--bola-parameter-pollution', 'bola_parameter_pollution', is_flag=True, default=False,
-              help='Enable the HTTP parameter-pollution BOLA technique (off by default).')
-@click.option('--bola-dry-run', 'bola_dry_run', is_flag=True, default=False,
-              help='Plan destructive BOLA probes (method, URL, substituted id, body) '
-                   'without issuing them (off by default).')
-@click.option('--openapi', 'openapi', multiple=True, type=click.Path(),
-              help='OpenAPI/Swagger document (JSON or YAML) consumed by the OWASP modules '
-                   'for spec-driven security testing. Repeatable; merged across all values.')
-@click.option('--postman', 'postman', multiple=True, type=click.Path(),
-              help='Postman collection (JSON) consumed by the OWASP modules for spec-driven '
-                   'security testing. Repeatable; merged across all values.')
-@click.option('--actor-profile', 'actor_profile', type=click.Path(),
-              help='Actor_Profile source (JSON or YAML) supplying per-identity typed '
-                   'query/body values keyed by context name and endpoint. Each profile is '
-                   'attached to the matching --auth-context so multi-user tests use realistic '
-                   'per-actor inputs. A parse failure aborts before any request is issued.')
-@click.option('--unauthorized-assertions', 'unauthorized_assertions', type=click.Path(),
-              help='Unauthorized_Endpoint_Assertion source (JSON or YAML) mapping each '
-                   'context name to one or more endpoint pattern regular expressions that '
-                   'SHOULD be forbidden for that identity. The OWASP modules report a '
-                   'broken-access-control finding when a context is granted access to a '
-                   'matching endpoint. A parse/compile failure aborts before any request '
-                   'is issued.')
-@click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, auth_context, public_key, jwks_url, signing_secret, allow_aggressive_auth, auth_rate_limit_attempts, auth_revocation_race_requests, auth_benign_username, mfa_provisional_token, mfa_protected_endpoint, oauth_authorize_url, oauth_attacker_redirect, oauth_foreign_aud_token, reset_token_sample, reset_token_known_input, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type, allow_write_bola, bola_destructive_methods, bola_composite, bola_id_leakage, bola_verb_tampering, bola_parameter_pollution, bola_dry_run, openapi, postman, actor_profile, unauthorized_assertions):
-    """Full comprehensive scan - includes fuzzing and OWASP testing
-    
-    \b
-    Examples:
-      python apileaks.py full --target https://api.example.com
-      python apileaks.py full --config config.yaml --target URL
-      python apileaks.py full --target URL --modules bola,auth,property
-      python apileaks.py full --target URL --enable-advanced --jwt TOKEN
-      python apileaks.py full --target URL --ci-mode --fail-on critical
+# ---------------------------------------------------------------------------
+# Shared execution core (design §6). ``_build_and_run`` centralizes the config
+# assembly + dispatch that the legacy ``full`` handler performs inline,
+# parameterized by the selected OWASP module set. Both the generated
+# ``owasp <module>`` subcommands (task 6) and the ``scan`` orchestrator (task 7)
+# call it, so a single-module run and a composed run build a byte-identical
+# APILeakConfig for that module (Property 5). This function is CLI-surface only:
+# it assembles config and dispatches to the UNCHANGED engine path
+# (``run_enhanced_apileak`` -> ``APILeakCore``); it contains no OWASP detection
+# logic.
+#
+# NOTE: this task only ADDS these functions; the live ``full`` command above is
+# intentionally left untouched so it keeps working until the orchestrator swap
+# in task 7.
+# ---------------------------------------------------------------------------
+
+
+def _require_target_or_config(opts, config_path):
+    """Fail before any request when no target and no config file are supplied.
+
+    Mirrors the ``full`` command guard (Requirement 1.5): a Module_Subcommand or
+    the Orchestrator_Command invoked without a target and without a ``--config``
+    file runs no OWASP module, writes an error to standard error, and exits with
+    a nonzero status before any request is issued.
+
+    The requirement is satisfied by the target-resolution precedence
+    command-line option -> Environment_Override -> config file: a ``--target``
+    option, a non-empty ``APILEAK_TARGET`` Environment_Override, or a
+    ``--config`` file each supply the target, so only the complete absence of all
+    three aborts the run (Requirements 1.5, 10.2, 10.3, 10.4).
     """
-    
-    # Validate user agent options
-    validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
-    
-    # Setup logging
-    setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
-    logger = get_logger("full")
-    
-    logger.info("APILeak full scan starting", version="0.1.0", ci_mode=ci_mode)
+    if config_path:
+        return
+    if opts.get('target'):
+        return
+    # Environment_Override: a non-empty APILEAK_TARGET satisfies the target
+    # requirement when no --target option is supplied (Requirements 10.2, 10.3).
+    if os.getenv('APILEAK_TARGET'):
+        return
+    click.echo("Error: --target is required when no config file is provided", err=True)
+    sys.exit(1)
 
-    # Parse the repeatable --auth-context option up front so a value missing the
-    # ':' separator is rejected with a descriptive click.BadParameter BEFORE any
-    # discovery or request is issued (Requirement 20.5). An empty option yields
-    # an empty list, preserving the existing single-`--jwt` behavior
-    # (Requirements 20.4, 26.2).
-    parsed_auth_contexts = parse_auth_context_option(auth_context)
 
-    # Parse the --actor-profile source up front (like --auth-context) so a
-    # missing/unreadable/unparseable Actor_Profile source is rejected with a
-    # descriptive click.BadParameter naming the source and the scan aborts
-    # BEFORE any discovery or request is issued (Requirement 54.5). When no
-    # source is supplied the mapping is empty and the existing behavior is
-    # preserved (Requirement 54.3). The parsed profiles are attached to the
-    # matching AuthContext after the config is loaded below.
-    actor_profiles = {}
-    if actor_profile:
-        try:
-            actor_profiles = load_actor_profiles(actor_profile)
-        except ValueError as exc:
-            raise click.BadParameter(str(exc))
+def _validate_baseline_readable(baseline):
+    """Fail before any request when ``--baseline`` names an unreadable file.
 
-    # Parse the --unauthorized-assertions source up front (like --actor-profile)
-    # so a missing/unreadable/unparseable source, or a pattern that fails to
-    # compile, is rejected with a descriptive click.BadParameter naming the
-    # source and the scan aborts BEFORE any discovery or request is issued
-    # (Requirement 55.1, consistent with Requirement 54.5). When no source is
-    # supplied the mapping is empty and the existing behavior is preserved
-    # (Requirement 55.5).
-    unauthorized_endpoint_assertions = {}
-    if unauthorized_assertions:
-        try:
-            unauthorized_endpoint_assertions = load_unauthorized_assertions(unauthorized_assertions)
-        except ValueError as exc:
-            raise click.BadParameter(str(exc))
-
-    # Parse the Recursion_Scope up front so an unrecognized status class or
-    # endpoint type is surfaced as a descriptive CLI error naming the offending
-    # value and NO Endpoint_Discovery is performed (Requirements 34.1, 34.2,
-    # 34.8). This runs before the scan's try/except so the abort is explicit and
-    # is not swallowed by the broad failure handler below.
+    Implements Requirement 5.7: when the ``--baseline`` option references a file
+    that exists but is unreadable or not well-formed JSON, the run exits with a
+    nonzero status, writes an error naming the baseline file, and runs no
+    Severity_Gate against a partial baseline (the scan is aborted before any
+    request is issued). A *missing* path is not an error — it is treated as an
+    empty baseline so every finding is a New_Finding (documented ``--baseline``
+    behavior), matching :meth:`utils.baseline.BaselineComparator.load`.
+    """
+    if not baseline:
+        return
+    if not os.path.exists(baseline):
+        # A missing path yields an empty baseline (every finding treated as new);
+        # this is documented behavior and NOT the malformed/unreadable case.
+        return
     try:
-        recursion_scope = parse_recursion_scope(recursion_status, recursion_type)
+        with open(baseline, "r", encoding="utf-8") as handle:
+            json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        click.echo(
+            f"Error: --baseline file '{baseline}' is unreadable or malformed: {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
+
+def _collect_module_configs(descriptors, opts):
+    """Collect per-module PRE-load config sub-dicts for ``create_enhanced_config``.
+
+    Returns a mapping of ``OWASPConfig`` field name -> config-values dict for
+    modules that must influence config construction before the config object is
+    built (i.e. threaded into the ``config_dict`` handed to
+    ``ConfigurationManager.load_config_from_dict``).
+
+    The ``bola`` module is threaded pre-load here — reproducing the exact
+    ``bola_config`` assembly the legacy ``full`` command performed — so that the
+    constructed ``config_dict`` carries the BOLA settings (Requirements 34.3,
+    34.4). Its descriptor's ``apply_options`` re-applies the same values POST-load
+    in ``_build_and_run`` (idempotently), which additionally covers the
+    file-config path where ``create_enhanced_config`` is not called. Modules that
+    only apply post-load (e.g. ``auth``) are omitted here. The mapping is keyed
+    only for descriptors actually selected for this run, so an ``owasp <module>``
+    subcommand threads only its own module's pre-load config.
+    """
+    module_configs = {}
+    for desc in descriptors:
+        if desc.key == "bola":
+            # Reproduce the legacy ``full`` bola_config assembly: every boolean
+            # flag defaults off, and --bola-destructive-methods is parsed from a
+            # comma-separated string into an uppercased set. The destructive
+            # methods key is only threaded when supplied so the BOLAConfig default
+            # {PATCH, PUT} otherwise applies (Requirement 34.4).
+            raw_methods = opts.get('bola_destructive_methods')
+            bola_testing = {
+                'allow_destructive': opts.get('allow_write_bola', False),
+                'enable_composite': opts.get('bola_composite', False),
+                'enable_id_leakage': opts.get('bola_id_leakage', False),
+                'verb_tampering': opts.get('bola_verb_tampering', False),
+                'parameter_pollution': opts.get('bola_parameter_pollution', False),
+                'dry_run': opts.get('bola_dry_run', False),
+            }
+            if raw_methods:
+                bola_testing['destructive_methods'] = {
+                    m.strip().upper() for m in raw_methods.split(',') if m.strip()
+                }
+            module_configs['bola_testing'] = bola_testing
+    return module_configs
+
+
+def _apply_transversal_overrides(cfg, opts, parsed_auth_contexts):
+    """Apply every Transversal_Option override onto a loaded config object.
+
+    Lifts the verbatim post-load override logic from the ``full`` handler so a
+    Module_Subcommand and the Orchestrator_Command apply identical transversal
+    effects on the run configuration (Requirements 3.5, 5.4). Works for both
+    file-loaded and in-memory configs. Each override is applied only when its
+    option is supplied so a file config's values are preserved when a flag is
+    absent.
+
+    Args:
+        cfg: The loaded ``APILeakConfig`` to mutate in place.
+        opts: Collected Click option values (keyed by option dest name).
+        parsed_auth_contexts: The ``--auth-context`` values parsed up front into
+            ``AuthContext`` objects (parsed before any request in
+            ``_build_and_run``).
+    """
+    logger = get_logger("build_and_run")
+
+    # --- target (CLI overrides config file) — mirrors merge_cli_overrides ---
+    if opts.get('target') and hasattr(cfg, 'target'):
+        cfg.target.base_url = opts['target']
+
+    # --- rate limit — mirrors merge_cli_overrides ---
+    if opts.get('rate_limit') and hasattr(cfg, 'rate_limiting'):
+        cfg.rate_limiting.requests_per_second = opts['rate_limit']
+
+    # --- jwt: historically threaded as a CLI override key ('jwt_token') that
+    #     merge_cli_overrides does not consume, so it is a no-op on the run
+    #     configuration. Preserved as a no-op here to avoid changing behavior;
+    #     authenticated identities are supplied through --auth-context.
+
+    # --- safe mode (CLI flag overrides config; Requirement 5.4) ---
+    if opts.get('safe_mode') and hasattr(cfg, 'safe_mode'):
+        cfg.safe_mode = True
+
+    # --- proxy / proxy-verify-ssl (CLI flag overrides config) ---
+    if opts.get('proxy') and hasattr(cfg, 'proxy'):
+        cfg.proxy = opts['proxy']
+        cfg.proxy_verify_ssl = opts.get('proxy_verify_ssl', False)
+
+    # --- SARIF report format ---
+    if opts.get('sarif') and hasattr(cfg, 'reporting'):
+        if 'sarif' not in cfg.reporting.formats:
+            cfg.reporting.formats.append('sarif')
+
+    # --- multi-user auth contexts (appended to the existing anonymous context) ---
+    if parsed_auth_contexts and hasattr(cfg, 'authentication'):
+        cfg.authentication.contexts.extend(parsed_auth_contexts)
+        logger.info(
+            "Threaded multi-user auth contexts into OWASP modules",
+            context_count=len(parsed_auth_contexts),
+        )
+
+    # --- discovery recursion / budget / concurrency / resilience controls ---
+    fuzzing = getattr(cfg, 'fuzzing', None)
+    if fuzzing is not None:
+        depth = opts.get('depth')
+        # max_depth precedence: CLI --depth > APILEAK_MAX_DEPTH > config/default.
+        # Only override when --depth is supplied or the env var is set so a file
+        # config's max_depth is preserved otherwise (Requirements 17.6-17.8).
+        if depth is not None:
+            fuzzing.max_depth = resolve_max_depth(depth)
+        elif os.getenv('APILEAK_MAX_DEPTH') is not None:
+            fuzzing.max_depth = resolve_max_depth(None)
+        if opts.get('recursive') is not None:
+            fuzzing.recursive = opts['recursive']
+        if depth == 0:
+            fuzzing.recursive = False  # depth 0 => depth-0 pass only (17.3)
+        if opts.get('max_requests') is not None:
+            fuzzing.max_requests = opts['max_requests']
+        if opts.get('concurrency') is not None:
+            fuzzing.concurrency = opts['concurrency']
+        if opts.get('retries') is not None:
+            fuzzing.retries = opts['retries']
+        # Extensions: only override when supplied so a file config's extensions
+        # are preserved when the flag is absent. Values are comma-separated AND
+        # repeatable: split each on commas, flatten, then normalize.
+        if opts.get('extensions'):
+            fuzzing.endpoints.extensions = normalize_extensions(
+                [ext for value in opts['extensions'] for ext in value.split(',')]
+            )
+        # Recursion_Scope: only set when parsed from supplied flags so a file
+        # config's scope is preserved otherwise (Requirements 34.3, 34.4).
+        recursion_scope = opts.get('recursion_scope')
+        if recursion_scope is not None:
+            fuzzing.recursion_scope = recursion_scope
+
+    # --- per-request timeout (target read timeout; Requirement 28.1) ---
+    if opts.get('timeout') is not None and hasattr(cfg, 'target'):
+        cfg.target.timeout = opts['timeout']
+
+
+def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
+    """Shared execution core for the ``owasp`` subcommands and the ``scan`` command.
+
+    Centralizes the config assembly + dispatch that the legacy ``full`` handler
+    performed inline, parameterized by the selected module set. A single
+    Module_Subcommand and ``scan --modules <that-one>`` flow through the same
+    steps 2-5 with the same option values, so they build a byte-identical
+    ``APILeakConfig`` for that module — differing only in ``enabled_modules``
+    cardinality (Property 5 / Requirement 4.3).
+
+    Setting-resolution precedence is preserved (command-line option ->
+    environment override -> config file -> built-in default): CLI overrides are
+    applied last onto the loaded config, env fallbacks live in
+    ``create_enhanced_config`` / ``resolve_max_depth``, and file settings are
+    loaded by ``ConfigurationManager`` (Requirements 10.1-10.5).
+
+    Args:
+        ctx: The Click context (parity with the command handlers).
+        selected_keys: Ordered engine module keys to enable for this run.
+        descriptors: The ``OwaspModuleDescriptor`` objects for ``selected_keys``.
+        opts: Collected Click option values (transversal + any module-specific).
+        config_path: Optional ``--config`` file path; when given, run settings are
+            loaded from it instead of built in memory.
+
+    Requirements: 1.3, 1.5, 3.5, 3.6, 4.3, 5.4, 10.1, 10.2, 10.3, 10.4, 10.5
+    """
+    # --- 1. Pre-flight validation (each fails before any request is issued) ---
+    # 1a. Mutually-exclusive User-Agent options (Requirement 3.6).
+    validate_user_agent_options(
+        opts.get('user_agent_random'),
+        opts.get('user_agent_custom'),
+        opts.get('user_agent_file'),
+    )
+
+    setup_logging(
+        level=opts.get('log_level', 'WARNING'),
+        json_logs=opts.get('json_logs', False),
+        log_file=opts.get('log_file'),
+    )
+    logger = get_logger("build_and_run")
+    logger.info(
+        "APILeak scan starting",
+        version=APILEAK_VERSION,
+        ci_mode=opts.get('ci_mode', False),
+        modules=list(selected_keys),
+    )
+
+    # 1b. Parse --auth-context up front so a value missing the ':' separator is
+    #     rejected with a descriptive click.BadParameter BEFORE any request.
+    parsed_auth_contexts = parse_auth_context_option(opts.get('auth_context') or ())
+
+    # 1c. Parse the Recursion_Scope up front so an unrecognized status class or
+    #     endpoint type aborts with a descriptive error BEFORE any discovery.
+    try:
+        recursion_scope = parse_recursion_scope(
+            opts.get('recursion_status'), opts.get('recursion_type'))
     except RecursionScopeError as exc:
         logger.error("Invalid discovery scope value", error=str(exc))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+    opts['recursion_scope'] = recursion_scope
 
-    # Parse the repeatable --openapi / --postman Spec_Sources into one merged
-    # Spec_Schema up front so an unreadable or unparseable source is surfaced as
-    # a descriptive CLI error naming the offending Spec_Source and the scan is
-    # aborted BEFORE any request is issued (Requirements 49.1, 49.4). When no
-    # Spec_Source is supplied the schema is ``None`` and the existing no-spec
-    # full-scan behavior is preserved (Requirement 49.3). The merged schema is
-    # attached to owasp_testing.spec_schema after the config is loaded below.
-    try:
-        merged_spec_schema = asyncio.run(_load_spec_schema(openapi, postman))
-    except SpecImportError as exc:
-        logger.error("Spec import failed", error=str(exc))
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+    # 1d. Target-or-config requirement (Requirement 1.5).
+    _require_target_or_config(opts, config_path)
+
+    # 1d-bis. Baseline readability (Requirement 5.7): an existing but unreadable
+    #     or malformed --baseline file aborts nonzero BEFORE any request, so no
+    #     Severity_Gate is ever run against a partial baseline. A missing path is
+    #     allowed (treated as an empty baseline downstream).
+    _validate_baseline_readable(opts.get('baseline'))
+
+    # 1e. Parse the --actor-profile source up front so a missing/unreadable/
+    #     unparseable Actor_Profile source is rejected with a descriptive
+    #     click.BadParameter naming the source and the scan aborts BEFORE any
+    #     request is issued (Requirement 54.5). No-op when the option is absent
+    #     (e.g. on the owasp subcommands, which do not expose it).
+    actor_profiles = {}
+    if opts.get('actor_profile'):
+        try:
+            actor_profiles = load_actor_profiles(opts['actor_profile'])
+        except ValueError as exc:
+            raise click.BadParameter(str(exc))
+
+    # 1f. Parse the --unauthorized-assertions source up front (like
+    #     --actor-profile) so a missing/unreadable/unparseable source, or a
+    #     pattern that fails to compile, is rejected with a descriptive
+    #     click.BadParameter naming the source BEFORE any request (Requirement
+    #     55.1). No-op when the option is absent.
+    unauthorized_endpoint_assertions = {}
+    if opts.get('unauthorized_assertions'):
+        try:
+            unauthorized_endpoint_assertions = load_unauthorized_assertions(
+                opts['unauthorized_assertions'])
+        except ValueError as exc:
+            raise click.BadParameter(str(exc))
+
+    # 1g. Parse the repeatable --openapi / --postman Spec_Sources into one merged
+    #     Spec_Schema up front so an unreadable or unparseable source is surfaced
+    #     as a descriptive CLI error naming the offending Spec_Source and the
+    #     scan aborts BEFORE any request is issued (Requirements 49.1, 49.4). Left
+    #     as ``None`` when no Spec_Source is supplied so the existing no-spec path
+    #     is preserved (Requirement 49.3). No-op when the options are absent.
+    merged_spec_schema = None
+    if opts.get('openapi') or opts.get('postman'):
+        try:
+            merged_spec_schema = asyncio.run(
+                _load_spec_schema(opts.get('openapi') or (), opts.get('postman') or ()))
+        except SpecImportError as exc:
+            logger.error("Spec import failed", error=str(exc))
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
 
     try:
         config_manager = ConfigurationManager()
-        
-        if config:
-            # Load configuration from file
-            apileak_config = config_manager.load_config(config)
+
+        # --- 2. Config assembly: file OR in-memory (identical to full's path) ---
+        if config_path:
+            # Load run settings from the supplied Config_File (Requirements 10.1,
+            # 10.5). A missing/malformed file raises and is surfaced below.
+            cfg = config_manager.load_config(config_path)
         else:
-            # Create default configuration for full scan
-            if not target:
-                click.echo("Error: --target is required when no config file is provided", err=True)
-                sys.exit(1)
-            
             # Prepare user agent configuration
             user_agent_config = None
-            if user_agent_random:
+            if opts.get('user_agent_random'):
                 user_agent_config = {'random': True}
-            elif user_agent_custom:
-                user_agent_config = {'custom': user_agent_custom}
-            elif user_agent_file:
-                user_agents = load_user_agents_from_file(user_agent_file)
+            elif opts.get('user_agent_custom'):
+                user_agent_config = {'custom': opts['user_agent_custom']}
+            elif opts.get('user_agent_file'):
+                user_agents = load_user_agents_from_file(opts['user_agent_file'])
                 user_agent_config = {'file_list': user_agents}
-            
-            # Prepare output filename
-            output_filename = prepare_output_filename(output)
-            
-            # Prepare advanced configuration with enhanced options
+
+            output_filename = prepare_output_filename(opts.get('output'))
+
+            # Advanced discovery options are not part of the restructured option
+            # surface (owasp subcommands / scan); default them off via opts.get so
+            # the in-memory config matches the legacy full defaults when absent.
             advanced_config = {
-                'detect_framework': detect_framework or enable_advanced,
-                'fuzz_versions': fuzz_versions or enable_advanced,
-                'framework_confidence': framework_confidence,
-                'enable_payload_encoding': enable_payload_encoding or enable_advanced,
-                'enable_waf_evasion': enable_waf_evasion or enable_advanced,
-                'enable_subdomain_discovery': enable_subdomain_discovery or enable_advanced,
-                'enable_cors_analysis': enable_cors_analysis or enable_advanced
+                'detect_framework': opts.get('detect_framework', False) or opts.get('enable_advanced', False),
+                'fuzz_versions': opts.get('fuzz_versions', False) or opts.get('enable_advanced', False),
+                'framework_confidence': opts.get('framework_confidence', 0.6),
+                'enable_payload_encoding': opts.get('enable_payload_encoding', False) or opts.get('enable_advanced', False),
+                'enable_waf_evasion': opts.get('enable_waf_evasion', False) or opts.get('enable_advanced', False),
+                'enable_subdomain_discovery': opts.get('enable_subdomain_discovery', False) or opts.get('enable_advanced', False),
+                'enable_cors_analysis': opts.get('enable_cors_analysis', False) or opts.get('enable_advanced', False),
             }
-            
-            # Parse custom version patterns if provided
-            if version_patterns:
-                custom_patterns = [p.strip() for p in version_patterns.split(',')]
-                advanced_config['version_patterns'] = custom_patterns
-            
-            # Parse status code filter for HTTP output
-            status_code_filter = parse_status_codes(status_code) if status_code else None
+            if opts.get('version_patterns'):
+                advanced_config['version_patterns'] = [
+                    p.strip() for p in opts['version_patterns'].split(',')
+                ]
 
-            # Assemble advanced BOLA hardening options (Requirement 34) from the
-            # CLI flags so they populate the constructed BOLAConfig via
-            # create_enhanced_config -> owasp_testing.bola_testing. All boolean
-            # flags default to off (False); --bola-destructive-methods is parsed
-            # from a comma-separated string into an uppercased set and is only
-            # threaded when supplied so the BOLAConfig default {PATCH, PUT}
-            # otherwise applies (Requirements 34.3, 34.4).
-            destructive_methods_set = None
-            if bola_destructive_methods:
-                destructive_methods_set = {
-                    m.strip().upper()
-                    for m in bola_destructive_methods.split(',')
-                    if m.strip()
-                }
-            bola_config = {
-                'allow_destructive': allow_write_bola,
-                'destructive_methods': destructive_methods_set,
-                'enable_composite': bola_composite,
-                'enable_id_leakage': bola_id_leakage,
-                'verb_tampering': bola_verb_tampering,
-                'parameter_pollution': bola_parameter_pollution,
-                'dry_run': bola_dry_run,
-            }
+            status_code_filter = (
+                parse_status_codes(opts['status_code']) if opts.get('status_code') else None
+            )
 
-            config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on, safe_mode, bola_config=bola_config)
-            # Thread discovery recursion / budget / concurrency controls into the
-            # fuzzing config (Requirements 17, 18, 20).
-            config_dict['fuzzing']['max_depth'] = resolve_max_depth(depth)
-            if recursive is not None:
-                config_dict['fuzzing']['recursive'] = recursive
-            if max_requests is not None:
-                config_dict['fuzzing']['max_requests'] = max_requests
-            if concurrency is not None:
-                config_dict['fuzzing']['concurrency'] = concurrency
-            # Thread the per-request resilience controls into the config
-            # (Requirement 28). --timeout becomes the target read timeout consumed
-            # by HTTPRequestEngine (28.1); --retries becomes the Retry_Limit sourced
-            # into RetryConfig.max_attempts (28.2). Both fall back to the config
-            # defaults when not supplied.
-            if timeout is not None:
-                config_dict['target']['timeout'] = timeout
-            if retries is not None:
-                config_dict['fuzzing']['retries'] = retries
-            # Thread the Extension_Set into the fuzzing config (Requirement 23.1).
-            # Values are comma-separated AND repeatable: split each value on
-            # commas, flatten, then normalize to canonical single-dot form.
+            config_dict = create_enhanced_config(
+                opts.get('target'), None, "full", user_agent_config, output_filename,
+                advanced_config, status_code_filter, opts.get('ci_mode', False),
+                opts.get('fail_on', 'high'), opts.get('safe_mode', False),
+                module_configs=_collect_module_configs(descriptors, opts),
+            )
+
+            # Thread the discovery recursion / budget / concurrency / resilience
+            # controls into the constructed config_dict PRE-load, reproducing the
+            # legacy ``full`` in-memory assembly so the built config_dict (the
+            # first consumer of the threaded settings) carries them (Requirements
+            # 17, 18, 20, 23, 28). Post-load ``_apply_transversal_overrides``
+            # re-applies the same values idempotently and additionally covers the
+            # file-config path.
+            config_dict['fuzzing']['max_depth'] = resolve_max_depth(opts.get('depth'))
+            if opts.get('recursive') is not None:
+                config_dict['fuzzing']['recursive'] = opts['recursive']
+            if opts.get('max_requests') is not None:
+                config_dict['fuzzing']['max_requests'] = opts['max_requests']
+            if opts.get('concurrency') is not None:
+                config_dict['fuzzing']['concurrency'] = opts['concurrency']
+            if opts.get('timeout') is not None:
+                config_dict['target']['timeout'] = opts['timeout']
+            if opts.get('retries') is not None:
+                config_dict['fuzzing']['retries'] = opts['retries']
             config_dict['fuzzing'].setdefault('endpoints', {})
             config_dict['fuzzing']['endpoints']['extensions'] = normalize_extensions(
-                [ext for value in extensions for ext in value.split(',')]
+                [ext for value in (opts.get('extensions') or ()) for ext in value.split(',')]
             )
-            if depth == 0:
-                config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only (17.3)
-            # Thread the Recursion_Scope onto the fuzzing config so recursion only
-            # descends into records the scope admits (Requirements 34.1-34.3).
-            # None (no flags) preserves the default VALID/AUTH_REQUIRED recursion
-            # (34.4).
-            config_dict['fuzzing']['recursion_scope'] = recursion_scope
-            apileak_config = config_manager.load_config_from_dict(config_dict)
-        
-        # When --safe-mode is requested, ensure it is honored even when the
-        # configuration was loaded from a file (CLI flag overrides config).
-        if safe_mode and hasattr(apileak_config, 'safe_mode'):
-            apileak_config.safe_mode = True
+            if opts.get('depth') == 0:
+                config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only
+            config_dict['fuzzing']['recursion_scope'] = opts.get('recursion_scope')
 
-        # When --proxy is requested, route all traffic through the intercepting
-        # proxy (Burp/Caido/Hetty). The CLI flag overrides any file config and
-        # applies whether the config came from a file or was built in-memory.
-        if proxy and hasattr(apileak_config, 'proxy'):
-            apileak_config.proxy = proxy
-            apileak_config.proxy_verify_ssl = proxy_verify_ssl
-        
-        # When --sarif is requested, ensure the SARIF format is included in the
-        # effective reporting formats so a *.sarif report is generated.
-        if sarif and hasattr(apileak_config, 'reporting'):
-            if 'sarif' not in apileak_config.reporting.formats:
-                apileak_config.reporting.formats.append('sarif')
+            cfg = config_manager.load_config_from_dict(config_dict)
 
-        # Thread the parsed multi-user Auth_Contexts into the authentication
-        # config so all of them are passed to the OWASP modules (Requirements
-        # 20.1, 20.2). Each supplied --auth-context becomes one AuthContext with
-        # its privilege_level set from the optional :privilege suffix (Req 20.3).
-        # The contexts are appended to the existing anonymous context so
-        # discovery and the single-`--jwt` behavior are preserved (Reqs 20.4,
-        # 26.2). Applied post-load so it works for both file and in-memory
-        # configs.
-        if parsed_auth_contexts and hasattr(apileak_config, 'authentication'):
-            apileak_config.authentication.contexts.extend(parsed_auth_contexts)
-            logger.info(
-                "Threaded multi-user auth contexts into OWASP modules",
-                context_count=len(parsed_auth_contexts),
-            )
+        # --- 3. enabled_modules = the selection (Requirements 1.3, 4.2, 4.6) ---
+        cfg.owasp_testing.enabled_modules = list(selected_keys)
 
-        # Attach each parsed Actor_Profile to the AuthContext whose name matches
-        # its context_name so the OWASP modules can use the per-actor typed
-        # query/body inputs under that identity (Requirements 54.1, 54.2). Every
-        # context (including any loaded from a config file) is considered so the
-        # profile applies regardless of how the context was supplied. Contexts
-        # without a matching profile keep ``actor_profile = None`` and retain
-        # their existing behavior (Requirement 54.3). Applied post-load so it
-        # works for both file and in-memory configs.
-        if actor_profiles and hasattr(apileak_config, 'authentication'):
-            matched = 0
-            for context in apileak_config.authentication.contexts:
+        # --- 4. Transversal overrides (verbatim from full) — Reqs 3.5, 5.4 ---
+        _apply_transversal_overrides(cfg, opts, parsed_auth_contexts)
+
+        # --- 4b. Attach the parsed Actor_Profiles to the AuthContext whose name
+        #     matches each profile's context_name (Requirements 54.1, 54.2).
+        #     Applied post-load (after the transversal overrides extend the
+        #     contexts) so it works for both file and in-memory configs. Contexts
+        #     without a matching profile keep ``actor_profile = None`` (Req 54.3).
+        if actor_profiles and hasattr(cfg, 'authentication'):
+            for context in cfg.authentication.contexts:
                 profile = actor_profiles.get(context.name)
                 if profile is not None:
                     context.actor_profile = profile
-                    matched += 1
-            logger.info(
-                "Attached actor profiles to auth contexts",
-                profile_count=len(actor_profiles),
-                matched_contexts=matched,
-            )
 
-        # Attach each context's compiled Unauthorized_Endpoint_Assertion patterns
-        # to the AuthContext whose name matches so the OWASP modules can evaluate
-        # the declared broken-access-control expectations under that identity
-        # (Requirements 55.1, 55.2). Mirrors the actor-profile attachment above.
-        # Contexts without a matching assertion keep ``unauthorized_patterns =
-        # None`` and retain their existing behavior (Requirement 55.5). Applied
-        # post-load so it works for both file and in-memory configs.
-        if unauthorized_endpoint_assertions and hasattr(apileak_config, 'authentication'):
-            matched = 0
-            for context in apileak_config.authentication.contexts:
+        # --- 4c. Attach each context's compiled Unauthorized_Endpoint_Assertion
+        #     patterns to the AuthContext whose name matches (Requirements 55.1,
+        #     55.2). Contexts without a matching assertion keep
+        #     ``unauthorized_patterns = None`` (Requirement 55.5).
+        if unauthorized_endpoint_assertions and hasattr(cfg, 'authentication'):
+            for context in cfg.authentication.contexts:
                 patterns = unauthorized_endpoint_assertions.get(context.name)
                 if patterns is not None:
                     context.unauthorized_patterns = patterns
-                    matched += 1
-            logger.info(
-                "Attached unauthorized-endpoint assertions to auth contexts",
-                assertion_count=len(unauthorized_endpoint_assertions),
-                matched_contexts=matched,
-            )
 
-        # Attach the merged Spec_Schema (parsed up front) to the OWASP testing
-        # config so the modules can test the declared Spec_Operations in addition
-        # to discovered endpoints (Requirements 49.2, 49.5). Left as ``None`` when
-        # no Spec_Source was supplied, preserving the existing full-scan behavior
-        # (Requirement 49.3). Applied post-load so it works for both file and
-        # in-memory configs.
-        if merged_spec_schema is not None and hasattr(apileak_config, 'owasp_testing'):
-            apileak_config.owasp_testing.spec_schema = merged_spec_schema
-            logger.info(
-                "Attached merged spec schema to OWASP modules",
-                operation_count=len(merged_spec_schema.operations),
-                security_scheme_count=len(merged_spec_schema.security_schemes),
-                seed_count=len(merged_spec_schema.seeds),
-            )
+        # --- 4d. Attach the merged Spec_Schema so the modules can test the
+        #     declared Spec_Operations in addition to discovered endpoints
+        #     (Requirements 49.2, 49.5). Left as ``None`` when no Spec_Source was
+        #     supplied, preserving the existing behavior (Requirement 49.3).
+        if merged_spec_schema is not None and hasattr(cfg, 'owasp_testing'):
+            cfg.owasp_testing.spec_schema = merged_spec_schema
 
-        # Thread the algorithm-confusion / expired-token key inputs into the
-        # AuthTestingConfig so the Auth_Module can source real key material
-        # instead of literal placeholders (Requirements 6.1, 6.2, 8.1). The CLI
-        # flags override any file-config values when supplied.
-        if hasattr(apileak_config, 'owasp_testing') and hasattr(
-                apileak_config.owasp_testing, 'auth_testing'):
-            auth_testing_cfg = apileak_config.owasp_testing.auth_testing
-            if public_key:
-                auth_testing_cfg.public_key_material = public_key
-            if jwks_url:
-                auth_testing_cfg.jwks_url = jwks_url
-            if signing_secret:
-                auth_testing_cfg.signing_secret = signing_secret
+        # --- 5. Per-module specific-option application (Requirement 2.5) ---
+        for desc in descriptors:
+            if desc.apply_options:
+                desc.apply_options(getattr(cfg.owasp_testing, desc.config_field), opts)
 
-            # Thread the advanced auth/JWT hardening inputs (Requirements 37, 39,
-            # 40, 41, 42, 46) into the AuthTestingConfig. Each field is only
-            # overridden when its CLI flag is supplied so the SAFE defaults
-            # (no aggressive/state-changing/input-driven probes) are preserved
-            # when none are given (Requirements 46.1, 26.1, 26.3). The
-            # --allow-aggressive-auth Aggressive_Opt_In only turns the gate ON
-            # when present; its absence leaves any file-config value untouched.
-            if allow_aggressive_auth:
-                auth_testing_cfg.allow_aggressive = True
-            if auth_rate_limit_attempts is not None:
-                auth_testing_cfg.rate_limit_attempts = auth_rate_limit_attempts
-            if auth_revocation_race_requests is not None:
-                auth_testing_cfg.revocation_race_requests = auth_revocation_race_requests
-            if auth_benign_username:
-                auth_testing_cfg.benign_username = auth_benign_username
-
-            # MFA-flow inputs (Req 39): assemble the operator-supplied
-            # provisional token + protected endpoint into the mfa_flow_inputs
-            # dict. Only set when at least one input is supplied; None otherwise
-            # so the MFA-bypass test is skipped (Req 39.5).
-            mfa_flow_inputs = {}
-            if mfa_provisional_token:
-                mfa_flow_inputs['provisional_token'] = mfa_provisional_token
-            if mfa_protected_endpoint:
-                mfa_flow_inputs['protected_endpoint'] = mfa_protected_endpoint
-            if mfa_flow_inputs:
-                auth_testing_cfg.mfa_flow_inputs = mfa_flow_inputs
-
-            # OAuth-flow inputs (Req 41): assemble the authorization URL,
-            # attacker-controlled Redirect_URI, and foreign-audience token into
-            # the oauth_flow_inputs dict. Only set when at least one input is
-            # supplied; None otherwise so OAuth-flow testing is skipped (Req 41.6).
-            oauth_flow_inputs = {}
-            if oauth_authorize_url:
-                oauth_flow_inputs['authorize_url'] = oauth_authorize_url
-            if oauth_attacker_redirect:
-                oauth_flow_inputs['attacker_redirect'] = oauth_attacker_redirect
-            if oauth_foreign_aud_token:
-                oauth_flow_inputs['foreign_aud_token'] = oauth_foreign_aud_token
-            if oauth_flow_inputs:
-                auth_testing_cfg.oauth_flow_inputs = oauth_flow_inputs
-
-            # Reset-token samples / known inputs (Req 40): repeatable options
-            # collected into lists. Only set when supplied so reset-token
-            # analysis is skipped by default (Reqs 40.1, 26.3).
-            if reset_token_sample:
-                auth_testing_cfg.reset_token_samples = list(reset_token_sample)
-            if reset_token_known_input:
-                auth_testing_cfg.reset_token_known_inputs = list(reset_token_known_input)
-
-        # Apply CLI overrides
-        cli_overrides = {}
-        if target:
-            cli_overrides['target_url'] = target
-        if rate_limit:
-            cli_overrides['rate_limit'] = rate_limit
-        if modules:
-            cli_overrides['modules'] = [m.strip() for m in modules.split(',')]
-        if jwt:
-            cli_overrides['jwt_token'] = jwt
-        
-        if cli_overrides:
-            config_manager.merge_cli_overrides(cli_overrides)
-        
-        # Validate configuration
+        # --- 6. Validate + dispatch to the UNCHANGED engine path ---
         validation_errors = config_manager.validate_configuration()
         if validation_errors:
             logger.error("Configuration validation failed", errors=validation_errors)
             for error in validation_errors:
                 click.echo(f"Error: {error}", err=True)
             sys.exit(1)
-        
-        # Run the enhanced scan
-        asyncio.run(run_enhanced_apileak(apileak_config, ci_mode, fail_on, baseline))
-        
+
+        asyncio.run(run_enhanced_apileak(
+            cfg,
+            opts.get('ci_mode', False),
+            opts.get('fail_on', 'high'),
+            opts.get('baseline'),
+        ))
+
+    except (click.ClickException, SystemExit):
+        # Preserve Click parameter errors and explicit exits (validation, gate)
+        # so the process exit code is decided by the run, not this handler.
+        raise
     except Exception as e:
-        logger.error("Full scan failed", error=str(e))
+        logger.error("Scan failed", error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator helpers (design §5, §7): module-selection resolution and the
+# deprecation notices for the ``full`` alias and hidden ``main`` command. These
+# are CLI-surface only.
+# ---------------------------------------------------------------------------
+
+def _emit_deprecation_notice(deprecated, replacement):
+    """Write a single Deprecation_Notice to standard error (design §7).
+
+    The notice names the deprecated invocation and its replacement. It is
+    written ONLY to stderr and never alters standard output or the exit code
+    (Requirements 6.4, 6.7). Handlers call this exactly once per invocation.
+    """
+    click.echo(
+        f"[DEPRECATION] '{deprecated}' is deprecated and will be removed in a "
+        f"future release. Use '{replacement}' instead.",
+        err=True,
+    )
+
+
+def _emit_module_selection_deprecation(modules):
+    """Write the module-selection Deprecation_Notice for ``full --modules``.
+
+    Maps a single selected key to its ``apileaks owasp <key>`` equivalent and a
+    multi-key selection to ``apileaks scan --modules ...`` (Requirement 6.6).
+    Written ONLY to stderr, exactly once, and never alters stdout or the exit
+    code.
+    """
+    selected = [m.strip() for m in modules.split(',') if m.strip()]
+    if len(selected) == 1:
+        replacement = f"apileaks owasp {selected[0]}"
+    else:
+        replacement = f"apileaks scan --modules {','.join(selected)}"
+    click.echo(
+        f"[DEPRECATION] Selecting modules through 'full --modules' is "
+        f"deprecated. Use '{replacement}' instead.",
+        err=True,
+    )
+
+
+def _resolve_modules(modules):
+    """Resolve the ``--modules`` selection to an ordered list of engine keys.
+
+    Resolution follows the setting-resolution precedence command-line option ->
+    Environment_Override -> built-in default (Requirements 10.3, 10.4):
+
+    * a non-empty ``--modules`` option is used as given;
+    * otherwise a non-empty ``APILEAK_MODULES`` Environment_Override is used;
+    * otherwise the full registered set is returned in OWASP category order
+      (Requirement 4.2).
+
+    Every selected key (from either the option or the Environment_Override) is
+    validated against the descriptor registry; an unregistered key aborts with a
+    nonzero exit and a stderr message naming the offending key BEFORE any module
+    runs (Requirements 4.7, 9.4).
+    """
+    if not modules:
+        # Environment_Override: APILEAK_MODULES selects modules when --modules is
+        # absent (Requirements 10.3, 10.4). An empty/unset value falls through to
+        # the full default set (Requirement 4.2).
+        env_modules = os.getenv('APILEAK_MODULES')
+        if env_modules and env_modules.strip():
+            modules = env_modules
+        else:
+            return all_keys()
+    selected = [m.strip() for m in modules.split(',') if m.strip()]
+    if not selected:
+        return all_keys()
+    for key in selected:
+        try:
+            get_descriptor(key)
+        except KeyError:
+            click.echo(
+                f"Error: unregistered OWASP module '{key}'. "
+                f"Registered modules: {', '.join(all_keys())}.",
+                err=True,
+            )
+            sys.exit(1)
+    return selected
+
+
+def _selected_descriptors(modules):
+    """Return the descriptors for the resolved ``--modules`` selection.
+
+    Reuses :func:`_resolve_modules` so an unregistered key aborts before any run
+    (Requirements 4.7, 9.4). The returned descriptors preserve the selection
+    order.
+    """
+    return [get_descriptor(key) for key in _resolve_modules(modules)]
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator_Command surface (design §5). ``scan`` is the primary name; the
+# entire legacy ``full`` option surface is preserved on it (transversal, BOLA,
+# and Auth options plus --config/--modules and the discovery/spec inputs) so
+# historical invocations parse byte-for-byte unchanged. ``_orchestrator_options``
+# declares that surface once so ``scan`` and the ``full`` alias are guaranteed
+# identical (design §5's single intentional duplication).
+# ---------------------------------------------------------------------------
+
+# Options carried by the orchestrator beyond the shared Transversal_Options and
+# the BOLA / Auth Module_Specific_Options: the config/module selection plus the
+# discovery-enhancement and Spec_Source inputs the legacy ``full`` accepted.
+_ORCHESTRATOR_EXTRA_OPTIONS = [
+    click.option('--config', '-c', type=click.Path(exists=True),
+                 help='Configuration file path (YAML or JSON) - optional'),
+    click.option('--modules', help='Comma-separated list of OWASP modules to enable (default: all)'),
+    click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)'),
+    click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection (FastAPI, Express, Django, Flask, etc.)'),
+    click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing (/v1, /v2, /api/v1, etc.)'),
+    click.option('--framework-confidence', type=float, default=0.6, help='Minimum confidence threshold for framework detection (0.0-1.0)'),
+    click.option('--version-patterns', help='Custom version patterns for fuzzing (comma-separated, e.g., /v1,/v2,/api/v1)'),
+    click.option('--enable-advanced', is_flag=True, help='Enable all advanced features (framework detection, version fuzzing, subdomain discovery, CORS analysis)'),
+    click.option('--enable-payload-encoding', is_flag=True, help='Enable advanced payload encoding and obfuscation techniques'),
+    click.option('--enable-waf-evasion', is_flag=True, help='Enable WAF detection and evasion techniques'),
+    click.option('--enable-subdomain-discovery', is_flag=True, help='Enable subdomain discovery and testing'),
+    click.option('--enable-cors-analysis', is_flag=True, help='Enable CORS policy analysis and security headers testing'),
+    click.option('--openapi', 'openapi', multiple=True, type=click.Path(),
+                 help='OpenAPI/Swagger document (JSON or YAML) consumed by the OWASP modules '
+                      'for spec-driven security testing. Repeatable; merged across all values.'),
+    click.option('--postman', 'postman', multiple=True, type=click.Path(),
+                 help='Postman collection (JSON) consumed by the OWASP modules for spec-driven '
+                      'security testing. Repeatable; merged across all values.'),
+    click.option('--actor-profile', 'actor_profile', type=click.Path(),
+                 help='Actor_Profile source (JSON or YAML) supplying per-identity typed '
+                      'query/body values keyed by context name and endpoint. Each profile is '
+                      'attached to the matching --auth-context so multi-user tests use realistic '
+                      'per-actor inputs. A parse failure aborts before any request is issued.'),
+    click.option('--unauthorized-assertions', 'unauthorized_assertions', type=click.Path(),
+                 help='Unauthorized_Endpoint_Assertion source (JSON or YAML) mapping each '
+                      'context name to one or more endpoint pattern regular expressions that '
+                      'SHOULD be forbidden for that identity. A parse/compile failure aborts '
+                      'before any request is issued.'),
+]
+
+
+def _orchestrator_options(func):
+    """Attach the complete orchestrator option surface to ``func``.
+
+    Stacks (deepest first) the Auth and BOLA Module_Specific_Options, the shared
+    Transversal_Options, and finally the orchestrator-only extras
+    (``--config``/``--modules`` and the discovery/spec inputs), so the resulting
+    help lists the extras first, then the transversal options, then BOLA, then
+    Auth — matching the legacy ``full`` layout. Declaring the surface once here
+    guarantees ``scan`` and the ``full`` alias are identical (design §5).
+    """
+    func = auth_options(func)
+    func = bola_options(func)
+    func = transversal_options(func)
+    for option in reversed(_ORCHESTRATOR_EXTRA_OPTIONS):
+        func = option(func)
+    return func
+
+
+@cli.command(name='scan')
+@_orchestrator_options
+@click.pass_context
+def scan(ctx, **kwargs):
+    """Run an orchestrated OWASP scan (discovery + selected OWASP modules).
+
+    \b
+    Runs every registered OWASP module by default, or only the modules named in
+    --modules. Aggregates all findings through the unified reporting pipeline and
+    drives the CI/CD severity gate.
+
+    \b
+    Examples:
+      apileaks scan --target https://api.example.com
+      apileaks scan --config config.yaml --target URL
+      apileaks scan --target URL --modules bola,auth,property
+      apileaks scan --target URL --ci-mode --fail-on high
+    """
+    config_path = kwargs.get('config')
+    modules = kwargs.get('modules')
+    _build_and_run(
+        ctx,
+        selected_keys=_resolve_modules(modules),
+        descriptors=_selected_descriptors(modules),
+        opts=kwargs,
+        config_path=config_path,
+    )
+
+
+@cli.command(name='full', hidden=True)
+@_orchestrator_options
+@click.pass_context
+def full(ctx, **kwargs):
+    """[DEPRECATED] Alias of 'scan'. Use 'apileaks scan' instead.
+
+    Retained for backward compatibility. Emits a deprecation notice to standard
+    error and then runs identically to 'scan' (same modules, report, and exit
+    code).
+    """
+    _emit_deprecation_notice('full', 'scan')
+    if kwargs.get('modules'):
+        _emit_module_selection_deprecation(kwargs['modules'])
+    # Forward the identical parsed option surface to ``scan`` so the run and exit
+    # code are identical; the only difference is the stderr notice above
+    # (Requirements 6.1, 6.2, 6.7).
+    ctx.forward(scan)
+
+
+# ---------------------------------------------------------------------------
+# owasp command group + dynamically generated Module_Subcommands (design §4).
+#
+# One first-class subcommand is generated per OWASP_MODULE_DESCRIPTORS entry,
+# named character-for-character by the engine registration key. Each subcommand
+# stacks the shared Transversal_Options (Shared_Option_Mechanism), the
+# descriptor's own Module_Specific_Options (only when it owns any), and routes
+# into the shared _build_and_run execution core with selected_keys=[desc.key]
+# so exactly that one module runs.
+#
+# Unknown subcommand names and foreign specific options are rejected natively by
+# Click (nonzero exit) — no extra code (Requirements 1.6, 2.7, 8.5). dir/par are
+# never registered here (Requirement 8.5).
+#
+# Requirements: 1.1, 1.2, 1.3, 1.4, 1.6, 7.4, 7.5, 11.1, 11.3, 11.4
+# ---------------------------------------------------------------------------
+
+def _module_help(desc: OwaspModuleDescriptor) -> str:
+    """Build the ``--help`` description text for a module subcommand.
+
+    The base text names the OWASP category and the module summary and states
+    that the subcommand runs exactly that one module in isolation.
+
+    For the ``auth`` descriptor specifically, the help additionally states that
+    automated JWT detection during an orchestrated run is performed by the
+    JWT_Module_Tests, and points to the ``jwt`` group as the location for manual
+    JWT attacks (Requirements 7.4, 7.5).
+
+    Args:
+        desc: The descriptor whose subcommand help text is being built.
+
+    Returns:
+        The multi-paragraph help string for the subcommand.
+    """
+    base = (
+        f"[{desc.owasp_category}] {desc.summary}.\n\n"
+        f"Runs only the '{desc.key}' OWASP module against the target "
+        f"(single-module run in isolation)."
+    )
+
+    if desc.key == "auth":
+        base += (
+            "\n\n"
+            "Automated JWT detection during an orchestrated run is performed by "
+            "the JWT_Module_Tests (the algorithm-confusion and expired-token "
+            "acceptance checks governed by --public-key, --jwks-url, and "
+            "--signing-secret).\n\n"
+            "For manual JWT attacks and utilities, use the 'jwt' command group "
+            "(e.g. 'apileaks jwt --help')."
+        )
+
+    return base
+
+
+def _print_owasp_module_listing() -> None:
+    """Write one line per descriptor to stdout (Requirements 1.4, 11.4).
+
+    Each line contains the module's engine registration key, its OWASP category
+    identifier, and its single-line (<= 80 char) summary, in OWASP category
+    order (API1..API10).
+    """
+    for desc in OWASP_MODULE_DESCRIPTORS:
+        click.echo(f"{desc.key}\t{desc.owasp_category}\t{desc.summary}")
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def owasp(ctx):
+    """OWASP API Security Top 10 testing modules (run one module in isolation).
+
+    Each subcommand runs exactly one registered OWASP detection module against a
+    target. Run 'apileaks owasp' with no subcommand to list every available
+    module with its OWASP category and a one-line description.
+    """
+    if ctx.invoked_subcommand is None:
+        _print_owasp_module_listing()
+        ctx.exit(0)
+
+
+def _make_module_subcommand(desc: OwaspModuleDescriptor):
+    """Build the fully decorated ``owasp`` subcommand for ``desc`` (design §4).
+
+    Stacks the decorators in this order (applied in reverse so Click composes
+    them correctly):
+
+    1. ``click.command(name=desc.key, help=_module_help(desc))`` — the command
+       named character-for-character by the engine key.
+    2. ``transversal_options`` — the Shared_Option_Mechanism.
+    3. ``desc.specific_options`` — the module's own options (only when not None).
+    4. ``click.pass_context`` — so the handler receives the Click context.
+
+    The handler routes into the shared execution core with a single selected
+    key, so exactly that one module runs (Requirement 1.3).
+
+    Args:
+        desc: The descriptor to generate a subcommand for.
+
+    Returns:
+        The fully decorated Click command.
+    """
+    decorators = [
+        click.command(name=desc.key, help=_module_help(desc)),
+        transversal_options,
+    ]
+    if desc.specific_options is not None:
+        decorators.append(desc.specific_options)
+    decorators.append(click.pass_context)
+
+    def _handler(ctx, **kwargs):
+        _build_and_run(
+            ctx, selected_keys=[desc.key], descriptors=[desc], opts=kwargs)
+
+    cmd = _handler
+    for dec in reversed(decorators):
+        cmd = dec(cmd)
+    return cmd
+
+
+# Register exactly one generated subcommand per descriptor on the owasp group,
+# then the owasp group on cli. Adding a descriptor row yields a fully wired
+# subcommand automatically (Requirements 1.2, 11.1).
+for _desc in OWASP_MODULE_DESCRIPTORS:
+    owasp.add_command(_make_module_subcommand(_desc))
 
 
 # ---------------------------------------------------------------------------
@@ -3504,8 +3813,14 @@ def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
 @cli.group()
 @click.pass_context
 def jwt(ctx):
-    """JWT utilities - decode, encode, and security vulnerability testing
-    
+    """Manual JWT attack and utility toolkit - decode, encode, and security testing
+
+    \b
+    This is the manual JWT toolkit: an operator-driven set of utilities and
+    attack primitives you run by hand. It is distinct from the automated
+    JWT_Module_Tests performed during an orchestrated OWASP run (see the
+    'owasp auth' subcommand).
+
     \b
     JWT Security Testing includes:
     • Token decoding and analysis
@@ -4732,9 +5047,12 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
 @click.option('--rate-limit', type=int, help='Requests per second limit')
 @click.pass_context
 def main(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit):
-    """Legacy main command - redirects to full scan"""
-    ctx.invoke(full, config=config, target=target, output=output, log_level=log_level,
-               log_file=log_file, json_logs=json_logs, modules=modules, rate_limit=rate_limit)
+    """Legacy main command - redirects to scan (deprecated)"""
+    _emit_deprecation_notice('main', 'scan')
+    # Forward the parsed options to ``scan`` so the run and exit code are
+    # identical to the non-deprecated invocation; Click fills defaults for
+    # ``scan`` options not present on ``main`` (Requirements 6.3, 6.7).
+    ctx.forward(scan)
 
 
 # Severity ladder for CI/CD gate evaluation, ordered from highest to lowest.

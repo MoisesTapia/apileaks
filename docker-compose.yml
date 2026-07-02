@@ -44,7 +44,7 @@ services:
     network_mode: "host"
     
     # Comando por defecto (puede ser sobrescrito)
-    command: ["full"]
+    command: ["scan"]
     
     # Reinicio automático
     restart: unless-stopped

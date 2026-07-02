@@ -2,7 +2,9 @@
 
 The BOLA Testing Module detects **OWASP API1 - Broken Object Level Authorization** vulnerabilities: cases where an API fails to verify that the caller is allowed to access or modify the specific object referenced by a request identifier.
 
-BOLA is not a standalone command. It runs as an OWASP module inside the `full` command and is selected with `--modules bola`. This page documents the module itself and every BOLA-specific command-line option, each with a title, a description, and an example.
+BOLA can run in isolation as its own module — `apileaks owasp bola --target URL` (the recommended focused red-team invocation) — or as part of an orchestrated `scan` run, where it is included by default or selected with `--modules bola`. This page documents the module itself and every BOLA-specific command-line option, each with a title, a description, and an example.
+
+> **Note:** `full` and `main` are deprecated, hidden aliases of `scan` (still functional, but they emit a stderr notice). `full --modules bola` is now `apileaks owasp bola`.
 
 ## 📋 Table of Contents
 
@@ -39,19 +41,18 @@ Key behaviors:
 
 ```bash
 # Minimal read-only BOLA scan
-python apileaks.py full --target https://api.example.com --modules bola
+python apileaks.py owasp bola --target https://api.example.com
 
 # Multi-user horizontal-escalation testing (two user contexts)
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --auth-context alice:eyJhbGciOi...:1 \
   --auth-context bob:eyJhbGciOi...:1
 ```
 
 ## 📖 Command Reference
 
-All BOLA options are supplied to the `full` command. The following options control BOLA behavior directly.
+All BOLA options are supplied to `apileaks owasp bola` (single-module) or to `scan` when running BOLA alongside other modules. The following options control BOLA behavior directly.
 
 **Options at a glance:**
 
@@ -70,16 +71,16 @@ All BOLA options are supplied to the `full` command. The following options contr
 
 ### Enable the module (`--modules bola`)
 
-**Description.** Selects the BOLA module for a `full` scan. Combine it with other modules in a comma-separated list. With no BOLA-specific flags, the module runs in its safe, read-only default mode.
+**Description.** Selects the BOLA module. Run it in isolation with `apileaks owasp bola`, or include it in an orchestrated `scan` via `--modules` (comma-separated list). With no BOLA-specific flags, the module runs in its safe, read-only default mode.
 
 **Example:**
 
 ```bash
-# BOLA only
-python apileaks.py full --target https://api.example.com --modules bola
+# BOLA only (isolated single-module run)
+python apileaks.py owasp bola --target https://api.example.com
 
-# BOLA alongside authentication and property-level testing
-python apileaks.py full --target https://api.example.com --modules bola,auth,property
+# BOLA alongside authentication and property-level testing (orchestrated scan)
+python apileaks.py scan --target https://api.example.com --modules bola,auth,property
 ```
 
 ### Multi-user contexts (`--auth-context`)
@@ -89,9 +90,8 @@ python apileaks.py full --target https://api.example.com --modules bola,auth,pro
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --auth-context alice:eyJhbGciOi...:1 \
   --auth-context bob:eyJhbGciOi...:1
 ```
@@ -103,9 +103,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --safe-mode
 ```
 
@@ -116,9 +115,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --auth-context alice:eyJ...:1 \
   --auth-context bob:eyJ...:1 \
   --allow-write-bola
@@ -132,9 +130,8 @@ python apileaks.py full \
 
 ```bash
 # Allow PATCH, PUT and DELETE as destructive verbs
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --allow-write-bola \
   --bola-destructive-methods PATCH,PUT,DELETE
 ```
@@ -146,9 +143,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --auth-context tenantA:eyJ...:1 \
   --auth-context tenantB:eyJ...:1 \
   --bola-composite
@@ -161,9 +157,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --auth-context user:eyJ...:1 \
   --bola-id-leakage
 ```
@@ -175,9 +170,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --bola-verb-tampering
 ```
 
@@ -188,9 +182,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --bola-parameter-pollution
 ```
 
@@ -201,9 +194,8 @@ python apileaks.py full \
 **Example:**
 
 ```bash
-python apileaks.py full \
+python apileaks.py owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --allow-write-bola \
   --bola-dry-run
 ```

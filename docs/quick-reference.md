@@ -2,19 +2,26 @@
 
 ## Basic Commands
 
-```bash
-# Full scan (all modules)
-python apileaks.py full --target https://api.example.com
+`scan` is the primary command: it runs discovery + **all** OWASP modules by default and drives the CI gate. To run a single module in isolation, use `owasp <key>` (see below).
 
-# Specific modules
-python apileaks.py full --target https://api.example.com --modules bola,auth,resource
+```bash
+# Scan (runs discovery + all OWASP modules by default)
+python apileaks.py scan --target https://api.example.com
+
+# Specific modules (two or more keys, aggregated in one report)
+python apileaks.py scan --target https://api.example.com --modules bola,auth,resource
+
+# A single module in isolation
+python apileaks.py owasp bola --target https://api.example.com
 
 # With JWT authentication
-python apileaks.py full --target https://api.example.com --jwt YOUR_JWT_TOKEN
+python apileaks.py scan --target https://api.example.com --jwt YOUR_JWT_TOKEN
 
 # With custom rate limiting
-python apileaks.py full --target https://api.example.com --rate-limit 5
+python apileaks.py scan --target https://api.example.com --rate-limit 5
 ```
+
+> **Deprecation.** `full` and `main` are deprecated, hidden aliases of `scan`. They still forward to `scan` (with a one-line stderr notice) — migrate scripts to `scan`. A single-module alias call like `full --modules bola` becomes `apileaks owasp bola`.
 
 ## Endpoint Discovery (`dir`)
 
@@ -39,20 +46,34 @@ Full `dir` option list: [CLI Reference](cli-reference.md#directory-fuzzing-dir).
 
 ## Available Modules
 
-| Code | Module | OWASP | Description |
-|------|--------|-------|-------------|
-| `bola` | BOLA Testing | API1 | Broken Object Level Authorization |
-| `auth` | Authentication | API2 | Broken Authentication (JWT) |
-| `property` | Property Level Auth | API3 | Broken Object Property Level Authorization |
-| `resource` | Resource Consumption | API4 | Unrestricted Resource Consumption |
-| `function_auth` | Function Level Auth | API5 | Broken Function Level Authorization |
-| `ssrf` | SSRF Testing | API10 | Server Side Request Forgery |
+Run all of these at once with `scan`, or one in isolation with `owasp <key>`.
+
+| Key | OWASP | Description |
+|-----|-------|-------------|
+| `bola` | API1 | Broken Object Level Authorization (BOLA) detection |
+| `auth` | API2 | Broken Authentication detection |
+| `property` | API3 | Broken Object Property Level Authorization detection |
+| `resource` | API4 | Unrestricted Resource Consumption detection |
+| `function_auth` | API5 | Broken Function Level Authorization detection |
+| `business_flow` | API6 | Unrestricted Access to Sensitive Business Flows detection |
+| `ssrf` | API7 | Server-Side Request Forgery (SSRF) detection |
+| `security_misconfig` | API8 | Security Misconfiguration detection |
+| `inventory` | API9 | Improper Inventory Management detection |
+| `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+
+```bash
+# List modules (key, OWASP category, summary)
+python apileaks.py owasp
+
+# Run a single module in isolation
+python apileaks.py owasp ssrf --target https://api.example.com
+```
 
 ## Examples by API Type
 
 ### E-commerce API
 ```bash
-python apileaks.py full --target https://api.shop.com \
+python apileaks.py scan --target https://api.shop.com \
   --modules bola,auth,property \
   --jwt eyJ0eXAi... \
   --rate-limit 5
@@ -60,7 +81,7 @@ python apileaks.py full --target https://api.shop.com \
 
 ### Banking API
 ```bash
-python apileaks.py full --target https://api.bank.com \
+python apileaks.py scan --target https://api.bank.com \
   --modules bola,auth,function_auth \
   --jwt eyJ0eXAi... \
   --rate-limit 1
@@ -68,7 +89,7 @@ python apileaks.py full --target https://api.bank.com \
 
 ### Social Media API
 ```bash
-python apileaks.py full --target https://api.social.com \
+python apileaks.py scan --target https://api.social.com \
   --modules bola,property,resource \
   --jwt eyJ0eXAi... \
   --rate-limit 10
@@ -96,7 +117,7 @@ rate_limiting:
 ```
 
 ```bash
-python apileaks.py full --config config/quick_config.yaml
+python apileaks.py scan --config config/quick_config.yaml
 ```
 
 ## Environment Variables
@@ -107,7 +128,7 @@ export APILEAK_MODULES="bola,auth,resource"
 export APILEAK_JWT_TOKEN="eyJ0eXAi..."
 export APILEAK_RATE_LIMIT="5"
 
-python apileaks.py full
+python apileaks.py scan
 ```
 
 ## Result Interpretation
@@ -127,12 +148,12 @@ python apileaks.py full
 
 ### Server Rate Limiting
 ```bash
-python apileaks.py full --target URL --rate-limit 1
+python apileaks.py scan --target URL --rate-limit 1
 ```
 
 ### Timeouts
 ```bash
-python apileaks.py full --target URL --log-level DEBUG
+python apileaks.py scan --target URL --log-level DEBUG
 ```
 
 ### JWT Issues
@@ -142,9 +163,11 @@ python apileaks.py jwt decode YOUR_JWT_TOKEN
 
 ## CI/CD Integration
 
+The severity gate default is now `high` (was `critical`). The example below pins `--fail-on critical` to keep the exit-code-2 check; drop it to use the `high` default.
+
 ```bash
 #!/bin/bash
-python apileaks.py full \
+python apileaks.py scan \
   --target "${API_ENDPOINT}" \
   --jwt "${JWT_TOKEN}" \
   --modules bola,auth,property \

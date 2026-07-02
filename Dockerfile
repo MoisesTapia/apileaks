@@ -23,10 +23,10 @@ FROM python:3.11-slim-alpine
 # Metadata
 LABEL maintainer="FortGenix Team <team@apileak.com>" \
       description="Enterprise-grade API fuzzing and OWASP testing tool" \
-      version="0.1.0" \
+      version="0.2.0" \
       org.opencontainers.image.title="APILeak" \
       org.opencontainers.image.description="OWASP API Security Top 10 testing tool" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="0.2.0" \
       org.opencontainers.image.vendor="FortGenix Team" \
       org.opencontainers.image.licenses="MIT"
 
@@ -146,7 +146,7 @@ RUN chmod +x /app/entrypoint.sh
 
 # Default entrypoint and command
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["full"]
+CMD ["scan"]
 
 # Expose volume mounts (Requirements 13.3)
 VOLUME ["/app/config", "/app/reports", "/app/logs", "/app/wordlists"]

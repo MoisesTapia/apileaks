@@ -2,6 +2,8 @@
 
 Este directorio contiene configuraciones de ejemplo para diferentes casos de uso de APILeak.
 
+> **Nota de deprecación:** `full` y `main` son alias ocultos y deprecados de `scan`. Usa `scan` en su lugar. Para ejecutar un único módulo OWASP en aislamiento, usa `apileaks owasp <key> --target URL` (por ejemplo, `full --modules bola` → `apileaks owasp bola`).
+
 ## 📋 Configuraciones Disponibles
 
 ### 🔐 BOLA Testing (API1)
@@ -10,7 +12,7 @@ Este directorio contiene configuraciones de ejemplo para diferentes casos de uso
 
 ```bash
 # Uso
-python apileaks.py full --config config/examples/bola_testing_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/examples/bola_testing_config.yaml --target https://api.example.com
 ```
 
 **Características:**
@@ -27,7 +29,7 @@ python apileaks.py full --config config/examples/bola_testing_config.yaml --targ
 
 ```bash
 # Uso
-python apileaks.py full --config config/examples/auth_testing_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/examples/auth_testing_config.yaml --target https://api.example.com
 ```
 
 **Características:**
@@ -44,7 +46,7 @@ python apileaks.py full --config config/examples/auth_testing_config.yaml --targ
 
 ```bash
 # Uso
-python apileaks.py full --config config/examples/property_testing_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/examples/property_testing_config.yaml --target https://api.example.com
 ```
 
 **Características:**
@@ -61,7 +63,7 @@ python apileaks.py full --config config/examples/property_testing_config.yaml --
 
 ```bash
 # Uso
-python apileaks.py full --config config/resource_testing_example.yaml --target https://api.example.com
+python apileaks.py scan --config config/resource_testing_example.yaml --target https://api.example.com
 ```
 
 **Características:**
@@ -78,7 +80,7 @@ python apileaks.py full --config config/resource_testing_example.yaml --target h
 
 ```bash
 # Uso
-python apileaks.py full --config config/examples/function_auth_testing_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/examples/function_auth_testing_config.yaml --target https://api.example.com
 ```
 
 **Características:**
@@ -94,7 +96,7 @@ python apileaks.py full --config config/examples/function_auth_testing_config.ya
 ### E-commerce API
 ```bash
 # Configuración recomendada para APIs de e-commerce
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/bola_testing_config.yaml \
   --target https://api.shop.example.com \
   --modules bola,auth,property \
@@ -104,7 +106,7 @@ python apileaks.py full \
 ### Banking API
 ```bash
 # Configuración para APIs bancarias (alta seguridad)
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/function_auth_testing_config.yaml \
   --target https://api.bank.example.com \
   --modules bola,auth,function_auth \
@@ -114,7 +116,7 @@ python apileaks.py full \
 ### Social Media API
 ```bash
 # Configuración para APIs de redes sociales
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/property_testing_config.yaml \
   --target https://api.social.example.com \
   --modules bola,property,resource \
@@ -124,7 +126,7 @@ python apileaks.py full \
 ### Healthcare API
 ```bash
 # Configuración para APIs de salud (datos sensibles)
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/property_testing_config.yaml \
   --target https://api.health.example.com \
   --modules bola,auth,property \
@@ -291,14 +293,14 @@ python -c "import yaml; print('✅ YAML válido' if yaml.safe_load(open('config/
 curl -I https://api.example.com
 
 # Dry run (si estuviera disponible)
-python apileaks.py full --config config/examples/mi_config.yaml --target https://api.example.com --dry-run
+python apileaks.py scan --config config/examples/mi_config.yaml --target https://api.example.com --dry-run
 ```
 
 ### Debug de Configuración
 
 ```bash
 # Ejecutar con logging detallado
-python apileaks.py full \
+python apileaks.py scan \
   --config config/examples/mi_config.yaml \
   --target https://api.example.com \
   --log-level DEBUG \
@@ -324,7 +326,7 @@ grep -A 20 "Configuration loaded" debug.log
 ### 1. **Empezar Simple**
 ```bash
 # Comenzar con un módulo
-python apileaks.py full --config config/examples/bola_testing_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/examples/bola_testing_config.yaml --target https://api.example.com
 ```
 
 ### 2. **Rate Limiting Progresivo**
@@ -339,7 +341,7 @@ python apileaks.py full --config config/examples/bola_testing_config.yaml --targ
 ```bash
 # Probar módulos individualmente primero
 for module in bola auth property; do
-  python apileaks.py full --target https://api.example.com --modules $module
+  python apileaks.py owasp $module --target https://api.example.com
 done
 ```
 
@@ -354,7 +356,7 @@ cp config/examples/production_config.yaml config/examples/production_config_back
 # Usar variables para datos sensibles
 export API_ENDPOINT="https://api.example.com"
 export JWT_TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
-python apileaks.py full --config config/examples/ci_cd_config.yaml
+python apileaks.py scan --config config/examples/ci_cd_config.yaml
 ```
 
 ---

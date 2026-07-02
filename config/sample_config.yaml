@@ -41,7 +41,7 @@ fuzzing:
     
     # Option 3: Use single custom user agent
     custom_headers:
-      User-Agent: "APILeak/0.1.0"
+      User-Agent: "APILeak/0.2.0"
       Accept: "application/json"
       # Additional evasion headers (uncomment if needed):
       # X-Forwarded-For: "127.0.0.1"

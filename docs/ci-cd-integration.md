@@ -26,6 +26,20 @@ APILeak uses standard exit codes for CI/CD integration:
 - **1**: High severity vulnerabilities found ⚠️
 - **2**: Critical vulnerabilities found ❌
 
+### CI Gate Options (`scan`)
+
+The `scan` command drives the CI gate. The following are options of `scan`:
+
+- `--ci-mode`: Enable CI-friendly output and exit-code behavior.
+- `--fail-on <severity>`: Minimum severity that fails the pipeline. **The default is now `high` (previously `critical`).** This means a run now fails on high severity findings unless you override it. To keep the old behavior, pass `--fail-on critical` explicitly.
+- `--sarif`: Emit a SARIF report for code-scanning integrations.
+- `--baseline <file>`: Compare against a baseline to fail only on new findings.
+- `--safe-mode`: Run with reduced-risk, non-destructive checks.
+
+> **Note on the `--fail-on` default:** earlier versions defaulted to `critical`. The default is now `high`, so pipelines that relied on the old default will start failing on high severity findings. Set `--fail-on critical` if you intend to keep gating on critical only.
+
+> **Deprecation notice:** `full` and `main` are deprecated, hidden aliases of `scan`. They still work and forward to `scan` (emitting a one-line notice), but should not be used in new pipelines. Use `scan` for discovery plus all OWASP modules, and run a single module in isolation with `apileaks owasp <key>` (for example, `full --modules bola` becomes `apileaks owasp bola`).
+
 ### Basic CI/CD Script
 
 ```bash
@@ -46,7 +60,7 @@ echo "Target: $API_ENDPOINT"
 echo "Modules: $MODULES"
 
 # Run APILeak
-python apileaks.py full \
+python apileaks.py scan \
   --target "$API_ENDPOINT" \
   --jwt "$JWT_TOKEN" \
   --modules "$MODULES" \
@@ -121,7 +135,7 @@ jobs:
         API_ENDPOINT: ${{ secrets.STAGING_API_URL }}
         JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
       run: |
-        python apileaks.py full \
+        python apileaks.py scan \
           --target "$API_ENDPOINT" \
           --jwt "$JWT_TOKEN" \
           --modules bola,auth,property,resource \
@@ -232,7 +246,7 @@ jobs:
             echo "modules=" >> $GITHUB_OUTPUT
             ;;
           "full-owasp")
-            echo "command=full" >> $GITHUB_OUTPUT
+            echo "command=scan" >> $GITHUB_OUTPUT
             echo "modules=${{ github.event.inputs.modules }}" >> $GITHUB_OUTPUT
             ;;
         esac
@@ -291,7 +305,7 @@ api-security-scan:
   
   script:
     - |
-      python apileaks.py full \
+      python apileaks.py scan \
         --target "$STAGING_API_URL" \
         --jwt "$API_JWT_TOKEN" \
         --modules bola,auth,property,resource \
@@ -325,7 +339,7 @@ production-security-scan:
   script:
     - |
       # Very low rate limiting for production
-      python apileaks.py full \
+      python apileaks.py scan \
         --target "$PRODUCTION_API_URL" \
         --jwt "$PRODUCTION_JWT_TOKEN" \
         --modules bola,auth \
@@ -365,7 +379,7 @@ api-security-docker:
         -e JWT_TOKEN="$API_JWT_TOKEN" \
         -v $(pwd)/reports:/app/reports \
         apileak \
-        python apileaks.py full \
+        python apileaks.py scan \
           --target "$API_ENDPOINT" \
           --jwt "$JWT_TOKEN" \
           --modules bola,auth,property \
@@ -433,7 +447,7 @@ pipeline {
                     
                     sh """
                         . venv/bin/activate
-                        python apileaks.py full \\
+                        python apileaks.py scan \\
                             --target "${apiUrl}" \\
                             --jwt "${jwtToken}" \\
                             --modules ${params.MODULES} \\
@@ -572,7 +586,7 @@ services:
       - ./reports:/app/reports
       - ./config:/app/config
     command: >
-      full
+      scan
       --target ${API_ENDPOINT}
       --jwt ${JWT_TOKEN}
       --modules ${MODULES:-bola,auth,property}
@@ -615,7 +629,7 @@ docker run --rm \
   -e JWT_TOKEN="$JWT_TOKEN" \
   -v $(pwd)/reports:/app/reports \
   $IMAGE_NAME \
-  full \
+  scan \
   --target "$API_ENDPOINT" \
   --jwt "$JWT_TOKEN" \
   --modules bola,auth,property,resource \
@@ -660,7 +674,7 @@ export APILEAK_VERIFY_SSL="true"
 
 # Advanced configuration
 export APILEAK_MAX_DEPTH="3"
-export APILEAK_USER_AGENT="APILeak-CI/0.1.0"
+export APILEAK_USER_AGENT="APILeak-CI/0.2.0"
 ```
 
 ### Per-Environment Variables
@@ -759,7 +773,7 @@ fi
 REPORT_DIR="reports/$ENVIRONMENT/$(date +%Y/%m/%d)"
 mkdir -p "$REPORT_DIR"
 
-python apileaks.py full \
+python apileaks.py scan \
   --target "$API_ENDPOINT" \
   --output "$REPORT_DIR/scan-$(date +%H%M%S)" \
   --modules "$MODULES"
@@ -769,7 +783,7 @@ python apileaks.py full \
 
 ```bash
 # Implement timeout and retries
-timeout 1800 python apileaks.py full \
+timeout 1800 python apileaks.py scan \
   --target "$API_ENDPOINT" \
   --modules "$MODULES" \
   --rate-limit "$RATE_LIMIT" || {
@@ -777,7 +791,7 @@ timeout 1800 python apileaks.py full \
   echo "⏰ Scan timed out or failed. Retrying with reduced scope..."
   
   # Retry with critical modules only
-  timeout 900 python apileaks.py full \
+  timeout 900 python apileaks.py scan \
     --target "$API_ENDPOINT" \
     --modules "bola,auth" \
     --rate-limit 1
@@ -793,26 +807,26 @@ timeout 1800 python apileaks.py full \
 #### 1. **Timeouts in CI/CD**
 ```bash
 # Solution: Reduce scope or increase timeout
-timeout 3600 python apileaks.py full --modules bola,auth --rate-limit 1
+timeout 3600 python apileaks.py scan --modules bola,auth --rate-limit 1
 ```
 
 #### 2. **Server Rate Limiting**
 ```bash
 # Solution: Adaptive rate limiting
-python apileaks.py full --rate-limit 1 --modules bola
+python apileaks.py scan --rate-limit 1 --modules bola
 ```
 
 #### 3. **False Positives**
 ```bash
 # Solution: Configure specific filters
-python apileaks.py full --response 200,201,404 --modules bola,auth
+python apileaks.py scan --response 200,201,404 --modules bola,auth
 ```
 
 #### 4. **Limited Resources in CI**
 ```bash
 # Solution: Run modules separately
 for module in bola auth property; do
-  python apileaks.py full --modules $module --target "$API_ENDPOINT"
+  python apileaks.py scan --modules $module --target "$API_ENDPOINT"
 done
 ```
 

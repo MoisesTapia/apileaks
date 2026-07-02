@@ -45,7 +45,7 @@ async def demo_basic_requests():
         response = await http_engine.request(
             'GET',
             'https://httpbin.org/headers',
-            headers={'X-Custom-Header': 'APILeak-Demo', 'User-Agent': 'APILeak/0.1.0'}
+            headers={'X-Custom-Header': 'APILeak-Demo', 'User-Agent': 'APILeak/0.2.0'}
         )
         print(f"Headers Response: {response.status_code}")
         
