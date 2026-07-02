@@ -414,6 +414,53 @@ python apileaks.py dir \
   --ci-mode
 ```
 
+### Positional Fuzz Markers
+
+Positional fuzzing places a literal keyword (`FUZZ` by default) inside the target URL and sweeps each marked position with wordlist values, instead of appending entries to a base path. Every literal occurrence of the keyword becomes a marker; in marker mode the repeatable `--wordlist` values are the per-marker wordlists, associated in left-to-right marker order. These runs compose with the same discovery-control and triage flags (`--max-requests`, `--rate-limit`, matchers, `--confirm-hits`, `--status-code`). See the [CLI Reference](cli-reference.md#positional-fuzz-markers---fuzz-keyword---fuzz-mode) for full semantics.
+
+```bash
+# Single-marker version sweep: fuzz just the API version segment. The one
+# wordlist is the marker's wordlist; bounded by a rate limit and request budget.
+python apileaks.py dir \
+  --target "https://api.example.com/FUZZ/users" \
+  --wordlist wordlists/versions.txt \
+  --rate-limit 10 \
+  --max-requests 2000 \
+  --status-code 2xx
+
+# Two markers, clusterbomb (default): every version × every filename. The first
+# --wordlist pairs with the first marker (version), the second with the filename.
+# Confirm interesting hits to cut false positives.
+python apileaks.py dir \
+  --target "https://api.example.com/FUZZ/FUZZ" \
+  --wordlist wordlists/versions.txt \
+  --wordlist wordlists/filenames.txt \
+  --confirm-hits 2 \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --max-requests 5000
+
+# Two markers, pitchfork: pair the i-th version with the i-th filename in
+# lockstep (stops at the shortest list) instead of exploding into all combos.
+python apileaks.py dir \
+  --target "https://api.example.com/FUZZ/FUZZ" \
+  --fuzz-mode pitchfork \
+  --wordlist wordlists/versions.txt \
+  --wordlist wordlists/filenames.txt \
+  --rate-limit 8 \
+  --status-code 2xx,403
+
+# Custom keyword to avoid colliding with legitimate URL text (here "FUZZ" could
+# appear literally, so a distinct marker token is used instead)
+python apileaks.py dir \
+  --target "https://api.example.com/__M__/report.__M__" \
+  --fuzz-keyword __M__ \
+  --wordlist wordlists/versions.txt \
+  --wordlist wordlists/extensions.txt \
+  --confirm-hits 3 \
+  --max-requests 4000
+```
+
 ## Parameter Fuzzing
 
 Parameter fuzzing identifies hidden parameters, injection points, and input validation issues.

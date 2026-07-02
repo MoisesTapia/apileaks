@@ -18,6 +18,7 @@ from utils.findings import Finding, FindingsCollector
 from utils.http_client import HTTPRequestEngine, Request, Response
 from utils.safe_mode import SafeModeGuard, SAFE_METHODS
 from utils.authz_baseline import NegativeControlMixin
+from utils.typed_payload import build_typed_payload, apply_actor_profile
 from core.config import PropertyTestingConfig, AuthContext, AuthType, Severity
 from core.logging import get_logger
 
@@ -123,12 +124,24 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # patterns, which are necessary but not sufficient on their own (Req 12.2).
     CREDENTIAL_ENTROPY_THRESHOLD = 3.5
     
+    # Unauthorized_Endpoint_Assertion classification for this module (Req 55.2,
+    # 56.2): the Property-Level module emits within API3.
+    UNAUTHORIZED_ASSERTION_CATEGORY = "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS"
+    UNAUTHORIZED_ASSERTION_OWASP = "API3"
+
     def __init__(self, config: PropertyTestingConfig, http_client: HTTPRequestEngine, 
-                 auth_contexts: List[AuthContext]):
+                 auth_contexts: List[AuthContext], spec_schema=None):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
         self.logger = get_logger(__name__).bind(module="property_level_auth")
+
+        # Optional merged Spec_Schema threaded from the ``full`` command's
+        # ``--openapi`` / ``--postman`` sources (Requirements 49.2, 49.5). It is
+        # additive and defaults to ``None``; every consumer guards on
+        # ``if self.spec_schema is not None`` so the no-spec path is unchanged
+        # (Requirements 49.3, 52.6, 55.5).
+        self.spec_schema = spec_schema
         
         # Read Safe_Mode flag (Requirement 21.1). When enabled, the module MUST
         # NOT issue any State_Changing_Method request (POST/PUT/PATCH) and
@@ -210,7 +223,15 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             undocumented_findings = await self._test_undocumented_fields(endpoints)
             findings.extend(undocumented_findings)
             self.logger.debug("Undocumented fields testing completed", findings=len(undocumented_findings))
-            
+
+            # Step 5: Declarative Unauthorized_Endpoint_Assertions (Req 55). Only
+            # runs when an auth context carries operator-declared patterns;
+            # otherwise the module behaves exactly as before (Req 55.5).
+            assertion_findings = await self._run_unauthorized_assertions(endpoints)
+            findings.extend(assertion_findings)
+            self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
+                              findings=len(assertion_findings))
+
         except Exception as e:
             self.logger.error("Property level authorization testing failed during execution", error=str(e))
             raise
@@ -248,7 +269,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
                 try:
                     # Make request to endpoint
-                    response = await self.http_client.request(method, endpoint_url)
+                    params, _ = apply_actor_profile(auth_context, endpoint_url)
+                    request_kwargs = {'params': params} if params else {}
+                    response = await self.http_client.request(method, endpoint_url, **request_kwargs)
                     
                     if response.is_success and response.text:
                         # Analyze response for sensitive fields
@@ -721,21 +744,56 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                             endpoint=endpoint_url,
                             error=str(e))
             return findings
-        
+
+        # When a merged Spec_Schema resolves an operation for this
+        # (endpoint, method), build the probe body from a schema-valid
+        # Typed_Payload so the injected mass-assignment field passes input
+        # validation and reaches the target logic (Requirements 52.1, 56.3).
+        # When no operation resolves (or no spec is threaded), the existing
+        # payload behavior is used unchanged (Requirement 52.6). The
+        # skip_if_state_changing gate in _test_mass_assignment still runs first,
+        # so Safe_Mode continues to skip this state-changing probe
+        # (Requirements 52.4, 11).
+        spec_operation = None
+        if self.spec_schema is not None:
+            spec_operation = self.spec_schema.operation_for(endpoint_url, method)
+
         # Test mass assignment with dangerous fields
         for dangerous_field in self.mass_assignment_fields:
             try:
-                # Create test payload with dangerous field
-                test_payload = {dangerous_field: self._generate_test_value(dangerous_field)}
+                dangerous_value = self._generate_test_value(dangerous_field)
+
+                if spec_operation is not None:
+                    # Start from a schema-valid body and inject the dangerous
+                    # field on top via overrides (Requirement 52.1).
+                    test_payload = build_typed_payload(
+                        spec_operation, overrides={dangerous_field: dangerous_value}
+                    )
+                else:
+                    # Existing behavior when no spec operation resolves
+                    # (Requirement 52.6).
+                    test_payload = {dangerous_field: dangerous_value}
+
+                    # Add some existing fields to make request more realistic
+                    if existing_fields:
+                        sample_fields = dict(list(existing_fields.items())[:3])  # Take first 3 fields
+                        test_payload.update(sample_fields)
                 
-                # Add some existing fields to make request more realistic
-                if existing_fields:
-                    sample_fields = dict(list(existing_fields.items())[:3])  # Take first 3 fields
-                    test_payload.update(sample_fields)
-                
+                # Merge any Actor_Profile per-endpoint query/body values for this
+                # Auth_Context on top of the typed base, with profile values
+                # taking precedence (Requirement 54.2). When no profile is
+                # supplied or it omits this endpoint, the base is used unchanged
+                # (Requirements 54.3, 54.4).
+                params, test_payload = apply_actor_profile(
+                    auth_context, endpoint_url, body=test_payload
+                )
+
                 # Make request with mass assignment payload
+                request_kwargs = {'json': test_payload}
+                if params:
+                    request_kwargs['params'] = params
                 test_response = await self.http_client.request(
-                    method, endpoint_url, json=test_payload
+                    method, endpoint_url, **request_kwargs
                 )
                 
                 # Check if mass assignment was successful via persistence verification
@@ -1030,10 +1088,20 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     test_value = self._generate_readonly_test_value(readonly_field, original_value)
                     
                     test_payload = {readonly_field: test_value}
-                    
+
+                    # Merge Actor_Profile per-endpoint query/body values on top
+                    # of the base, profile values taking precedence
+                    # (Requirements 54.2-54.4).
+                    params, test_payload = apply_actor_profile(
+                        auth_context, endpoint_url, body=test_payload
+                    )
+
                     # Make request to modify read-only field
+                    request_kwargs = {'json': test_payload}
+                    if params:
+                        request_kwargs['params'] = params
                     test_response = await self.http_client.request(
-                        method, endpoint_url, json=test_payload
+                        method, endpoint_url, **request_kwargs
                     )
                     
                     # Check if read-only field was modified
@@ -1164,7 +1232,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 method = self.safe_read_method(method, "undocumented_fields")
 
                 try:
-                    response = await self.http_client.request(method, endpoint_url)
+                    params, _ = apply_actor_profile(auth_context, endpoint_url)
+                    request_kwargs = {'params': params} if params else {}
+                    response = await self.http_client.request(method, endpoint_url, **request_kwargs)
                     
                     if response.is_success and response.text:
                         fields = self._extract_all_fields_from_response(response)

@@ -663,17 +663,26 @@ class APILeakCore:
             ):
                 setattr(module_cfg, 'safe_mode', safe_mode)
             
+            # Optional merged Spec_Schema attached to owasp_testing by the
+            # ``full`` command (Task 43.1). Threaded as an additive keyword into
+            # the three hardened modules so they can test declared Spec_Operations
+            # in addition to discovered endpoints (Requirements 49.2, 49.5). It
+            # defaults to ``None`` and every consumer guards on
+            # ``if self.spec_schema is not None`` so the no-spec path is
+            # unchanged (Requirements 49.3, 52.6, 53.2, 54.3, 55.5).
+            spec_schema = getattr(self.config.owasp_testing, 'spec_schema', None)
+            
             # Initialize modules with their specific configurations
             if "bola" not in self.owasp_modules:
-                bola_module = BOLATestingModule(self.config.owasp_testing.bola_testing, http_client, auth_contexts)
+                bola_module = BOLATestingModule(self.config.owasp_testing.bola_testing, http_client, auth_contexts, spec_schema=spec_schema)
                 self.register_owasp_module("bola", bola_module)
             
             if "auth" not in self.owasp_modules:
-                auth_module = AuthenticationTestingModule(self.config.owasp_testing.auth_testing, http_client, auth_contexts)
+                auth_module = AuthenticationTestingModule(self.config.owasp_testing.auth_testing, http_client, auth_contexts, spec_schema=spec_schema)
                 self.register_owasp_module("auth", auth_module)
             
             if "property" not in self.owasp_modules:
-                property_module = PropertyLevelAuthModule(self.config.owasp_testing.property_testing, http_client, auth_contexts)
+                property_module = PropertyLevelAuthModule(self.config.owasp_testing.property_testing, http_client, auth_contexts, spec_schema=spec_schema)
                 self.register_owasp_module("property", property_module)
             
             if "function_auth" not in self.owasp_modules:

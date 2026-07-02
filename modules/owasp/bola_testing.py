@@ -6,6 +6,7 @@ Implements OWASP API1 - Broken Object Level Authorization testing
 import asyncio
 import base64
 import copy
+import hashlib
 import json
 import math
 import re
@@ -36,6 +37,7 @@ from utils.authz_baseline import (
 )
 from core.config import BOLAConfig, AuthContext, AuthType, Severity
 from core.logging import get_logger
+from utils.typed_payload import build_typed_payload, apply_actor_profile
 
 
 @dataclass
@@ -97,11 +99,13 @@ class IdentifierPredictability:
     """Assessment of how guessable an observed identifier scheme is (Req 30.4).
 
     ``scheme`` is one of ``'sequential-integer'``, ``'timestamp-based'``,
-    ``'uuid-v1'`` (time-based UUID), ``'uuid-v4'`` (random UUID), or
-    ``'unknown'``. ``predictable`` is ``True`` for the enumerable/guessable
-    schemes (sequential-integer, timestamp-based, uuid-v1) and ``False`` for a
-    random UUIDv4 or an unclassifiable scheme (Req 30.5, 30.6). ``rationale``
-    is a short human-readable explanation included in finding evidence.
+    ``'uuid-v1'`` (time-based UUID), ``'uuid-v4'`` (random UUID),
+    ``'hash-of-known-input'`` (a hash of a known value such as ``MD5(email)``),
+    or ``'unknown'``. ``predictable`` is ``True`` for the enumerable/guessable
+    schemes (sequential-integer, timestamp-based, uuid-v1, hash-of-known-input)
+    and ``False`` for a random UUIDv4 or an unclassifiable scheme (Req 30.5,
+    30.6, 40.1). ``rationale`` is a short human-readable explanation included in
+    finding evidence.
     """
     scheme: str
     predictable: bool
@@ -165,12 +169,24 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         'account_id', 'accountid', 'email',
     }
 
+    # Unauthorized_Endpoint_Assertion classification for this module (Req 55.2,
+    # 56.2): BOLA emits within API1.
+    UNAUTHORIZED_ASSERTION_CATEGORY = "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS"
+    UNAUTHORIZED_ASSERTION_OWASP = "API1"
+
     def __init__(self, config: BOLAConfig, http_client: HTTPRequestEngine, 
-                 auth_contexts: List[AuthContext]):
+                 auth_contexts: List[AuthContext], spec_schema=None):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
         self.logger = get_logger(__name__).bind(module="bola_testing")
+
+        # Optional merged Spec_Schema threaded from the ``full`` command's
+        # ``--openapi`` / ``--postman`` sources (Requirements 49.2, 49.5). It is
+        # additive and defaults to ``None``; every consumer guards on
+        # ``if self.spec_schema is not None`` so the no-spec path (discovered
+        # endpoints only) is unchanged (Requirements 49.3, 53.2).
+        self.spec_schema = spec_schema
 
         # Read Safe_Mode flag (Requirement 21.1). BOLA issues only GET probes so
         # it is read-only by construction; the guard is wired for uniformity and
@@ -321,6 +337,19 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     self.logger.error("ID leakage / predictability testing failed",
                                       error=str(e))
                     # Don't raise here, continue with other tests
+
+            # Step 8: Declarative Unauthorized_Endpoint_Assertions (Req 55). Only
+            # runs when at least one auth context carries operator-declared
+            # patterns; otherwise the module behaves exactly as before (Req 55.5).
+            try:
+                assertion_findings = await self._run_unauthorized_assertions(endpoints)
+                findings.extend(assertion_findings)
+                self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
+                                  findings=len(assertion_findings))
+            except Exception as e:
+                self.logger.error("Unauthorized-endpoint assertion evaluation failed",
+                                  error=str(e))
+                # Don't raise here, continue with other tests
 
         except Exception as e:
             self.logger.error("BOLA testing failed during execution", error=str(e))
@@ -1052,6 +1081,102 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         new_query = urlencode(qs, doseq=True)
         return urlunparse(parsed._replace(query=new_query))
 
+    def _spec_path_slots(self, operation) -> List[Any]:
+        """Return the declared ``path`` Spec_Parameters for ``operation`` in path
+        order (Requirements 53.1, 53.4).
+
+        The parameters are ordered by the position of their ``{name}`` placeholder
+        within the operation's declared path so the returned list matches the
+        left-to-right slot order of the URL. Returns an empty list when
+        ``operation`` is ``None`` or declares no ``path`` parameter, which signals
+        the caller to fall back to the existing regex-based ``ObjectIdentifier``
+        inference (Requirement 53.2). No substitution mechanics are performed
+        here; this method only selects WHICH declared slot(s) exist.
+        """
+        if operation is None:
+            return []
+
+        path_params = [
+            param for param in getattr(operation, 'parameters', []) or []
+            if getattr(param, 'location', None) == 'path'
+        ]
+        if not path_params:
+            return []
+
+        template = getattr(operation, 'path', '') or ''
+
+        def _placeholder_pos(param) -> int:
+            token = '{' + param.name + '}'
+            pos = template.find(token)
+            # Parameters that do not appear in the declared path sort after those
+            # that do; ``sorted`` is stable so their relative order is preserved.
+            return pos if pos != -1 else len(template) + 1
+
+        return sorted(path_params, key=_placeholder_pos)
+
+    def _identifier_from_spec(self, operation, endpoint: str,
+                              slot_index: int = 0) -> Optional[ObjectIdentifier]:
+        """Build an :class:`ObjectIdentifier` targeting a declared ``path`` slot.
+
+        The returned identifier has ``location='path'``, ``parameter_name`` set to
+        the declared parameter's name, and ``value`` set to the concrete value
+        occupying that ``{param}`` position in ``endpoint`` (Requirement 53.1).
+        Because the value is the exact concrete path segment, feeding the returned
+        identifier to the EXISTING :meth:`_substitute_identifier` (unchanged) lands
+        the candidate in precisely the declared slot while every other path segment
+        and query parameter is preserved (Requirements 53.3, consistent with
+        Requirement 1). For an operation declaring multiple ``path`` parameters,
+        ``slot_index`` selects the single targeted slot; the values of the other
+        declared slots are preserved (Requirement 53.4, consistent with the
+        composite behavior of Requirement 29).
+
+        Returns ``None`` when the operation declares no ``path`` parameter, when
+        ``slot_index`` is out of range, or when the concrete value cannot be
+        resolved from ``endpoint`` - in every such case the caller falls back to
+        the existing regex-based inference (Requirement 53.2).
+        """
+        slots = self._spec_path_slots(operation)
+        if not slots:
+            return None
+        if slot_index < 0 or slot_index >= len(slots):
+            return None
+
+        target = slots[slot_index]
+        template = getattr(operation, 'path', '') or ''
+        template_segments = template.split('/')
+        token = '{' + target.name + '}'
+
+        placeholder_index = None
+        for idx, segment in enumerate(template_segments):
+            if token in segment:
+                placeholder_index = idx
+                break
+        if placeholder_index is None:
+            return None
+
+        concrete_segments = urlparse(endpoint).path.split('/')
+        # Right-align the declared template against the concrete path so an
+        # optional base prefix (e.g. ``/v1``) on the concrete endpoint is
+        # tolerated; both share a leading empty segment when rooted at ``/``.
+        offset = len(concrete_segments) - len(template_segments)
+        if offset < 0:
+            return None
+        concrete_index = offset + placeholder_index
+        if concrete_index < 0 or concrete_index >= len(concrete_segments):
+            return None
+
+        value = concrete_segments[concrete_index]
+        if not value:
+            return None
+
+        return ObjectIdentifier(
+            value=value,
+            type=self._determine_id_type(value) or 'custom',
+            endpoint=endpoint,
+            parameter_name=target.name,
+            location='path',
+        )
+
     async def _get_negative_control(self, identifier: ObjectIdentifier,
                                     auth_context: Optional[AuthContext]) -> NegativeControlBaseline:
         """Return a cached Negative_Control_Baseline for ``(endpoint, auth_context)``.
@@ -1687,6 +1812,23 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         requesting_context = contexts[0] if contexts else None
 
+        # When a Spec_Schema is threaded in and declares an operation for this
+        # (endpoint, method), start the mutation body from a schema-valid
+        # Typed_Payload so the write passes input validation and the mutated
+        # field reaches the target logic (Reqs 52.1, 56.3). When no schema or no
+        # matching operation is available, the existing minimal body is used
+        # unchanged (Req 52.6). This is data only; the destructive gate and
+        # Safe_Mode (both checked above) still decide whether it is ever issued
+        # (Reqs 52.4, 52.5, 56.4, 56.5).
+        write_operation = None
+        if self.spec_schema is not None:
+            try:
+                write_operation = self.spec_schema.operation_for(
+                    identifier.endpoint, method
+                )
+            except Exception:
+                write_operation = None
+
         # Build the requester's-own and victim URLs by reusing the shared
         # substitution helper (preserves every other request component).
         own_url = self._substitute_identifier(identifier, identifier.value)
@@ -1713,7 +1855,22 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 return findings
 
             for field, mutated_value in candidate_fields.items():
-                body = {field: mutated_value}
+                if write_operation is not None:
+                    # Schema present: start from a schema-valid Typed_Payload and
+                    # inject the mutated field on top (Reqs 52.1, 52.5).
+                    body = build_typed_payload(
+                        write_operation, overrides={field: mutated_value}
+                    )
+                else:
+                    body = {field: mutated_value}
+
+                # Overlay any Actor_Profile per-endpoint body values for the
+                # requesting Auth_Context on top of the typed base, profile
+                # values taking precedence (Requirement 54.2). Absent profile or
+                # endpoint leaves the body unchanged (Requirements 54.3, 54.4).
+                _, body = apply_actor_profile(
+                    requesting_context, identifier.endpoint, body=body
+                )
 
                 # Issue the write through the single destructive choke point.
                 write_response = await self._issue_guarded_write_probe(
@@ -2842,7 +2999,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         )
 
     def analyze_identifier_predictability(
-        self, samples: Union[str, List[str]]
+        self, samples: Union[str, List[str]], known_inputs: Optional[List[str]] = None
     ) -> IdentifierPredictability:
         """Classify how guessable an identifier scheme is (Requirement 30.4).
 
@@ -2861,6 +3018,15 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
           (predictable);
         * anything else (non-integer, non-UUID) -> ``'unknown'`` (not
           predictable) so malformed values raise no finding.
+
+        EXTENDED (Requirement 40.1): when ``known_inputs`` (e.g. account email
+        addresses) are supplied, a sample that equals a common hash
+        (md5/sha1/sha256) of any known input - such as ``MD5(email)`` - is
+        classified as predictable with scheme ``'hash-of-known-input'``. This
+        check is additive and only runs when ``known_inputs`` is provided, so
+        the existing schemes and the uuid-v4 "not predictable" outcome remain
+        unchanged and the method stays backward compatible
+        (``known_inputs`` defaults to ``None``).
         """
         if isinstance(samples, str):
             samples = [samples]
@@ -2872,6 +3038,25 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 predictable=False,
                 rationale='No identifier samples were available to analyze.',
             )
+
+        # --- Hash-of-known-input scheme (Req 40.1) ---
+        # Only evaluated when the operator supplies known inputs (e.g. emails).
+        # A token equal to a common hash of a known value is trivially
+        # reproducible by an attacker who knows that value.
+        if known_inputs:
+            matched_input, matched_algo = self._match_hash_of_known_input(
+                cleaned, known_inputs
+            )
+            if matched_input is not None:
+                return IdentifierPredictability(
+                    scheme='hash-of-known-input',
+                    predictable=True,
+                    rationale=(
+                        f'Identifier equals the {matched_algo.upper()} hash of a '
+                        f'known input, making it reproducible by anyone who knows '
+                        f'that value.'
+                    ),
+                )
 
         # --- UUID scheme (classified by version nibble) ---
         versions = [self._uuid_version(s) for s in cleaned]
@@ -2953,6 +3138,34 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 'timestamps, nor valid UUIDs; no predictable structure detected.'
             ),
         )
+
+    @staticmethod
+    def _match_hash_of_known_input(
+        samples: List[str], known_inputs: List[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Return ``(known_input, algorithm)`` when any sample equals a common
+        hash of a known input, else ``(None, None)`` (Req 40.1).
+
+        Each known input is hashed with md5/sha1/sha256 (both the raw value and
+        a whitespace/case-normalized variant, since emails are commonly
+        lower-cased before hashing). Comparison against samples is done on the
+        lower-cased hex digest so it is case-insensitive.
+        """
+        algorithms = ('md5', 'sha1', 'sha256')
+        sample_set = {s.strip().lower() for s in samples if s}
+
+        for known in known_inputs:
+            if known is None:
+                continue
+            raw = str(known)
+            variants = {raw, raw.strip().lower()}
+            for variant in variants:
+                encoded = variant.encode('utf-8')
+                for algo in algorithms:
+                    digest = hashlib.new(algo, encoded).hexdigest()
+                    if digest.lower() in sample_set:
+                        return raw, algo
+        return None, None
 
     def _test_identifier_predictability(self, harvested: Set[str]) -> List[Finding]:
         """Analyze harvested identifier schemes and emit predictability findings.

@@ -20,6 +20,9 @@ class AttackType(str, Enum):
     PRIVILEGE_ESCALATION = "privilege_escalation"
     USER_IMPERSONATION = "user_impersonation"
     EXPIRATION_BYPASS = "expiration_bypass"
+    PSYCHIC_SIGNATURE = "psychic_signature"
+    TIMESTAMP_TAMPERING = "timestamp_tampering"
+    CLAIM_FUZZING = "claim_fuzzing"
 
 
 class VulnerabilitySeverity(str, Enum):

@@ -23,6 +23,11 @@ from utils.findings import Finding, FindingsCollector
 from utils.secret_scanner import SecretFinding, scan_for_secrets
 from utils.spec_import import normalize_candidate_path
 from utils.url_normalize import normalize_url
+from modules.fuzzing.markers import (
+    find_markers,
+    generate_marker_candidates,
+    parse_fuzz_mode,
+)
 from utils.discovery_progress import DiscoveryProgress
 from utils.discovery_session import status_code_class, DiscoveryResult
 from utils.discovery_checkpoint import DiscoveryCheckpoint, DiscoveryCheckpointError
@@ -271,6 +276,29 @@ class EndpointFuzzer:
         # in-flight Discovery_Requests so they never exceed self.concurrency.
         self.concurrency = config.concurrency or 50
         self._semaphore = asyncio.Semaphore(self.concurrency)
+
+        # Marker mode / positional fuzzing state (Fuzz_Marker, Requirements 39/45).
+        # The marker config is read once from ``self.config.endpoints`` and cached
+        # so ``_fuzz_wordlist`` only has to branch on ``if self._markers``:
+        #   * ``self._raw_target`` is the RAW target string (before any
+        #     trailing-slash normalization / urljoin) that the user supplied, so
+        #     marker offsets refer to exactly the characters typed. It is captured
+        #     here as an empty string and refreshed in ``discover_endpoints`` once
+        #     the actual target arrives.
+        #   * ``self._markers`` is the precomputed list of Marker_Positions found
+        #     in ``self._raw_target`` for the configured Fuzz_Keyword. An empty
+        #     list (no keyword occurrence) means marker mode is inactive and the
+        #     legacy base-path append path is used unchanged (Requirement 39.3).
+        #   * ``self._marker_wordlists`` are the per-marker Marker_Wordlists in
+        #     marker order (``None`` ⇒ marker mode not configured).
+        #   * ``self._fuzz_mode`` is the parsed Fuzz_Mode (CLUSTERBOMB default,
+        #     PITCHFORK), controlling how the per-marker wordlists are combined.
+        self._raw_target: str = ""
+        self._marker_wordlists = self.config.endpoints.marker_wordlists
+        self._fuzz_mode = parse_fuzz_mode(self.config.endpoints.fuzz_mode)
+        self._markers = find_markers(
+            self._raw_target, self.config.endpoints.fuzz_keyword
+        )
         
         # Catch-all / wildcard detection state (Catch_All_Response, Requirement 19).
         # catch_all_signature is the (status_code, response_size) recorded when the
@@ -419,7 +447,20 @@ class EndpointFuzzer:
         self.logger.info("Starting endpoint discovery",
                         base_url=base_url,
                         wordlist=wordlist_path)
-        
+
+        # Capture the RAW target string (exactly as supplied, before the
+        # trailing-slash normalization below) and recompute the Fuzz_Markers now
+        # that the target is known (Requirements 39.2, 45). Marker offsets refer to
+        # the characters the user typed, so this must precede any slash-append /
+        # urljoin. A keyword-free target yields an empty marker list, so discovery
+        # transparently falls back to the unchanged legacy base-path append path
+        # (Requirement 39.3). This is the single point where markers are computed
+        # for a discovery run.
+        self._raw_target = base_url
+        self._markers = find_markers(
+            base_url, self.config.endpoints.fuzz_keyword
+        )
+
         # Mark the discovery start so the Progress_Display can report elapsed time
         # and request rate (Requirement 32.2). Harmless when the display is
         # disabled.
@@ -533,41 +574,89 @@ class EndpointFuzzer:
         # an excluded candidate consumes no budget and issues no Discovery_Request
         # (Requirements 33.2, 33.3, 33.4).
         path_scope = self.config.path_scope
-        for word in wordlist:
+
+        # Marker mode / positional fuzzing (Requirement 45). At the depth-0 pass,
+        # when the raw target carries at least one Fuzz_Marker AND per-marker
+        # Marker_Wordlists are configured, the base-path append loop is REPLACED by
+        # draining ``generate_marker_candidates``, which yields FULL candidate URLs
+        # produced by substituting each Marker_Wordlist combination into the raw
+        # target. Otherwise the existing ``expand_candidates`` + ``urljoin`` loop
+        # runs unchanged (Requirement 39.3). Marker generation is a FLAT depth-0
+        # sweep only: the keyword is never re-applied at depth > 0, so recursive
+        # passes always take the legacy base-path append branch
+        # (Requirement 45.7). ``generate_marker_candidates`` is a lazy iterator, so
+        # hitting the Request_Budget mid-stream (see the budget trim below) stops
+        # pulling further product/zip combinations and terminates discovery
+        # gracefully (Requirements 42.3, 42.4, 43.4).
+        use_markers = (
+            depth == 0
+            and bool(self._markers)
+            and self._marker_wordlists is not None
+        )
+        if use_markers:
+            # ``cand`` is already a full candidate URL; the base-path urljoin is
+            # bypassed for marker candidates. ``word`` is None so per-path
+            # seed_methods do not apply — marker candidates use the base method set.
+            candidate_source = (
+                (None, cand)
+                for cand in generate_marker_candidates(
+                    self._raw_target,
+                    self._markers,
+                    self._marker_wordlists,
+                    self._fuzz_mode,
+                )
+            )
+        else:
+            # Legacy path: expand each word into candidate words (the bare word
+            # plus word+extension for each configured extension,
+            # Requirements 23.2/23.7) so extension-bearing candidates are generated
+            # here, before the budget-trim and semaphore dispatch below. This keeps
+            # every expanded candidate counted toward the Request_Budget and
+            # bounded by the Concurrency_Limit.
+            candidate_source = (
+                (word, cand)
+                for word in wordlist
+                for cand in expand_candidates(word, self.config.endpoints.extensions)
+            )
+
+        for word, candidate in candidate_source:
             # Brute-force entries keep config.endpoints.methods; Spec_Import seeds
             # extend that per-path method set with the methods declared for the
-            # seed's path (Requirement 25.3). The dedup below is keyed by URL, so
-            # this preserves the existing per-path dispatch behavior for
-            # brute-force entries while making the spec-derived methods part of
-            # the candidate's method set.
+            # seed's path (Requirement 25.3). Marker candidates carry no wordlist
+            # word (``word is None``) so they use the base method set. The dedup
+            # below is keyed by URL, so this preserves the existing per-path
+            # dispatch behavior for brute-force entries while making the
+            # spec-derived methods part of the candidate's method set.
             methods = list(self.config.endpoints.methods)
-            if seed_methods:
+            if seed_methods and word is not None:
                 extra = seed_methods.get(normalize_candidate_path(word))
                 if extra:
                     for method in extra:
                         if method not in methods:
                             methods.append(method)
-            for candidate in expand_candidates(word, self.config.endpoints.extensions):
-                for method in methods:
-                    # Canonicalize the candidate URL before the tested_urls
-                    # membership check so two candidates that normalize to the
-                    # same canonical URL add a single tested_urls entry and issue
-                    # a single Discovery_Request (Requirement 38.1, 38.3). This
-                    # EXTENDS the existing tested_urls dedup (Requirement 38.3).
-                    url = normalize_url(urljoin(base_url, candidate))
-                    # Drop candidates excluded by the Path_Scope before any
-                    # tested_urls insertion or budget accounting (Requirement
-                    # 33.2-33.4). Evaluated against the candidate path and the
-                    # constructed URL; exclude takes precedence over include.
-                    if path_scope is not None and not path_scope.admits(candidate, url):
-                        continue
-                    if url not in self.tested_urls:
-                        requests.append((method, url, candidate, depth))
-                        self.tested_urls.add(url)
-                        # Record the method that first caused this URL to be
-                        # tested so the checkpoint can carry (url, method) pairs
-                        # (Requirement 37.1). Inert when checkpointing is off.
-                        self._tested_methods[url] = method
+            for method in methods:
+                # Marker candidates are full URLs; legacy candidates are joined to
+                # the base path. Canonicalize the candidate URL with normalize_url
+                # before the tested_urls membership check so two candidates that
+                # normalize to the same canonical URL add a single tested_urls
+                # entry and issue a single Discovery_Request (Requirements 38.1,
+                # 38.3, 45.1, 45.2). This EXTENDS the existing tested_urls dedup.
+                raw = candidate if use_markers else urljoin(base_url, candidate)
+                url = normalize_url(raw)
+                # Drop candidates excluded by the Path_Scope before any tested_urls
+                # insertion or budget accounting (Requirements 33.2-33.4).
+                # Evaluated against the candidate (a full URL in marker mode, a
+                # path fragment otherwise) and the constructed URL; exclude takes
+                # precedence over include.
+                if path_scope is not None and not path_scope.admits(candidate, url):
+                    continue
+                if url not in self.tested_urls:
+                    requests.append((method, url, candidate, depth))
+                    self.tested_urls.add(url)
+                    # Record the method that first caused this URL to be tested so
+                    # the checkpoint can carry (url, method) pairs (Requirement
+                    # 37.1). Inert when checkpointing is off.
+                    self._tested_methods[url] = method
         
         # Execute requests. Concurrency is now bounded by the asyncio.Semaphore
         # in _test_endpoint (Concurrency_Limit), not by a hardcoded batch size.

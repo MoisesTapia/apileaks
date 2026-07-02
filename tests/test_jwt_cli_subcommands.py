@@ -99,13 +99,17 @@ class _SpyEngine:
 
     def __init__(self, target_url, original_token, http_engine=None,
                  signing_secret=None, public_key_material=None, safe_mode=False,
-                 custom_headers=None, post_data=None, weak_secrets=None):
+                 custom_headers=None, post_data=None, weak_secrets=None,
+                 fuzz_target=None, fuzz_values=None, canary_value=None):
         self.target_url = target_url
         self.original_token = original_token
         self.http_engine = http_engine
         self.signing_secret = signing_secret
         self.custom_headers = custom_headers or {}
         self.post_data = post_data
+        self.fuzz_target = fuzz_target
+        self.fuzz_values = list(fuzz_values) if fuzz_values else []
+        self.canary_value = canary_value
         self.generate_calls = []
         self.execute_attack_calls = []
         self.execute_all_called = False

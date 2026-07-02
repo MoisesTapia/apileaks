@@ -1228,3 +1228,287 @@ class TestBOLACLIThreading:
         assert bola.dry_run is True
         # Comma-separated methods are parsed and uppercased into the set.
         assert bola.destructive_methods == {"PATCH", "PUT", "DELETE"}
+
+
+# ===========================================================================
+# Typed-payload consumption in write BOLA probes (Task 45.2, Reqs 52.1, 52.4,
+# 52.5, 56.3, 56.4, 56.5).
+# ===========================================================================
+
+from utils.spec_import import SpecSchema, SpecOperation
+
+
+class TestWriteBOLATypedPayload:
+    """`_test_write_bola` starts the mutation body from a schema-valid
+    Typed_Payload when a Spec_Schema declares the operation, and falls back to
+    the existing minimal body otherwise."""
+
+    @pytest.fixture
+    def user1(self):
+        return AuthContext(name="user1", type=AuthType.BEARER,
+                           token="user1_token", privilege_level=1)
+
+    @pytest.mark.asyncio
+    async def test_write_body_uses_typed_payload_when_schema_present(self, user1):
+        """The victim mutation body includes schema-required fields plus the
+        mutated field when the Spec_Schema declares the operation (Req 52.1)."""
+        endpoint = "https://api.example.com/users/1"
+        victim_url = "https://api.example.com/users/2"
+        store = {
+            endpoint: {"id": 1, "nickname": "me"},
+            victim_url: {"id": 2, "nickname": "victim"},
+        }
+        engine = StatefulHTTPEngine(store)
+
+        # Declare the PATCH operation (selected write method) with a required
+        # field that is NOT one of the mutated candidate fields.
+        schema = SpecSchema(operations=[
+            SpecOperation(
+                path=endpoint,
+                method="PATCH",
+                request_body_schema={
+                    "type": "object",
+                    "required": ["display_name"],
+                    "properties": {
+                        "display_name": {"type": "string"},
+                        "nickname": {"type": "string"},
+                    },
+                },
+            )
+        ])
+
+        module = BOLATestingModule(_write_config(), engine, [user1],
+                                   spec_schema=schema)
+
+        identifier = ObjectIdentifier(
+            value="1", type="sequential", endpoint=endpoint,
+            parameter_name="user_id", location="path",
+        )
+
+        await module._test_write_bola(identifier, "2", [user1])
+
+        # Find the state-changing write body issued against the victim URL.
+        write_bodies = [
+            body for (m, url, body) in engine.calls
+            if m == "PATCH" and url == victim_url and isinstance(body, dict)
+        ]
+        assert write_bodies, "expected a PATCH write against the victim object"
+        body = write_bodies[0]
+        # Schema-required field is present (Typed_Payload base) ...
+        assert "display_name" in body
+        # ... and the mutated candidate field override is applied on top.
+        assert "nickname" in body
+
+    @pytest.mark.asyncio
+    async def test_write_body_falls_back_when_no_schema(self, user1):
+        """Without a Spec_Schema, the write body is the existing minimal
+        {field: mutated_value} body (Req 52.6)."""
+        endpoint = "https://api.example.com/users/1"
+        victim_url = "https://api.example.com/users/2"
+        store = {
+            endpoint: {"id": 1, "nickname": "me"},
+            victim_url: {"id": 2, "nickname": "victim"},
+        }
+        engine = StatefulHTTPEngine(store)
+
+        module = BOLATestingModule(_write_config(), engine, [user1])
+
+        identifier = ObjectIdentifier(
+            value="1", type="sequential", endpoint=endpoint,
+            parameter_name="user_id", location="path",
+        )
+
+        await module._test_write_bola(identifier, "2", [user1])
+
+        write_bodies = [
+            body for (m, url, body) in engine.calls
+            if m == "PATCH" and url == victim_url and isinstance(body, dict)
+        ]
+        assert write_bodies, "expected a PATCH write against the victim object"
+        # The minimal body only carries the mutated candidate field(s); no
+        # schema-injected fields appear.
+        assert all(set(body.keys()) == {"nickname"} for body in write_bodies)
+
+    @pytest.mark.asyncio
+    async def test_typed_payload_never_issued_under_safe_mode(self, user1):
+        """Even with a Spec_Schema, Safe_Mode issues no state-changing write
+        (Reqs 52.4, 56.5)."""
+        endpoint = "https://api.example.com/users/1"
+        store = {
+            endpoint: {"id": 1, "nickname": "me"},
+            "https://api.example.com/users/2": {"id": 2, "nickname": "victim"},
+        }
+        engine = StatefulHTTPEngine(store)
+
+        schema = SpecSchema(operations=[
+            SpecOperation(
+                path=endpoint,
+                method="PATCH",
+                request_body_schema={
+                    "type": "object",
+                    "required": ["display_name"],
+                    "properties": {"display_name": {"type": "string"}},
+                },
+            )
+        ])
+
+        # Safe_Mode on -> destructive gate closed, no write issued.
+        module = BOLATestingModule(
+            _write_config(safe_mode=True), engine, [user1], spec_schema=schema
+        )
+
+        identifier = ObjectIdentifier(
+            value="1", type="sequential", endpoint=endpoint,
+            parameter_name="user_id", location="path",
+        )
+
+        findings = await module._test_write_bola(identifier, "2", [user1])
+
+        assert findings == []
+        assert all(m in SAFE_METHODS for m in engine.issued_methods)
+
+
+# ===========================================================================
+# Spec-driven path-parameter slot selection (Requirement 53)
+# ===========================================================================
+
+from utils.spec_import import SpecParameter as _SpecParameter
+
+
+def _bola_module_for_spec(spec_schema=None):
+    """Build a BOLA module with a mock HTTP client for pure-function tests."""
+    client = Mock(spec=HTTPRequestEngine)
+    client.request = AsyncMock()
+    client.set_auth_context = Mock()
+    user1 = AuthContext(name="user1", type=AuthType.BEARER,
+                        token="t", privilege_level=1)
+    return BOLATestingModule(
+        BOLAConfig(enabled=True, id_patterns=["sequential", "guid", "uuid"]),
+        client, [user1], spec_schema=spec_schema,
+    )
+
+
+class TestSpecDrivenIdentifierTargeting:
+    """`_spec_path_slots` / `_identifier_from_spec` select the declared path
+    slot and reuse the existing `_substitute_identifier` mechanics unchanged
+    (Requirements 53.1, 53.2, 53.3, 53.4)."""
+
+    def test_spec_path_slots_returns_only_path_params_in_path_order(self):
+        """Declared path parameters are returned in left-to-right path order,
+        query/header parameters are excluded (Req 53.1)."""
+        op = SpecOperation(
+            path="/tenants/{tenant_id}/projects/{project_id}",
+            method="GET",
+            parameters=[
+                # Declared out of path order and mixed with a query param.
+                _SpecParameter(name="project_id", location="path"),
+                _SpecParameter(name="verbose", location="query"),
+                _SpecParameter(name="tenant_id", location="path"),
+            ],
+        )
+        module = _bola_module_for_spec()
+
+        slots = module._spec_path_slots(op)
+
+        assert [s.name for s in slots] == ["tenant_id", "project_id"]
+
+    def test_spec_path_slots_empty_when_no_path_param(self):
+        """No declared path parameter -> empty list -> regex fallback (Req 53.2)."""
+        op = SpecOperation(
+            path="/accounts",
+            method="GET",
+            parameters=[_SpecParameter(name="verbose", location="query")],
+        )
+        module = _bola_module_for_spec()
+
+        assert module._spec_path_slots(op) == []
+
+    def test_identifier_from_spec_targets_declared_slot(self):
+        """The identifier carries the declared parameter name and the concrete
+        value at that `{param}` position (Req 53.1)."""
+        op = SpecOperation(
+            path="/users/{id}",
+            method="GET",
+            parameters=[_SpecParameter(name="id", location="path")],
+        )
+        module = _bola_module_for_spec()
+
+        endpoint = "https://api.example.com/users/42"
+        identifier = module._identifier_from_spec(op, endpoint)
+
+        assert identifier is not None
+        assert identifier.location == "path"
+        assert identifier.parameter_name == "id"
+        assert identifier.value == "42"
+        assert identifier.endpoint == endpoint
+
+    def test_identifier_from_spec_returns_none_without_path_param(self):
+        """No declared path parameter -> None so the caller uses regex inference
+        (Req 53.2)."""
+        op = SpecOperation(
+            path="/accounts",
+            method="GET",
+            parameters=[_SpecParameter(name="verbose", location="query")],
+        )
+        module = _bola_module_for_spec()
+
+        assert module._identifier_from_spec(op, "https://api.example.com/accounts") is None
+
+    def test_substitution_preserves_other_segments_and_query(self):
+        """Feeding the spec identifier to the EXISTING `_substitute_identifier`
+        replaces only the targeted slot; other segments and query preserved
+        (Req 53.3)."""
+        op = SpecOperation(
+            path="/users/{id}",
+            method="GET",
+            parameters=[_SpecParameter(name="id", location="path")],
+        )
+        module = _bola_module_for_spec()
+
+        endpoint = "https://api.example.com/v1/users/42?expand=true"
+        identifier = module._identifier_from_spec(op, endpoint)
+        assert identifier is not None
+        assert identifier.value == "42"
+
+        substituted = module._substitute_identifier(identifier, "99")
+        assert substituted == "https://api.example.com/v1/users/99?expand=true"
+
+    def test_multi_slot_targets_one_slot_preserving_others(self):
+        """A multi-slot operation substitutes only the targeted slot and
+        preserves the other declared slot's value (Req 53.4)."""
+        op = SpecOperation(
+            path="/tenants/{tenant_id}/projects/{project_id}",
+            method="GET",
+            parameters=[
+                _SpecParameter(name="tenant_id", location="path"),
+                _SpecParameter(name="project_id", location="path"),
+            ],
+        )
+        module = _bola_module_for_spec()
+        endpoint = "https://api.example.com/tenants/42/projects/7"
+
+        # Target the parent slot (slot_index=0): only tenant_id changes.
+        parent = module._identifier_from_spec(op, endpoint, slot_index=0)
+        assert parent is not None and parent.value == "42"
+        assert parent.parameter_name == "tenant_id"
+        assert module._substitute_identifier(parent, "100") == \
+            "https://api.example.com/tenants/100/projects/7"
+
+        # Target the child slot (slot_index=1): only project_id changes.
+        child = module._identifier_from_spec(op, endpoint, slot_index=1)
+        assert child is not None and child.value == "7"
+        assert child.parameter_name == "project_id"
+        assert module._substitute_identifier(child, "9") == \
+            "https://api.example.com/tenants/42/projects/9"
+
+    def test_identifier_from_spec_out_of_range_slot_index(self):
+        """An out-of-range slot_index returns None (regex fallback, Req 53.2)."""
+        op = SpecOperation(
+            path="/users/{id}",
+            method="GET",
+            parameters=[_SpecParameter(name="id", location="path")],
+        )
+        module = _bola_module_for_spec()
+        endpoint = "https://api.example.com/users/42"
+
+        assert module._identifier_from_spec(op, endpoint, slot_index=5) is None

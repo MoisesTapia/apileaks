@@ -17,9 +17,20 @@ from typing import Optional
 
 from core import APILeakCore, ConfigurationManager, setup_logging
 from core import __version__ as APILEAK_VERSION
-from core.config import AuthContext, AuthType
+from core.config import AuthContext, AuthType, load_actor_profiles, load_unauthorized_assertions
 from core.logging import get_logger
-from utils.jwt_utils import decode_jwt, encode_jwt, print_jwt_info, verify_hmac_secret
+from utils.jwt_utils import (
+    decode_jwt,
+    encode_jwt,
+    print_jwt_info,
+    verify_hmac_secret,
+    verify_token,
+    generate_rsa_keypair,
+    generate_ec_keypair,
+    reconstruct_public_key_from_jwks,
+    read_vector_file,
+    parse_raw_request,
+)
 from utils.jwt_attack_engine import JWTAttackEngine
 from utils.jwt_attack_models import AttackType
 from utils.discovery_session import (
@@ -36,6 +47,13 @@ from utils.discovery_checkpoint import (
     DiscoveryCheckpointError,
 )
 from modules.fuzzing.orchestrator import normalize_extensions
+from modules.fuzzing.markers import (
+    FuzzMode,
+    associate_wordlists,
+    find_markers,
+    parse_fuzz_mode,
+    validate_fuzz_keyword,
+)
 from utils.http_client import parse_resolve
 from utils.discovery_export import DiscoveryExportError, write_discovery_export
 from utils.discovery_output import (
@@ -62,8 +80,10 @@ from utils.response_selector import (
 )
 from utils.spec_import import (
     SpecImportError,
+    SpecSchema,
     import_openapi,
     import_postman,
+    load_schema,
     merge_candidates,
     normalize_candidate_path,
 )
@@ -516,6 +536,41 @@ def _load_spec_seeds(openapi_sources, postman_sources):
     return seeds
 
 
+async def _load_spec_schema(openapi_sources, postman_sources, http_engine=None):
+    """Merge ``--openapi`` / ``--postman`` sources into one :class:`SpecSchema`.
+
+    Every supplied Spec_Source (local path OR Spec_Source_URL) is routed through
+    :func:`spec_import.load_schema`, which fetches URLs through the shared
+    ``http_engine`` and reads local files from disk, dispatching both through the
+    same parsing path (Requirements 49.1, 49.2, 51). The resulting per-source
+    ``operations`` / ``security_schemes`` / ``seeds`` are concatenated into a
+    single merged :class:`SpecSchema`.
+
+    Returns ``None`` when no sources are supplied so the caller preserves the
+    existing no-spec full-scan behavior (Requirement 49.3). An unreadable or
+    unparseable source raises :class:`SpecImportError` naming the offending
+    Spec_Source so the caller can abort before issuing any scan request
+    (Requirement 49.4).
+    """
+    if not openapi_sources and not postman_sources:
+        return None
+
+    operations = []
+    security_schemes = []
+    seeds = []
+    for source in list(openapi_sources) + list(postman_sources):
+        schema = await load_schema(source, http_engine=http_engine)
+        operations.extend(schema.operations)
+        security_schemes.extend(schema.security_schemes)
+        seeds.extend(schema.seeds)
+
+    return SpecSchema(
+        operations=operations,
+        security_schemes=security_schemes,
+        seeds=seeds,
+    )
+
+
 def _resolve_dir_candidates(wordlists, openapi_sources, postman_sources):
     """Resolve discovery candidates from wordlists and Spec_Import sources.
 
@@ -736,7 +791,10 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
                 'methods': ["GET", "POST", "PUT", "DELETE", "PATCH"],
                 'follow_redirects': True,
                 'extensions': [],
-                'enumerate_methods': False
+                'enumerate_methods': False,
+                'fuzz_keyword': "FUZZ",
+                'fuzz_mode': "clusterbomb",
+                'marker_wordlists': None
             },
             'parameters': {
                 'enabled': scan_type in ["full", "par"],
@@ -919,7 +977,10 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
                 'wordlist': default_wordlists['endpoints'],
                 'methods': ["GET", "POST", "PUT", "DELETE", "PATCH"],
                 'follow_redirects': True,
-                'enumerate_methods': False
+                'enumerate_methods': False,
+                'fuzz_keyword': "FUZZ",
+                'fuzz_mode': "clusterbomb",
+                'marker_wordlists': None
             },
             'parameters': {
                 'enabled': scan_type in ["full", "par"],
@@ -1050,6 +1111,18 @@ def cli(ctx, no_banner):
 @click.option('--rate-limit', type=int, help='Requests per second limit')
 @click.option('--methods', default='GET,POST,PUT,DELETE,PATCH', 
               help='HTTP methods to test (comma-separated)')
+@click.option('--fuzz-keyword', 'fuzz_keyword', default='FUZZ', show_default=True,
+              metavar='KEYWORD',
+              help='Literal token in the target URL marking positions to fuzz. '
+                   'Every occurrence becomes a marker; choose a distinct value to '
+                   'avoid colliding with legitimate URL text. In marker mode the '
+                   'repeatable --wordlist values are the per-marker wordlists in '
+                   'marker order.')
+@click.option('--fuzz-mode', 'fuzz_mode',
+              type=click.Choice(['clusterbomb', 'pitchfork'], case_sensitive=False),
+              default='clusterbomb', show_default=True,
+              help='How multiple markers combine their wordlists: clusterbomb '
+                   '(cartesian product) or pitchfork (index-wise zip).')
 @click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
               help='Max recursion depth for discovery (0 = no recursion). '
                    'Overrides APILEAK_MAX_DEPTH and the config default (3).')
@@ -1171,7 +1244,7 @@ def cli(ctx, no_banner):
                    "list of endpoint types like 'admin,api_version'. Only narrows the default "
                    'recursion; never relaxes it.')
 @click.pass_context
-def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, checkpoint, resume, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
+def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, fuzz_keyword, fuzz_mode, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, checkpoint, resume, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
     """Directory/endpoint fuzzing - discover hidden endpoints and directories
     
     \b
@@ -1261,6 +1334,82 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
             click.echo(f"Error: {exc}", err=True)
             sys.exit(1)
 
+    # Marker-mode validation (Requirement 46), strictly exit-before-discovery
+    # (Requirement 46.7): the keyword, marker presence (for marker-only mode),
+    # fuzz-mode, wordlist/marker counts, empty pitchfork lists, and wordlist
+    # readability are all validated here BEFORE any Discovery_Request. Each
+    # failure prints a descriptive, value-naming error and exits non-zero with
+    # zero requests issued, mirroring the other exit-before-discovery blocks.
+    #
+    # A "marker-only option" is one that only makes sense in marker mode:
+    # --fuzz-keyword or --fuzz-mode supplied explicitly on the command line. When
+    # such an option is set but the target contains no Fuzz_Marker, that is a
+    # configuration error (Requirements 39.6, 46.2). When neither is supplied and
+    # the target has no keyword, find_markers returns [] and discovery uses the
+    # unchanged legacy base-path append path (Requirement 39.3).
+    marker_only_requested = (
+        ctx.get_parameter_source('fuzz_keyword')
+        == click.core.ParameterSource.COMMANDLINE
+        or ctx.get_parameter_source('fuzz_mode')
+        == click.core.ParameterSource.COMMANDLINE
+    )
+    marker_wordlists = None
+    try:
+        # 1. Keyword validity (Requirements 46.1, 39.5).
+        resolved_fuzz_keyword = validate_fuzz_keyword(fuzz_keyword)
+
+        # 2. Marker presence for marker-only mode (Requirements 46.2, 39.6).
+        markers = find_markers(target, resolved_fuzz_keyword)
+        if not markers and marker_only_requested:
+            raise ValueError(
+                "no Fuzz_Marker found in target URL "
+                f"{target!r} for keyword {resolved_fuzz_keyword!r}"
+            )
+
+        # 3. Fuzz-mode selection (Requirement 46.5). --fuzz-mode is a click.Choice
+        #    so an unrecognized value is rejected at parse time; parse_fuzz_mode
+        #    provides the same guard and yields the resolved FuzzMode.
+        resolved_fuzz_mode = parse_fuzz_mode(fuzz_mode)
+
+        if markers:
+            # 4. Associate the repeatable --wordlist sources with markers in
+            #    left-to-right order (Requirement 44.1); too many wordlists vs.
+            #    markers raises a mismatch error naming both counts
+            #    (Requirements 44.4, 46.3). Each source is wrapped so the helper's
+            #    count-check and fallback (reuse the last supplied source for any
+            #    remaining marker) operate on source references rather than
+            #    exploding the path string into characters.
+            wordlist_sources = [[src] for src in wordlist]
+            associated_sources = associate_wordlists(markers, wordlist_sources)
+
+            # 5. Load each associated wordlist via the existing loader; an
+            #    unreadable source is surfaced as a descriptive error
+            #    (Requirement 44.6).
+            marker_wordlists = []
+            for assoc in associated_sources:
+                source = assoc[0]
+                try:
+                    marker_wordlists.append(_read_wordlist_entries(source))
+                except OSError as exc:
+                    raise ValueError(
+                        f"unreadable wordlist source '{source}': {exc}"
+                    ) from exc
+
+            # In Pitchfork_Mode every required Marker_Wordlist must be non-empty
+            # (Requirements 44.5, 46.4).
+            if resolved_fuzz_mode == FuzzMode.PITCHFORK:
+                for marker, entries in zip(markers, marker_wordlists):
+                    if not entries:
+                        raise ValueError(
+                            "Pitchfork_Mode requires a non-empty wordlist for "
+                            f"every marker; the wordlist for marker at order "
+                            f"{marker.order} is empty"
+                        )
+    except ValueError as exc:
+        logger.error("Invalid marker-mode configuration", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
     # Resolve the discovery candidate set from any Spec_Import sources and the
     # (repeatable, optionally stdin) wordlists before any discovery runs. An
     # unparseable/unrecognized spec is surfaced as a CLI error performing no
@@ -1324,6 +1473,9 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
             output=output,
             rate_limit=rate_limit,
             methods=methods,
+            fuzz_keyword=resolved_fuzz_keyword,
+            fuzz_mode=resolved_fuzz_mode.value,
+            marker_wordlists=marker_wordlists,
             user_agent_random=user_agent_random,
             user_agent_custom=user_agent_custom,
             user_agent_file=user_agent_file,
@@ -1437,6 +1589,15 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
         # and accepts either a dict or a HitConfirmationConfig.
         if confirm_hits is not None:
             config_dict['fuzzing']['hit_confirmation'] = {'enabled': True, 'count': confirm_hits}
+        # Thread the resolved marker-mode selection into the fuzzing config
+        # (Requirements 39.1, 43.1). When the target has no keyword, find_markers
+        # returned [] above and marker_wordlists is None, so the EndpointFuzzer
+        # precomputes no markers and discovery uses the unchanged legacy path
+        # (Requirement 39.3). The keyword/mode are still recorded so the fuzzer
+        # can precompute markers once from the raw target.
+        config_dict['fuzzing']['endpoints']['fuzz_keyword'] = resolved_fuzz_keyword
+        config_dict['fuzzing']['endpoints']['fuzz_mode'] = resolved_fuzz_mode.value
+        config_dict['fuzzing']['endpoints']['marker_wordlists'] = marker_wordlists
         # Thread the storage-time Path_Scope and Storage_Status_Selection onto
         # the fuzzing config so the EndpointFuzzer applies them at storage time
         # (Requirements 33.1-33.7). _build_fuzzing_config reads these keys and
@@ -1754,6 +1915,9 @@ def _run_dir_triage(
     output,
     rate_limit,
     methods,
+    fuzz_keyword="FUZZ",
+    fuzz_mode="clusterbomb",
+    marker_wordlists=None,
     user_agent_random,
     user_agent_custom,
     user_agent_file,
@@ -1886,6 +2050,12 @@ def _run_dir_triage(
                 config_dict['fuzzing']['endpoints']['methods'] = [
                     m.strip() for m in methods.split(',')
                 ]
+            # Thread the resolved marker-mode selection into the triage discovery
+            # config exactly like the standard dir path (Requirements 39.1, 43.1,
+            # 39.3). marker_wordlists is None when the target has no keyword.
+            config_dict['fuzzing']['endpoints']['fuzz_keyword'] = fuzz_keyword
+            config_dict['fuzzing']['endpoints']['fuzz_mode'] = fuzz_mode
+            config_dict['fuzzing']['endpoints']['marker_wordlists'] = marker_wordlists
             if jwt:
                 config_dict['authentication']['contexts'][0]['token'] = jwt
                 config_dict['authentication']['contexts'][0]['type'] = 'bearer'
@@ -2718,6 +2888,46 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--signing-secret', 'signing_secret', metavar='SECRET',
               help='Known HMAC signing secret used to construct a validly-signed but '
                    'expired token for the expired-token-acceptance test.')
+@click.option('--allow-aggressive-auth', 'allow_aggressive_auth', is_flag=True, default=False,
+              help='Aggressive_Opt_In: authorize the Auth_Module to issue high-volume or '
+                   'concurrency probes (anti-automation / rate-limit burst and the '
+                   'token-revocation race). Off by default; when omitted these probes are '
+                   'skipped regardless of other flags.')
+@click.option('--auth-rate-limit-attempts', 'auth_rate_limit_attempts', type=int, default=None,
+              help='Number of bounded login attempts used by the anti-automation / '
+                   'rate-limiting probe when aggressive auth testing is enabled '
+                   '(default: 10).')
+@click.option('--auth-revocation-race-requests', 'auth_revocation_race_requests', type=int, default=None,
+              help='Bounded number of concurrent requests used by the token-revocation '
+                   'race probe when aggressive auth testing is enabled (default: 8).')
+@click.option('--auth-benign-username', 'auth_benign_username', metavar='USER', default=None,
+              help='Benign account username used by the anti-automation probe (varied '
+                   'passwords against one benign account so real accounts are not locked '
+                   'out). When omitted, input-driven probes requiring it are skipped.')
+@click.option('--mfa-provisional-token', 'mfa_provisional_token', metavar='TOKEN', default=None,
+              help='Provisional_Token issued before the MFA step, submitted to a '
+                   'protected endpoint by the MFA-bypass probe. Requires '
+                   '--mfa-protected-endpoint; when omitted the MFA-bypass test is skipped.')
+@click.option('--mfa-protected-endpoint', 'mfa_protected_endpoint', metavar='URL', default=None,
+              help='Protected endpoint URL the MFA-bypass probe targets with the '
+                   'provisional token. Requires --mfa-provisional-token; when omitted the '
+                   'MFA-bypass test is skipped.')
+@click.option('--oauth-authorize-url', 'oauth_authorize_url', metavar='URL', default=None,
+              help='OAuth authorization endpoint URL exercised by the OAuth-flow abuse '
+                   'probes. When no OAuth inputs are supplied, OAuth-flow testing is skipped.')
+@click.option('--oauth-attacker-redirect', 'oauth_attacker_redirect', metavar='URL', default=None,
+              help='Attacker-controlled or unregistered Redirect_URI submitted by the '
+                   'OAuth redirect-URI manipulation probe.')
+@click.option('--oauth-foreign-aud-token', 'oauth_foreign_aud_token', metavar='TOKEN', default=None,
+              help='Token issued for a different application, presented by the OAuth '
+                   'audience-confusion probe to detect missing aud-claim validation.')
+@click.option('--reset-token-sample', 'reset_token_sample', multiple=True, metavar='TOKEN',
+              help='Observed Password_Reset_Token to analyze for predictability. '
+                   'Repeatable: pass once per sample. When none are supplied, reset-token '
+                   'analysis is skipped.')
+@click.option('--reset-token-known-input', 'reset_token_known_input', multiple=True, metavar='VALUE',
+              help='Known input (e.g. an account email) used to classify a reset token as '
+                   'a hash-of-known-input. Repeatable: pass once per value.')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection (FastAPI, Express, Django, Flask, etc.)')
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing (/v1, /v2, /api/v1, etc.)')
@@ -2763,8 +2973,26 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
 @click.option('--bola-dry-run', 'bola_dry_run', is_flag=True, default=False,
               help='Plan destructive BOLA probes (method, URL, substituted id, body) '
                    'without issuing them (off by default).')
+@click.option('--openapi', 'openapi', multiple=True, type=click.Path(),
+              help='OpenAPI/Swagger document (JSON or YAML) consumed by the OWASP modules '
+                   'for spec-driven security testing. Repeatable; merged across all values.')
+@click.option('--postman', 'postman', multiple=True, type=click.Path(),
+              help='Postman collection (JSON) consumed by the OWASP modules for spec-driven '
+                   'security testing. Repeatable; merged across all values.')
+@click.option('--actor-profile', 'actor_profile', type=click.Path(),
+              help='Actor_Profile source (JSON or YAML) supplying per-identity typed '
+                   'query/body values keyed by context name and endpoint. Each profile is '
+                   'attached to the matching --auth-context so multi-user tests use realistic '
+                   'per-actor inputs. A parse failure aborts before any request is issued.')
+@click.option('--unauthorized-assertions', 'unauthorized_assertions', type=click.Path(),
+              help='Unauthorized_Endpoint_Assertion source (JSON or YAML) mapping each '
+                   'context name to one or more endpoint pattern regular expressions that '
+                   'SHOULD be forbidden for that identity. The OWASP modules report a '
+                   'broken-access-control finding when a context is granted access to a '
+                   'matching endpoint. A parse/compile failure aborts before any request '
+                   'is issued.')
 @click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, auth_context, public_key, jwks_url, signing_secret, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type, allow_write_bola, bola_destructive_methods, bola_composite, bola_id_leakage, bola_verb_tampering, bola_parameter_pollution, bola_dry_run):
+def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, auth_context, public_key, jwks_url, signing_secret, allow_aggressive_auth, auth_rate_limit_attempts, auth_revocation_race_requests, auth_benign_username, mfa_provisional_token, mfa_protected_endpoint, oauth_authorize_url, oauth_attacker_redirect, oauth_foreign_aud_token, reset_token_sample, reset_token_known_input, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type, allow_write_bola, bola_destructive_methods, bola_composite, bola_id_leakage, bola_verb_tampering, bola_parameter_pollution, bola_dry_run, openapi, postman, actor_profile, unauthorized_assertions):
     """Full comprehensive scan - includes fuzzing and OWASP testing
     
     \b
@@ -2792,6 +3020,34 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
     # (Requirements 20.4, 26.2).
     parsed_auth_contexts = parse_auth_context_option(auth_context)
 
+    # Parse the --actor-profile source up front (like --auth-context) so a
+    # missing/unreadable/unparseable Actor_Profile source is rejected with a
+    # descriptive click.BadParameter naming the source and the scan aborts
+    # BEFORE any discovery or request is issued (Requirement 54.5). When no
+    # source is supplied the mapping is empty and the existing behavior is
+    # preserved (Requirement 54.3). The parsed profiles are attached to the
+    # matching AuthContext after the config is loaded below.
+    actor_profiles = {}
+    if actor_profile:
+        try:
+            actor_profiles = load_actor_profiles(actor_profile)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc))
+
+    # Parse the --unauthorized-assertions source up front (like --actor-profile)
+    # so a missing/unreadable/unparseable source, or a pattern that fails to
+    # compile, is rejected with a descriptive click.BadParameter naming the
+    # source and the scan aborts BEFORE any discovery or request is issued
+    # (Requirement 55.1, consistent with Requirement 54.5). When no source is
+    # supplied the mapping is empty and the existing behavior is preserved
+    # (Requirement 55.5).
+    unauthorized_endpoint_assertions = {}
+    if unauthorized_assertions:
+        try:
+            unauthorized_endpoint_assertions = load_unauthorized_assertions(unauthorized_assertions)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc))
+
     # Parse the Recursion_Scope up front so an unrecognized status class or
     # endpoint type is surfaced as a descriptive CLI error naming the offending
     # value and NO Endpoint_Discovery is performed (Requirements 34.1, 34.2,
@@ -2801,6 +3057,20 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
         recursion_scope = parse_recursion_scope(recursion_status, recursion_type)
     except RecursionScopeError as exc:
         logger.error("Invalid discovery scope value", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    # Parse the repeatable --openapi / --postman Spec_Sources into one merged
+    # Spec_Schema up front so an unreadable or unparseable source is surfaced as
+    # a descriptive CLI error naming the offending Spec_Source and the scan is
+    # aborted BEFORE any request is issued (Requirements 49.1, 49.4). When no
+    # Spec_Source is supplied the schema is ``None`` and the existing no-spec
+    # full-scan behavior is preserved (Requirement 49.3). The merged schema is
+    # attached to owasp_testing.spec_schema after the config is loaded below.
+    try:
+        merged_spec_schema = asyncio.run(_load_spec_schema(openapi, postman))
+    except SpecImportError as exc:
+        logger.error("Spec import failed", error=str(exc))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
@@ -2940,6 +3210,62 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
                 context_count=len(parsed_auth_contexts),
             )
 
+        # Attach each parsed Actor_Profile to the AuthContext whose name matches
+        # its context_name so the OWASP modules can use the per-actor typed
+        # query/body inputs under that identity (Requirements 54.1, 54.2). Every
+        # context (including any loaded from a config file) is considered so the
+        # profile applies regardless of how the context was supplied. Contexts
+        # without a matching profile keep ``actor_profile = None`` and retain
+        # their existing behavior (Requirement 54.3). Applied post-load so it
+        # works for both file and in-memory configs.
+        if actor_profiles and hasattr(apileak_config, 'authentication'):
+            matched = 0
+            for context in apileak_config.authentication.contexts:
+                profile = actor_profiles.get(context.name)
+                if profile is not None:
+                    context.actor_profile = profile
+                    matched += 1
+            logger.info(
+                "Attached actor profiles to auth contexts",
+                profile_count=len(actor_profiles),
+                matched_contexts=matched,
+            )
+
+        # Attach each context's compiled Unauthorized_Endpoint_Assertion patterns
+        # to the AuthContext whose name matches so the OWASP modules can evaluate
+        # the declared broken-access-control expectations under that identity
+        # (Requirements 55.1, 55.2). Mirrors the actor-profile attachment above.
+        # Contexts without a matching assertion keep ``unauthorized_patterns =
+        # None`` and retain their existing behavior (Requirement 55.5). Applied
+        # post-load so it works for both file and in-memory configs.
+        if unauthorized_endpoint_assertions and hasattr(apileak_config, 'authentication'):
+            matched = 0
+            for context in apileak_config.authentication.contexts:
+                patterns = unauthorized_endpoint_assertions.get(context.name)
+                if patterns is not None:
+                    context.unauthorized_patterns = patterns
+                    matched += 1
+            logger.info(
+                "Attached unauthorized-endpoint assertions to auth contexts",
+                assertion_count=len(unauthorized_endpoint_assertions),
+                matched_contexts=matched,
+            )
+
+        # Attach the merged Spec_Schema (parsed up front) to the OWASP testing
+        # config so the modules can test the declared Spec_Operations in addition
+        # to discovered endpoints (Requirements 49.2, 49.5). Left as ``None`` when
+        # no Spec_Source was supplied, preserving the existing full-scan behavior
+        # (Requirement 49.3). Applied post-load so it works for both file and
+        # in-memory configs.
+        if merged_spec_schema is not None and hasattr(apileak_config, 'owasp_testing'):
+            apileak_config.owasp_testing.spec_schema = merged_spec_schema
+            logger.info(
+                "Attached merged spec schema to OWASP modules",
+                operation_count=len(merged_spec_schema.operations),
+                security_scheme_count=len(merged_spec_schema.security_schemes),
+                seed_count=len(merged_spec_schema.seeds),
+            )
+
         # Thread the algorithm-confusion / expired-token key inputs into the
         # AuthTestingConfig so the Auth_Module can source real key material
         # instead of literal placeholders (Requirements 6.1, 6.2, 8.1). The CLI
@@ -2953,6 +3279,56 @@ def full(ctx, config, target, output, log_level, log_file, json_logs, modules, r
                 auth_testing_cfg.jwks_url = jwks_url
             if signing_secret:
                 auth_testing_cfg.signing_secret = signing_secret
+
+            # Thread the advanced auth/JWT hardening inputs (Requirements 37, 39,
+            # 40, 41, 42, 46) into the AuthTestingConfig. Each field is only
+            # overridden when its CLI flag is supplied so the SAFE defaults
+            # (no aggressive/state-changing/input-driven probes) are preserved
+            # when none are given (Requirements 46.1, 26.1, 26.3). The
+            # --allow-aggressive-auth Aggressive_Opt_In only turns the gate ON
+            # when present; its absence leaves any file-config value untouched.
+            if allow_aggressive_auth:
+                auth_testing_cfg.allow_aggressive = True
+            if auth_rate_limit_attempts is not None:
+                auth_testing_cfg.rate_limit_attempts = auth_rate_limit_attempts
+            if auth_revocation_race_requests is not None:
+                auth_testing_cfg.revocation_race_requests = auth_revocation_race_requests
+            if auth_benign_username:
+                auth_testing_cfg.benign_username = auth_benign_username
+
+            # MFA-flow inputs (Req 39): assemble the operator-supplied
+            # provisional token + protected endpoint into the mfa_flow_inputs
+            # dict. Only set when at least one input is supplied; None otherwise
+            # so the MFA-bypass test is skipped (Req 39.5).
+            mfa_flow_inputs = {}
+            if mfa_provisional_token:
+                mfa_flow_inputs['provisional_token'] = mfa_provisional_token
+            if mfa_protected_endpoint:
+                mfa_flow_inputs['protected_endpoint'] = mfa_protected_endpoint
+            if mfa_flow_inputs:
+                auth_testing_cfg.mfa_flow_inputs = mfa_flow_inputs
+
+            # OAuth-flow inputs (Req 41): assemble the authorization URL,
+            # attacker-controlled Redirect_URI, and foreign-audience token into
+            # the oauth_flow_inputs dict. Only set when at least one input is
+            # supplied; None otherwise so OAuth-flow testing is skipped (Req 41.6).
+            oauth_flow_inputs = {}
+            if oauth_authorize_url:
+                oauth_flow_inputs['authorize_url'] = oauth_authorize_url
+            if oauth_attacker_redirect:
+                oauth_flow_inputs['attacker_redirect'] = oauth_attacker_redirect
+            if oauth_foreign_aud_token:
+                oauth_flow_inputs['foreign_aud_token'] = oauth_foreign_aud_token
+            if oauth_flow_inputs:
+                auth_testing_cfg.oauth_flow_inputs = oauth_flow_inputs
+
+            # Reset-token samples / known inputs (Req 40): repeatable options
+            # collected into lists. Only set when supplied so reset-token
+            # analysis is skipped by default (Reqs 40.1, 26.3).
+            if reset_token_sample:
+                auth_testing_cfg.reset_token_samples = list(reset_token_sample)
+            if reset_token_known_input:
+                auth_testing_cfg.reset_token_known_inputs = list(reset_token_known_input)
 
         # Apply CLI overrides
         cli_overrides = {}
@@ -3026,8 +3402,15 @@ def _build_jwt_http_engine(timeout=30, verify_ssl=True):
 
 
 def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
-                     signing_secret=None):
-    """Construct a :class:`JWTAttackEngine` for a CLI subcommand."""
+                     signing_secret=None, fuzz_target=None, fuzz_values=None,
+                     canary_value=None):
+    """Construct a :class:`JWTAttackEngine` for a CLI subcommand.
+
+    ``fuzz_target``/``fuzz_values`` drive the CLAIM_FUZZING vector (Req 63.1) and
+    ``canary_value`` corroborates — but never replaces — analyzer-based success
+    (Reqs 67.3-67.5). All three default to ``None`` so the single-token path is
+    preserved unchanged when no new option is supplied (Req 67.5).
+    """
     return JWTAttackEngine(
         target_url=url or "",
         original_token=token,
@@ -3035,6 +3418,9 @@ def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
         signing_secret=signing_secret,
         custom_headers=custom_headers or {},
         post_data=data,
+        fuzz_target=fuzz_target,
+        fuzz_values=fuzz_values,
+        canary_value=canary_value,
     )
 
 
@@ -3148,6 +3534,7 @@ def jwt(ctx):
     Available Commands:
       decode              Decode and analyze JWT tokens
       encode              Create JWT tokens with custom payloads
+      verify              Verify a token signature against key material (no network)
       test-alg-none       Test algorithm confusion (alg:none) attacks
       test-null-signature Test null signature bypass attacks
       brute-secret        Brute-force weak HMAC secrets
@@ -3235,6 +3622,177 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         
     except ValueError as e:
         click.echo(f"❌ Error encoding JWT: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('verify')
+@click.argument('token')
+@click.option('--secret', help='Shared secret for HMAC (HS*) verification')
+@click.option('--key-file', type=click.Path(), help='Path to a PEM/DER public key or certificate file')
+@click.option('--pem', help='Inline PEM public key or certificate material')
+@click.option('--jwks', 'jwks_file', type=click.Path(),
+              help='Path to a JWKS file (single JWK entry or {"keys": [...]})')
+@click.pass_context
+def jwt_verify_cmd(ctx, token, secret, key_file, pem, jwks_file):
+    """Verify a JWT signature against supplied key material (network-free)
+
+    Dispatches on the token header algorithm: HS* uses the shared --secret,
+    while RS*/PS*/ES* use the public key from --key-file, --pem, or --jwks.
+    No HTTP request is issued (Requirement 65.3).
+
+    \b
+    Examples:
+      python apileaks.py jwt verify TOKEN --secret mysecret
+      python apileaks.py jwt verify TOKEN --key-file public.pem
+      python apileaks.py jwt verify TOKEN --pem "$(cat public.pem)"
+      python apileaks.py jwt verify TOKEN --jwks jwks.json
+    """
+    try:
+        # A JWKS source is read locally (no network, Req 65.3) and converted
+        # via reconstruct_public_key_from_jwks inside verify_token. A read/parse
+        # failure names the offending key source (Req 65.4).
+        jwks_dict = None
+        if jwks_file is not None:
+            try:
+                with open(jwks_file, 'r') as fh:
+                    jwks_dict = json.loads(fh.read())
+            except FileNotFoundError:
+                raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found")
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}")
+            except OSError as exc:
+                raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}")
+
+        result = verify_token(
+            token,
+            secret=secret,
+            key_file=key_file,
+            pem=pem,
+            jwks=jwks_dict,
+        )
+
+        status = "✅ VALID" if result.valid else "❌ INVALID"
+        click.echo("\n" + "=" * 60)
+        click.echo("JWT Signature Verification")
+        click.echo("=" * 60)
+        click.echo(f"\n🔎 Algorithm: {result.algorithm}")
+        click.echo(f"🔑 Key Source: {result.key_source}")
+        click.echo(f"📋 Signature: {status}")
+        click.echo("\n" + "=" * 60)
+
+        # A failed verification is a reported result, not an error condition.
+        sys.exit(0 if result.valid else 1)
+
+    except ValueError as e:
+        click.echo(f"❌ Error verifying JWT: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('genkey')
+@click.option('--type', 'key_type', type=click.Choice(['rsa', 'ec']), default='rsa',
+              show_default=True, help='Keypair type to generate')
+@click.option('--bits', type=int, default=2048, show_default=True,
+              help='RSA modulus size in bits (used when --type rsa)')
+@click.option('--curve', type=click.Choice(['ES256', 'ES384', 'ES512']), default='ES256',
+              show_default=True, help='EC curve/algorithm (used when --type ec)')
+@click.pass_context
+def jwt_genkey_cmd(ctx, key_type, bits, curve):
+    """Generate a test RSA or EC keypair and emit the PEM material (local-only)
+
+    No HTTP request is issued (Requirement 66.4). Emits both the generated
+    private and public key material (Requirement 66.1).
+
+    \b
+    Examples:
+      python apileaks.py jwt genkey --type rsa
+      python apileaks.py jwt genkey --type rsa --bits 4096
+      python apileaks.py jwt genkey --type ec --curve ES256
+    """
+    try:
+        if key_type == 'rsa':
+            private_pem, public_pem = generate_rsa_keypair(bits=bits)
+            label = f"RSA {bits}-bit"
+        else:
+            private_pem, public_pem = generate_ec_keypair(curve=curve)
+            label = f"EC {curve}"
+
+        click.echo("\n" + "=" * 60)
+        click.echo(f"Generated {label} keypair")
+        click.echo("=" * 60)
+        click.echo("\n🔑 Private Key (PEM):\n")
+        click.echo(private_pem.strip())
+        click.echo("\n📢 Public Key (PEM):\n")
+        click.echo(public_pem.strip())
+        click.echo("\n" + "=" * 60)
+        sys.exit(0)
+
+    except ValueError as e:
+        click.echo(f"❌ Error generating keypair: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('jwks-to-key')
+@click.option('--jwks', 'jwks_file', type=click.Path(), required=True,
+              help='Path to a JWKS file (single JWK entry or {"keys": [...]})')
+@click.pass_context
+def jwt_jwks_to_key_cmd(ctx, jwks_file):
+    """Reconstruct a public key PEM from a local JWKS entry (network-free)
+
+    Converts RSA n/e or EC crv/x/y parameters into a usable public key
+    (Requirement 66.2) reusing the same JWK-to-key conversion as the attack
+    engine (Requirement 66.3). No HTTP request is issued (Requirement 66.4).
+    Unparseable or parameter-missing input is rejected with a descriptive
+    error (Requirement 66.5).
+
+    \b
+    Examples:
+      python apileaks.py jwt jwks-to-key --jwks jwks.json
+    """
+    try:
+        # The JWKS file is read locally (no network, Req 66.4). A read/parse
+        # failure names the offending source (Req 66.5).
+        try:
+            with open(jwks_file, 'r') as fh:
+                jwks_data = json.loads(fh.read())
+        except FileNotFoundError:
+            raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}")
+        except OSError as exc:
+            raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}")
+
+        # Accept either a full JWKS ({"keys": [...]}) or a single JWK entry.
+        if isinstance(jwks_data, dict) and 'keys' in jwks_data:
+            keys = jwks_data.get('keys')
+            if not isinstance(keys, list) or not keys:
+                raise ValueError(
+                    f"JWKS file '{jwks_file}' contains no key entries to reconstruct"
+                )
+            jwk = keys[0]
+        else:
+            jwk = jwks_data
+
+        public_pem = reconstruct_public_key_from_jwks(jwk)
+
+        click.echo("\n" + "=" * 60)
+        click.echo("Reconstructed Public Key from JWKS")
+        click.echo("=" * 60)
+        click.echo("\n📢 Public Key (PEM):\n")
+        click.echo(public_pem.strip())
+        click.echo("\n" + "=" * 60)
+        sys.exit(0)
+
+    except ValueError as e:
+        click.echo(f"❌ Error reconstructing public key: {e}", err=True)
         sys.exit(1)
     except Exception as e:
         click.echo(f"❌ Unexpected error: {e}", err=True)
@@ -3814,15 +4372,24 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
 
 
 @jwt.command('attack-test')
-@click.argument('token')
-@click.option('--url', '-u', required=True, help='Target URL to test JWT attacks against')
+@click.argument('token', required=False)
+@click.option('--url', '-u', help='Target URL to test JWT attacks against')
 @click.option('--header', '-H', multiple=True, help='Custom headers (format: "Name: Value"). Can be used multiple times.')
 @click.option('--data', '-d', help='POST data for request body (JSON format recommended)')
 @click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
 @click.option('--no-ssl-verify', is_flag=True, help='Disable SSL certificate verification for testing')
 @click.option('--max-retries', default=3, help='Maximum retry attempts for failed requests (default: 3)')
+@click.option('--fuzz-target', 'fuzz_target',
+              help='Claim or header name to fuzz with values from --vector-file (Req 63.1)')
+@click.option('--vector-file', 'vector_file', type=click.Path(),
+              help='File of fuzz values (one per line) substituted into --fuzz-target (Req 63.6)')
+@click.option('--raw-request', 'raw_request', type=click.Path(),
+              help='Raw HTTP request file supplying the request context and JWT (Req 67.1)')
+@click.option('--canary',
+              help='Expected-success string that corroborates (never replaces) analyzer success (Req 67.3)')
 @click.pass_context
-def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_retries):
+def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
+                    max_retries, fuzz_target, vector_file, raw_request, canary):
     """Comprehensive JWT attack testing against live endpoints
     
     Performs automated security testing of JWT tokens against live API endpoints
@@ -3951,6 +4518,72 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
     • Output format consistent with other APILeak reporting
     """
     try:
+        # ------------------------------------------------------------------
+        # Resolve new-option inputs BEFORE any request is issued (Reqs 63.6,
+        # 67.1, 67.2). Each source is consumed up-front so an unreadable
+        # Vector_File or an unparseable/token-less Raw_Request_Input aborts the
+        # command with a descriptive error naming the offending file, and no
+        # HTTP request is ever attempted.
+        #
+        # When no new option is supplied the token/url/headers/data resolve to
+        # exactly the pre-existing single-token behavior (Req 67.5).
+        # ------------------------------------------------------------------
+        raw_parsed = None
+        if raw_request:
+            try:
+                raw_parsed = parse_raw_request(raw_request)
+            except ValueError as e:
+                click.echo(f"❌ {e}", err=True)
+                sys.exit(1)
+            # The parsed request supplies the JWT and the request context.
+            token = raw_parsed.token
+            if not url:
+                url = raw_parsed.url
+            if not data:
+                data = raw_parsed.body
+
+        # A token must come from either the positional argument or the raw
+        # request file.
+        if not token:
+            click.echo(
+                "❌ No JWT token supplied. Provide TOKEN or --raw-request FILE.",
+                err=True)
+            sys.exit(1)
+
+        # A live target is required for attack execution (preserved from the
+        # original --url requirement); it may originate from --url or the raw
+        # request file.
+        if not url:
+            click.echo(
+                "❌ No target URL supplied. Provide --url or a --raw-request "
+                "file with a Host header.",
+                err=True)
+            sys.exit(1)
+
+        # Read the Vector_File up-front so an unreadable file aborts before any
+        # request, naming the file (Req 63.6). Fuzzing needs both a target name
+        # and a value file; requiring them together avoids a silently inert
+        # option.
+        fuzz_values = None
+        if vector_file and not fuzz_target:
+            click.echo(
+                "❌ --vector-file requires --fuzz-target naming the claim or "
+                "header to fuzz.",
+                err=True)
+            sys.exit(1)
+        if fuzz_target and not vector_file:
+            click.echo(
+                "❌ --fuzz-target requires --vector-file supplying the fuzz "
+                "values.",
+                err=True)
+            sys.exit(1)
+        if vector_file:
+            try:
+                fuzz_values = read_vector_file(vector_file)
+            except ValueError as e:
+                click.echo(f"❌ {e}", err=True)
+                sys.exit(1)
+
         # Validate JWT token first
         try:
             decoded_token = decode_jwt(token)
@@ -3969,8 +4602,12 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
             click.echo(f"❌ Invalid JWT token: {e}", err=True)
             sys.exit(1)
         
-        # Parse custom headers
+        # Parse custom headers. When a raw request file was supplied its parsed
+        # headers seed the request context (Req 67.1); explicit -H options then
+        # override on a per-name basis.
         custom_headers = {}
+        if raw_parsed is not None:
+            custom_headers.update(raw_parsed.headers)
         for h in header:
             if ':' not in h:
                 click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
@@ -3996,6 +4633,13 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
         click.echo(f"Timeout: {timeout}s")
         click.echo(f"SSL Verification: {'Disabled' if no_ssl_verify else 'Enabled'}")
         click.echo(f"Max Retries: {max_retries}")
+        if raw_request:
+            click.echo(f"Raw Request File: {raw_request}")
+        if fuzz_target:
+            click.echo(f"Fuzz Target: {fuzz_target} "
+                       f"({len(fuzz_values or [])} value(s) from {vector_file})")
+        if canary:
+            click.echo("Canary: (supplied — corroborates analyzer success)")
         click.echo("")
         
         # Route all attack-token generation and execution through the single-
@@ -4014,7 +4658,9 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
                 verify_ssl=not no_ssl_verify)
             try:
                 engine = _make_jwt_engine(
-                    token, url, custom_headers, data, http_engine=http_engine)
+                    token, url, custom_headers, data, http_engine=http_engine,
+                    fuzz_target=fuzz_target, fuzz_values=fuzz_values,
+                    canary_value=canary)
 
                 click.echo("🚀 Starting JWT Attack Testing...")
                 click.echo("="*50)

@@ -84,9 +84,10 @@ def _make_base_token():
 
 BASE_TOKEN = _make_base_token()
 
-# Signature-requiring vectors: these MUST be HMAC-signed with the operator key.
+# Signature-requiring vectors that MUST be HMAC-signed with the operator key
+# for EVERY generated token. KID_INJECTION is handled separately because Req 44.1
+# adds a predictable/empty-key path whose tokens are signed with the forced key.
 SIGNED_VECTORS = [
-    AttackType.KID_INJECTION,
     AttackType.JWKS_SPOOF,
     AttackType.INLINE_JWKS,
     AttackType.PRIVILEGE_ESCALATION,
@@ -159,14 +160,36 @@ def _make_engine(http_engine=None, signing_secret=SIGNING_SECRET,
 
 
 def test_every_attack_type_generates_nonempty_tokens():
-    """Each of the nine vectors yields at least one non-empty token (Req 24.1)."""
+    """Each always-on vector yields at least one non-empty token (Req 24.1).
+
+    The two conditional vectors added by Reqs 59/63 are excluded from the
+    always-on guarantee because they legitimately produce no tokens for this
+    engine configuration (asserted separately below):
+
+    * ``PSYCHIC_SIGNATURE`` applies only when the base token uses an ECDSA
+      algorithm (Req 59.2); the HS256 base token here yields no token.
+    * ``CLAIM_FUZZING`` requires an operator-supplied ``fuzz_target`` +
+      ``fuzz_values`` (Req 63.1); with neither configured it yields no token.
+    """
     engine = _make_engine()
+    conditional = {AttackType.PSYCHIC_SIGNATURE, AttackType.CLAIM_FUZZING}
     for attack_type in AttackType:
+        if attack_type in conditional:
+            continue
         tokens = engine.generate_token(attack_type)
         assert isinstance(tokens, list)
         assert tokens, f"{attack_type} produced no tokens"
         assert all(isinstance(t, str) and t for t in tokens), (
             f"{attack_type} produced an empty token")
+
+
+def test_conditional_vectors_yield_no_tokens_without_their_preconditions():
+    """PSYCHIC_SIGNATURE (non-ECDSA base) and CLAIM_FUZZING (no config) yield []."""
+    engine = _make_engine()
+    # HS256 base token => no ECDSA psychic-signature token (Req 59.2).
+    assert engine.generate_token(AttackType.PSYCHIC_SIGNATURE) == []
+    # No fuzz_target / fuzz_values configured => no claim-fuzzing token (Req 63.1).
+    assert engine.generate_token(AttackType.CLAIM_FUZZING) == []
 
 
 def test_signed_vectors_use_operator_signing_secret_not_literal_secret():
@@ -197,6 +220,49 @@ def test_signed_vectors_fall_back_to_secret_only_without_signing_key():
     for token in tokens:
         assert verify_hmac_secret(token, "secret")
         assert not verify_hmac_secret(token, SIGNING_SECRET)
+
+
+def test_kid_injection_signs_standard_probes_with_operator_key_and_forces_predictable_key():
+    """KID_INJECTION covers SQLi/traversal/file-inclusion + a predictable-key path.
+
+    Standard injection probes are HMAC-signed with the operator-supplied key
+    (Req 15.1/15.2), never the literal "secret"; and at least one predictable/
+    empty-key probe (e.g. ``/dev/null`` forcing an empty signing key) is signed
+    with that forced key so acceptance confirms the injection (Req 44.1/44.2).
+    """
+    engine = _make_engine()
+    tokens = engine.generate_token(AttackType.KID_INJECTION)
+    assert tokens
+
+    # No KID token is signed with the historic hardcoded literal "secret".
+    for token in tokens:
+        assert not verify_hmac_secret(token, "secret"), (
+            "a KID token was signed with the literal 'secret'")
+
+    # Standard injection probes are signed with the operator key (Req 15.1/15.2).
+    operator_signed = [t for t in tokens if verify_hmac_secret(t, SIGNING_SECRET)]
+    assert operator_signed, "expected KID probes signed with the operator key"
+
+    # The predictable/empty-key path signs with the forced empty key (Req 44.1).
+    empty_key_signed = [t for t in tokens if verify_hmac_secret(t, "")]
+    assert empty_key_signed, "expected a KID probe signed with the forced empty key"
+
+
+def test_kid_injection_modifies_only_kid_header_and_preserves_payload():
+    """KID token generation changes only the ``kid`` header (Req 44.1 / 48.4)."""
+    engine = _make_engine()
+    base = decode_jwt(BASE_TOKEN)
+    base_header_without_kid = {k: v for k, v in base["header"].items() if k != "kid"}
+
+    for token in engine.generate_token(AttackType.KID_INJECTION):
+        decoded = decode_jwt(token)
+        # Payload preserved verbatim.
+        assert decoded["payload"] == base["payload"]
+        # Every header field except ``kid`` is preserved.
+        header_without_kid = {k: v for k, v in decoded["header"].items() if k != "kid"}
+        assert header_without_kid == base_header_without_kid
+        # A ``kid`` header was actually injected.
+        assert "kid" in decoded["header"]
 
 
 def test_alg_none_produces_unsigned_none_algorithm_tokens():
@@ -233,19 +299,28 @@ def test_null_signature_keeps_header_payload_with_empty_signatures():
 def test_weak_secret_resigns_with_each_wordlist_candidate():
     """WEAK_SECRET re-signs the token with each weak-secret candidate (Req 15.3).
 
-    Each produced token must verify under its corresponding wordlist entry,
-    demonstrating a server accepting one has a guessable secret.
+    The empty string ``""`` is prepended as the first candidate (Req 58.1), so a
+    validly-HMAC-signed blank-secret token is produced ahead of the wordlist
+    tokens. Each produced token must verify under its corresponding candidate
+    (including ``""``), demonstrating a server accepting one has a guessable
+    (or empty) secret.
     """
     wordlist = ["secret", "password", "admin", "changeme"]
     engine = _make_engine(weak_secrets=wordlist)
     tokens = engine.generate_token(AttackType.WEAK_SECRET)
 
-    assert len(tokens) == len(wordlist)
-    for candidate, token in zip(wordlist, tokens):
+    # The blank-secret candidate is prepended, so there is one token per wordlist
+    # entry PLUS the leading blank-secret token.
+    expected_candidates = [""] + wordlist
+    assert len(tokens) == len(expected_candidates)
+    for candidate, token in zip(expected_candidates, tokens):
         # Header must declare HS256 (weak-secret forgery targets HMAC).
         assert decode_jwt(token)["header"]["alg"] == "HS256"
         assert verify_hmac_secret(token, candidate), (
             f"weak-secret token not signed with candidate '{candidate}'")
+
+    # The leading token is the blank-secret token: it verifies under "" only.
+    assert verify_hmac_secret(tokens[0], "")
 
 
 # ===========================================================================
@@ -465,6 +540,294 @@ async def test_execute_all_no_bypass_yields_no_vulnerabilities():
     findings = engine.to_findings(summary, scan_id="scan-none")
     assert len(findings) == 1
     assert findings[0].category == JWT_NO_FINDINGS_CATEGORY
+
+
+# ===========================================================================
+# 6. Sensitive-data-in-payload inspection (Req 43)
+# ===========================================================================
+
+
+def _token_with_payload(payload):
+    """Sign a token carrying ``payload`` with the operator secret."""
+    return encode_jwt({"alg": "HS256", "typ": "JWT"}, payload, BASE_SECRET)
+
+
+def test_inspect_payload_flags_corroborated_claims_and_redacts_values():
+    """Corroborated credential/PII claims → JWT_SENSITIVE_DATA_IN_PAYLOAD (Req 43.1-43.4)."""
+    high_entropy_secret = "aB3xY9zQ7wE2rT5yU8iO1pA4sD6fG0hJ"  # 32-char high-entropy
+    api_key = "sk_" + "FAKEKEY_not_a_real_secret"             # sk_ prefix (self-sufficient)
+    email = "alice.victim@example.com"                        # PII pattern
+    payload = {
+        "sub": "user-123",
+        "password": high_entropy_secret,   # credential-shape + sensitive field name
+        "api_key": api_key,                 # known credential prefix
+        "email": email,                     # PII
+        "role": "user",                     # not sensitive
+    }
+    engine = _make_engine()
+    findings = engine.inspect_payload_sensitivity(_token_with_payload(payload),
+                                                  scan_id="scan-jwt-pii")
+
+    flagged_fields = {f.payload for f in findings}
+    assert "Field: password" in flagged_fields
+    assert "Field: api_key" in flagged_fields
+    assert "Field: email" in flagged_fields
+    # Non-sensitive claims are never flagged.
+    assert "Field: sub" not in flagged_fields
+    assert "Field: role" not in flagged_fields
+
+    for finding in findings:
+        assert finding.category == "JWT_SENSITIVE_DATA_IN_PAYLOAD"
+        assert finding.owasp_category == "API2"
+        assert finding.scan_id == "scan-jwt-pii"
+        # The field name and sensitivity type are included (Req 43.3).
+        assert "sensitivity type:" in finding.evidence
+        # The raw secret/PII value is NEVER echoed (Req 43.4).
+        assert high_entropy_secret not in finding.evidence
+        assert api_key not in finding.evidence
+        assert email not in finding.evidence
+
+    # The findings classify cleanly in the unified collector (Req 43.3).
+    collector = FindingsCollector(scan_id="scan-jwt-pii")
+    assert collector.add_findings(findings) == len(findings)
+
+
+def test_inspect_payload_does_not_flag_bare_pattern_without_corroboration():
+    """A bare credential-shaped string with no corroboration is not flagged (Req 43.2)."""
+    payload = {
+        "sub": "user-123",
+        # 40 chars, all identical -> matches [A-Za-z0-9]{32,} shape but LOW
+        # entropy and a NON-sensitive field name => necessary but not sufficient.
+        "data": "a" * 40,
+        "note": "just-a-plain-value",
+    }
+    engine = _make_engine()
+    findings = engine.inspect_payload_sensitivity(_token_with_payload(payload))
+    assert findings == []
+
+
+def test_inspect_payload_ignores_non_string_and_undecodable_tokens():
+    """Non-string claims are skipped and a malformed token yields no findings (Req 43.2)."""
+    payload = {"user_id": 123, "is_admin": True, "count": 42}
+    engine = _make_engine()
+    assert engine.inspect_payload_sensitivity(_token_with_payload(payload)) == []
+
+    # An undecodable token is treated as "no sensitive claims", never raising.
+    assert engine.inspect_payload_sensitivity("not-a-jwt") == []
+
+
+# ===========================================================================
+# 7. kid injection success confirmation (Req 44.2)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_confirm_kid_injection_reuses_analyzer_assessment():
+    """_confirm_kid_injection confirms only when the analyzer flags vulnerable (Req 44.2)."""
+    engine = _make_engine()
+
+    vulnerable = _make_attack_result(AttackType.KID_INJECTION,
+                                     severity=VulnerabilitySeverity.HIGH)
+    assert await engine._confirm_kid_injection(vulnerable) is True
+
+    not_vulnerable = _make_attack_result(AttackType.KID_INJECTION)
+    not_vulnerable.vulnerability_assessment.is_vulnerable = False
+    assert await engine._confirm_kid_injection(not_vulnerable) is False
+
+    # No result (no request produced a response) is never confirmed.
+    assert await engine._confirm_kid_injection(None) is False
+
+
+@pytest.mark.asyncio
+async def test_confirmed_kid_injection_maps_to_jwt_kid_injection_finding():
+    """A confirmed KID_INJECTION result maps to JWT_KID_INJECTION / API2 (Req 44.3)."""
+    baseline = _StubResponse(401, body='{"error":"unauthorized"}')
+    attack = _StubResponse(200, body=ADMIN_BODY)
+    http = _StubHTTPEngine(BASE_TOKEN, baseline, attack)
+    engine = _make_engine(http_engine=http)
+
+    result = await engine.execute_attack(AttackType.KID_INJECTION)
+    assert await engine._confirm_kid_injection(result) is True
+
+    finding = jwt_assessment_to_finding(result, scan_id="scan-kid")
+    assert finding.category == "JWT_KID_INJECTION"
+    assert finding.owasp_category == "API2"
+    assert "Baseline comparison:" in finding.evidence
+
+
+# ===========================================================================
+# 8. jku / x5u key-source SSRF + allowlist assessment (Req 45.1, 45.2, 45.3, 45.5)
+# ===========================================================================
+
+
+ATTACKER_KEY_SOURCE_URL = "http://attacker.evil.example/.well-known/jwks.json"
+
+
+def test_build_jku_x5u_token_modifies_only_targeted_header_and_signs_with_attacker_key():
+    """Only the jku/x5u header is set; payload/other header fields preserved (Req 45.1)."""
+    engine = _make_engine()
+    base = decode_jwt(BASE_TOKEN)
+
+    for header_field, other_field in (("jku", "x5u"), ("x5u", "jku")):
+        token = engine._build_jku_x5u_token(header_field, ATTACKER_KEY_SOURCE_URL)
+        decoded = decode_jwt(token)
+
+        # Targeted header points at the attacker-controlled key source.
+        assert decoded["header"][header_field] == ATTACKER_KEY_SOURCE_URL
+        # The sibling key-source header was NOT introduced.
+        assert other_field not in decoded["header"]
+        # Payload is preserved verbatim (Req 45.1 / 48.4).
+        assert decoded["payload"] == base["payload"]
+        # Every base header field is preserved unchanged.
+        for key, value in base["header"].items():
+            assert decoded["header"][key] == value
+        # The token is NOT signed with the server's real operator key — it is
+        # signed with attacker-hosted key material, so acceptance is unambiguous.
+        assert not verify_hmac_secret(token, SIGNING_SECRET)
+
+
+def test_build_jku_x5u_token_rejects_unknown_header_field():
+    """Only 'jku' and 'x5u' are valid targeted header fields (Req 45.1)."""
+    engine = _make_engine()
+    with pytest.raises(ValueError):
+        engine._build_jku_x5u_token("kid", ATTACKER_KEY_SOURCE_URL)
+
+
+@pytest.mark.asyncio
+async def test_key_source_ssrf_confirmed_by_attacker_signed_token_acceptance():
+    """Acceptance of the attacker-signed token confirms SSRF (Req 45.2, 45.5).
+
+    A 401 baseline turning into a 200 for the attacker-signed token is flagged
+    by the single success detector; the finding is JWT_JKU_SSRF / API2 and
+    carries the key-source allowlist assessment (domain NOT allowlisted).
+    """
+    baseline = _StubResponse(401, body='{"error":"unauthorized"}')
+    attack = _StubResponse(200, body=ADMIN_BODY)
+    http = _StubHTTPEngine(BASE_TOKEN, baseline, attack)
+    engine = _make_engine(http_engine=http)
+
+    findings = await engine.test_key_source_ssrf(ATTACKER_KEY_SOURCE_URL,
+                                                 scan_id="scan-jku")
+
+    # Both the jku and x5u probes are accepted -> one finding each.
+    assert len(findings) == 2
+    for finding in findings:
+        assert finding.category == "JWT_JKU_SSRF"
+        assert finding.owasp_category == "API2"
+        assert finding.severity == Severity.HIGH
+        assert finding.scan_id == "scan-jku"
+        # Confirmation basis is spoofed-key acceptance (Req 45.2).
+        assert "accepted a token signed with attacker-hosted keys" in finding.evidence
+        # Allowlist assessment is included and reports NOT constrained (Req 45.5).
+        assert "Key-source allowlist assessment" in finding.evidence
+        assert "NOT constrained by an allowlist" in finding.evidence
+        # The attacker key source is named in the evidence.
+        assert ATTACKER_KEY_SOURCE_URL in finding.evidence
+
+    # The baseline (original token) was issued before any attack request.
+    assert http.calls[0][2] == f"Bearer {BASE_TOKEN}"
+
+    # Findings classify cleanly in the unified collector (Req 45.2).
+    collector = FindingsCollector(scan_id="scan-jku")
+    assert collector.add_findings(findings) == len(findings)
+
+
+@pytest.mark.asyncio
+async def test_key_source_ssrf_confirmed_by_observed_outbound_request():
+    """An observed outbound request to the attacker URL confirms SSRF (Req 45.3, 45.5).
+
+    Even when the attacker-signed token is NOT accepted (baseline 200 == attack
+    200, nothing flagged by the analyzer), an out-of-band observer reporting an
+    outbound request to the attacker key source confirms the finding.
+    """
+    # Identical authorized baseline/attack responses => the analyzer does NOT
+    # flag acceptance, so confirmation must come solely from the observer.
+    baseline = _StubResponse(200, body='{"ok":true}')
+    attack = _StubResponse(200, body='{"ok":true}')
+    http = _StubHTTPEngine(BASE_TOKEN, baseline, attack)
+    engine = _make_engine(http_engine=http)
+
+    observed_urls = []
+
+    def observer(url):
+        observed_urls.append(url)
+        return True
+
+    findings = await engine.test_key_source_ssrf(
+        ATTACKER_KEY_SOURCE_URL, key_source_observer=observer, scan_id="scan-oob")
+
+    assert len(findings) == 2
+    assert observed_urls == [ATTACKER_KEY_SOURCE_URL, ATTACKER_KEY_SOURCE_URL]
+    for finding in findings:
+        assert finding.category == "JWT_JKU_SSRF"
+        assert finding.owasp_category == "API2"
+        # Confirmation basis is the observed outbound request (Req 45.3).
+        assert "outbound request to the attacker-controlled key source" in finding.evidence
+        # Allowlist assessment: honored via observation => NOT constrained (Req 45.5).
+        assert "NOT constrained by an allowlist" in finding.evidence
+
+
+@pytest.mark.asyncio
+async def test_key_source_ssrf_supports_awaitable_observer():
+    """The out-of-band observer may be an async callable (Req 45.3)."""
+    baseline = _StubResponse(200, body='{"ok":true}')
+    attack = _StubResponse(200, body='{"ok":true}')
+    http = _StubHTTPEngine(BASE_TOKEN, baseline, attack)
+    engine = _make_engine(http_engine=http)
+
+    async def async_observer(url):
+        return True
+
+    findings = await engine.test_key_source_ssrf(
+        ATTACKER_KEY_SOURCE_URL, key_source_observer=async_observer)
+
+    assert len(findings) == 2
+    assert all(f.category == "JWT_JKU_SSRF" for f in findings)
+
+
+@pytest.mark.asyncio
+async def test_key_source_ssrf_not_confirmed_without_acceptance_or_observation():
+    """No acceptance and no observed outbound request => no finding (Req 45.2, 45.3).
+
+    Neither mere submission of the token nor a benign key-source fetch confirms
+    the vulnerability, so the probe reports nothing.
+    """
+    baseline = _StubResponse(200, body='{"ok":true}')
+    attack = _StubResponse(200, body='{"ok":true}')
+    http = _StubHTTPEngine(BASE_TOKEN, baseline, attack)
+    engine = _make_engine(http_engine=http)
+
+    # No observer => no observed outbound request; identical responses => no
+    # analyzer-confirmed acceptance.
+    findings = await engine.test_key_source_ssrf(ATTACKER_KEY_SOURCE_URL)
+    assert findings == []
+
+
+def test_assess_key_source_allowlist_reports_none_when_probe_not_honored():
+    """A single negative probe cannot prove an allowlist => allowlisted is None (Req 45.5)."""
+    engine = _make_engine()
+    assessment = engine._assess_key_source_allowlist(
+        "jku", ATTACKER_KEY_SOURCE_URL, accepted=False, outbound_observed=False)
+
+    assert assessment["allowlisted"] is None
+    assert assessment["domain"] == "attacker.evil.example"
+    assert "appears constrained by an allowlist" in assessment["evidence"]
+
+
+def test_assess_key_source_allowlist_reports_false_when_honored():
+    """When the attacker key source is honored the domain is NOT allowlisted (Req 45.5)."""
+    engine = _make_engine()
+
+    accepted = engine._assess_key_source_allowlist(
+        "x5u", ATTACKER_KEY_SOURCE_URL, accepted=True, outbound_observed=False)
+    assert accepted["allowlisted"] is False
+    assert "NOT constrained by an allowlist" in accepted["evidence"]
+    assert "attacker-signed token accepted" in accepted["evidence"]
+
+    observed = engine._assess_key_source_allowlist(
+        "jku", ATTACKER_KEY_SOURCE_URL, accepted=False, outbound_observed=True)
+    assert observed["allowlisted"] is False
+    assert "outbound request observed" in observed["evidence"]
 
 
 if __name__ == "__main__":

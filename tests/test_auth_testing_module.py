@@ -12,8 +12,9 @@ import time
 from unittest.mock import Mock, AsyncMock, patch, mock_open
 from dataclasses import dataclass
 
-from modules.owasp.auth_testing import AuthenticationTestingModule, JWTToken
+from modules.owasp.auth_testing import AuthenticationTestingModule, JWTToken, OAuthFlowInputs
 from utils.http_client import HTTPRequestEngine, Response
+from utils import jwt_utils
 from core.config import AuthTestingConfig, AuthContext, AuthType, Severity
 from core.logging import get_logger
 
@@ -23,6 +24,56 @@ class MockEndpoint:
     """Mock endpoint for testing"""
     url: str
     method: str = "GET"
+
+
+def _make_rsa_public_key_pem() -> str:
+    """Generate a real RSA public key in PEM (SubjectPublicKeyInfo) form.
+
+    Used by the algorithm-confusion key-variant tests so that
+    ``jwt_utils._public_key_variants`` can parse the material and derive the
+    ``pem_with_newline`` / ``pem_without_newline`` / ``der`` representations.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+
+
+def _make_self_signed_cert_pem() -> str:
+    """Generate a real self-signed X.509 certificate in PEM form.
+
+    Certificate material lets ``_public_key_variants`` additionally derive the
+    certificate-bound ``x5c_cert_der`` representation (four variants total).
+    """
+    import datetime as _dt
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "apileaks-test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
+        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+
+def _hmac_sig_b64(key_bytes: bytes, header_payload: str) -> str:
+    """Compute the base64url HMAC-SHA256 signature segment for a header.payload."""
+    signature = hmac.new(key_bytes, header_payload.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(signature).decode().rstrip("=")
 
 
 class TestAuthenticationTestingModule:
@@ -738,9 +789,13 @@ your-256-bit-secret
     async def test_algorithm_confusion_uses_real_key_no_placeholder(
         self, make_auth_module, auth_config, mock_http_client
     ):
-        """Confusion token is HMAC-signed with the REAL key bytes, never a
-        placeholder (Req 6.1, 6.4)."""
-        material = "-----BEGIN PUBLIC KEY-----\nREALKEYBYTES\n-----END PUBLIC KEY-----"
+        """Confusion token is HMAC-signed with the REAL key-representation bytes,
+        never a placeholder (Req 6.1, 6.4, 60.2).
+
+        A negative-control baseline (invalid HMAC key) is rejected while the
+        public-key-derived variant is accepted, so success is confirmed through
+        the response-analyzer baseline comparison (Req 60.4)."""
+        material = _make_rsa_public_key_pem()
         auth_config.public_key_material = material
         auth_config.jwks_url = None
         module = make_auth_module(auth_config)
@@ -748,11 +803,17 @@ your-256-bit-secret
         rs256_token = self._build_rs256_token()
         jwt_token = module._parse_jwt_token(rs256_token)
 
-        success = Response(
+        rejected = Response(
+            status_code=401, headers={}, content=b'{"error": "unauthorized"}',
+            text='{"error": "unauthorized"}',
+            url="https://api.example.com/test", elapsed=0.1, request_method="GET"
+        )
+        accepted = Response(
             status_code=200, headers={}, content=b'{"data": "ok"}', text='{"data": "ok"}',
             url="https://api.example.com/test", elapsed=0.1, request_method="GET"
         )
-        mock_http_client.request.return_value = success
+        # 1st call = negative-control baseline (rejected), 2nd = first variant (accepted).
+        mock_http_client.request.side_effect = [rejected, accepted]
 
         endpoints = [MockEndpoint("https://api.example.com/test")]
         findings = await module._test_jwt_algorithm_confusion(
@@ -763,26 +824,140 @@ your-256-bit-secret
 
         assert len(findings) == 1
         assert findings[0].category == "JWT_ALGORITHM_CONFUSION"
+        assert findings[0].owasp_category == "API2"
 
-        # The confused token must be HMAC-signed with the real key bytes.
+        # The accepted confused token must be HMAC-signed with a REAL public-key
+        # representation, never a placeholder. The last set_auth_context call is
+        # the variant that was accepted.
+        variants = dict(jwt_utils._public_key_variants(material.encode("utf-8")))
         confused_auth = mock_http_client.set_auth_context.call_args[0][0]
         confused_token = confused_auth.token
         header_b64, payload_b64, signature_b64 = confused_token.split(".")
-        expected_sig = base64.urlsafe_b64encode(
-            hmac.new(material.encode("utf-8"),
-                     f"{header_b64}.{payload_b64}".encode(),
-                     hashlib.sha256).digest()
-        ).decode().rstrip("=")
-        assert signature_b64 == expected_sig
+        header_payload = f"{header_b64}.{payload_b64}"
+
+        # It matches exactly one of the real public-key representation bytes.
+        assert signature_b64 in {
+            _hmac_sig_b64(kb, header_payload) for kb in variants.values()
+        }
 
         # And NOT signed with any literal placeholder string.
         for placeholder in ("public_key", "-----BEGIN PUBLIC KEY-----", "cert"):
-            placeholder_sig = base64.urlsafe_b64encode(
-                hmac.new(placeholder.encode(),
-                         f"{header_b64}.{payload_b64}".encode(),
-                         hashlib.sha256).digest()
-            ).decode().rstrip("=")
-            assert signature_b64 != placeholder_sig
+            assert signature_b64 != _hmac_sig_b64(placeholder.encode(), header_payload)
+
+    @pytest.mark.asyncio
+    async def test_algorithm_confusion_attempts_every_representation(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Every derivable public-key representation is attempted as the HMAC key
+        (Req 60.1). Certificate material yields all four representations."""
+        cert_pem = _make_self_signed_cert_pem()
+        auth_config.public_key_material = cert_pem
+        auth_config.jwks_url = None
+        module = make_auth_module(auth_config)
+
+        rs256_token = self._build_rs256_token()
+        jwt_token = module._parse_jwt_token(rs256_token)
+
+        # Every request (baseline + each variant) is rejected -> no finding, but
+        # every representation must still have been submitted.
+        rejected = Response(
+            status_code=401, headers={}, content=b'{"error": "unauthorized"}',
+            text='{"error": "unauthorized"}',
+            url="https://api.example.com/test", elapsed=0.1, request_method="GET"
+        )
+        mock_http_client.request.return_value = rejected
+
+        endpoints = [MockEndpoint("https://api.example.com/test")]
+        findings = await module._test_jwt_algorithm_confusion(
+            jwt_token=jwt_token,
+            auth_context=AuthContext(name="rs", type=AuthType.JWT, token=rs256_token),
+            endpoints=endpoints,
+        )
+
+        # No representation was accepted -> no finding reported.
+        assert findings == []
+
+        # The certificate produces all four representations.
+        expected_reps = {name for name, _ in
+                         jwt_utils._public_key_variants(cert_pem.encode("utf-8"))}
+        assert expected_reps == {
+            "pem_with_newline", "pem_without_newline", "der", "x5c_cert_der"
+        }
+
+        # Each representation was attempted through the shared HTTP client: the
+        # per-variant auth contexts name the representation submitted.
+        submitted_names = [
+            call.args[0].name for call in mock_http_client.set_auth_context.call_args_list
+        ]
+        for rep in expected_reps:
+            assert any(name.endswith(f"_confused_{rep}") for name in submitted_names), rep
+        # A negative-control baseline was established first.
+        assert any(name.endswith("_confusion_baseline") for name in submitted_names)
+
+    @pytest.mark.asyncio
+    async def test_algorithm_confusion_evidence_names_accepted_representation(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """The finding evidence names the accepted key representation (Req 60.3),
+        confirmed via the analyzer baseline comparison (Req 60.4)."""
+        material = _make_rsa_public_key_pem()
+        auth_config.public_key_material = material
+        auth_config.jwks_url = None
+        module = make_auth_module(auth_config)
+
+        rs256_token = self._build_rs256_token()
+        jwt_token = module._parse_jwt_token(rs256_token)
+
+        # Representation order from the helper (pem_with_newline first).
+        variants = jwt_utils._public_key_variants(material.encode("utf-8"))
+        variant_names = [name for name, _ in variants]
+        # The SECOND representation is the one the target accepts.
+        accepted_rep = variant_names[1]
+
+        rejected = Response(
+            status_code=401, headers={}, content=b'{"error": "unauthorized"}',
+            text='{"error": "unauthorized"}',
+            url="https://api.example.com/test", elapsed=0.1, request_method="GET"
+        )
+        accepted = Response(
+            status_code=200, headers={}, content=b'{"data": "ok", "user": {"id": 1}}',
+            text='{"data": "ok", "user": {"id": 1}}',
+            url="https://api.example.com/test", elapsed=0.1, request_method="GET"
+        )
+        # baseline rejected, first variant rejected, second variant accepted.
+        mock_http_client.request.side_effect = [rejected, rejected, accepted]
+
+        endpoints = [MockEndpoint("https://api.example.com/test")]
+        findings = await module._test_jwt_algorithm_confusion(
+            jwt_token=jwt_token,
+            auth_context=AuthContext(name="rs", type=AuthType.JWT, token=rs256_token),
+            endpoints=endpoints,
+        )
+
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.category == "JWT_ALGORITHM_CONFUSION"
+        assert finding.owasp_category == "API2"
+        # Evidence names exactly the accepted representation.
+        assert accepted_rep in finding.evidence
+        # The token that was accepted was signed with that representation's bytes.
+        accepted_key_bytes = dict(variants)[accepted_rep]
+        confused_auth = mock_http_client.set_auth_context.call_args[0][0]
+        assert confused_auth.name.endswith(f"_confused_{accepted_rep}")
+        header_b64, payload_b64, signature_b64 = confused_auth.token.split(".")
+        assert signature_b64 == _hmac_sig_b64(
+            accepted_key_bytes, f"{header_b64}.{payload_b64}"
+        )
+        # Header/payload preserved: alg switched to HS256, payload unchanged (Req 60.2).
+        import json as _json
+        decoded_header = _json.loads(
+            base64.urlsafe_b64decode(header_b64 + "=" * (-len(header_b64) % 4))
+        )
+        decoded_payload = _json.loads(
+            base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+        )
+        assert decoded_header["alg"] == "HS256"
+        assert decoded_payload == jwt_token.payload
 
     # ------------------------------------------------------------------
     # Task 6.2 - Evidence-based anonymous access (Requirements 7.1-7.4)
@@ -1061,3 +1236,649 @@ def encode_simple_jwt(header: dict, payload: dict, secret: str) -> str:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# ======================================================================
+# Task 31.1 - Advanced auth-module example-based unit tests
+# (Requirements 37.7, 38.1, 39.1, 39.2, 40.1, 40.4, 41.1, 41.2, 41.3, 42.1)
+#
+# Example-based coverage for the hardened Auth_Module probes:
+#   * throttling-signal classification (429 / lockout / increasing-delay)
+#   * secret-in-URL detection + redaction
+#   * MFA bypass including non-discriminating suppression
+#   * reset-token predictability + Safe-Mode/opt-in skip logging
+#   * the three OAuth sub-probes (redirect_uri / aud / state)
+#   * the bounded token-revocation race
+# ======================================================================
+
+
+def _resp(status_code=200, body="{}", url="https://api.example.com/x",
+          method="GET", elapsed=0.1, headers=None):
+    """Build a Response with sensible defaults for these example tests."""
+    if isinstance(body, str):
+        content = body.encode()
+        text = body
+    else:
+        content = body
+        text = body.decode(errors="replace")
+    return Response(
+        status_code=status_code,
+        headers=headers or {},
+        content=content,
+        text=text,
+        url=url,
+        elapsed=elapsed,
+        request_method=method,
+    )
+
+
+# --- Module-level fixtures shared by the Task 31.1 test classes below ---
+
+@pytest.fixture
+def auth_config():
+    """Fresh AuthTestingConfig for the advanced-probe tests."""
+    return AuthTestingConfig(
+        enabled=True,
+        jwt_testing=True,
+        weak_secrets_wordlist="wordlists/jwt_secrets.txt",
+        test_logout_invalidation=True,
+    )
+
+
+@pytest.fixture
+def auth_contexts():
+    """A single valid bearer context is sufficient for the advanced probes."""
+    return [
+        AuthContext(
+            name="user",
+            type=AuthType.BEARER,
+            token="bearer_token_123",
+            privilege_level=1,
+        )
+    ]
+
+
+@pytest.fixture
+def mock_http_client():
+    """Mock HTTP client with async request()."""
+    client = Mock(spec=HTTPRequestEngine)
+    client.request = AsyncMock()
+    client.set_auth_context = Mock()
+    client.current_auth_context = None
+    return client
+
+
+@pytest.fixture
+def make_auth_module(auth_contexts, mock_http_client):
+    """Factory to build a module with a custom AuthTestingConfig."""
+    wordlist = "secret\npassword\nadmin\n"
+
+    def _make(config, contexts=None):
+        with patch("builtins.open", mock_open(read_data=wordlist)):
+            with patch("pathlib.Path.exists", return_value=True):
+                return AuthenticationTestingModule(
+                    config, mock_http_client,
+                    contexts if contexts is not None else auth_contexts,
+                )
+    return _make
+
+
+@pytest.fixture
+def auth_module(make_auth_module, auth_config):
+    """A default-config auth module for pure-classifier / builder tests."""
+    return make_auth_module(auth_config)
+
+
+class TestThrottlingSignals:
+    """Requirement 37.5-37.7: classify 429 / lockout / increasing-delay signals."""
+
+    def test_http_429_is_throttled(self, auth_module):
+        responses = [_resp(200), _resp(200), _resp(429)]
+        result = auth_module._classify_throttling(responses)
+        assert result["throttled"] is True
+        signals = result["evidence"]["signals"]
+        assert signals["http_429"] is True
+        assert signals["account_lockout"] is False
+        # Evidence records issued-count and observed status codes (Req 37.7).
+        assert result["evidence"]["responses_observed"] == 3
+        assert 429 in result["evidence"]["status_codes"]
+
+    def test_account_lockout_is_throttled(self, auth_module):
+        lockout = _resp(423, body='{"error": "account locked, try again later"}')
+        responses = [_resp(200), lockout]
+        result = auth_module._classify_throttling(responses)
+        assert result["throttled"] is True
+        assert result["evidence"]["signals"]["account_lockout"] is True
+
+    def test_lockout_403_with_too_many_attempts(self, auth_module):
+        lockout = _resp(403, body='{"message": "Too many attempts"}')
+        result = auth_module._classify_throttling([lockout])
+        assert result["throttled"] is True
+        assert result["evidence"]["signals"]["account_lockout"] is True
+
+    def test_increasing_delay_is_throttled(self, auth_module):
+        # Non-decreasing latency with final > first, >= 3 samples.
+        responses = [
+            _resp(200, elapsed=0.1),
+            _resp(200, elapsed=0.4),
+            _resp(200, elapsed=0.9),
+        ]
+        result = auth_module._classify_throttling(responses)
+        assert result["throttled"] is True
+        assert result["evidence"]["signals"]["increasing_delay"] is True
+
+    def test_flat_latency_not_throttled(self, auth_module):
+        responses = [
+            _resp(200, elapsed=0.2),
+            _resp(200, elapsed=0.2),
+            _resp(200, elapsed=0.2),
+        ]
+        result = auth_module._classify_throttling(responses)
+        assert result["throttled"] is False
+        assert result["evidence"]["signals"]["increasing_delay"] is False
+
+    def test_no_throttling_signals(self, auth_module):
+        responses = [_resp(200), _resp(401), _resp(200)]
+        result = auth_module._classify_throttling(responses)
+        assert result["throttled"] is False
+        sig = result["evidence"]["signals"]
+        assert not any([sig["http_429"], sig["account_lockout"], sig["increasing_delay"]])
+
+    @pytest.mark.asyncio
+    async def test_rate_limiting_reports_when_no_throttling(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """No throttling with aggressive opt-in => both findings, evidence has attempts (Req 37.5-37.7)."""
+        auth_config.safe_mode = False
+        auth_config.allow_aggressive = True
+        auth_config.rate_limit_attempts = 4
+        auth_config.benign_username = "probe_user"
+        module = make_auth_module(auth_config)
+
+        mock_http_client.request.return_value = _resp(
+            200, body='{"error": "invalid credentials"}',
+            url="https://api.example.com/login", method="POST"
+        )
+
+        findings = await module._test_rate_limiting("https://api.example.com/login")
+
+        categories = {f.category for f in findings}
+        assert "AUTH_NO_RATE_LIMITING" in categories
+        assert "AUTH_CREDENTIAL_STUFFING_EXPOSURE" in categories
+        for f in findings:
+            assert f.owasp_category == "API2"
+            # Evidence embeds the number of attempts issued (Req 37.7).
+            assert "4" in f.evidence
+        # Bounded to the configured attempt count (Req 37.2).
+        assert mock_http_client.request.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_rate_limiting_skipped_without_opt_in(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Aggressive opt-in absent => probe skipped, no requests (Req 37.8)."""
+        auth_config.safe_mode = False
+        auth_config.allow_aggressive = False
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_rate_limiting("https://api.example.com/login")
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rate_limiting_stops_early_on_429(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """A 429 signal stops the burst early and yields no finding (Req 37.2, 37.5)."""
+        auth_config.safe_mode = False
+        auth_config.allow_aggressive = True
+        auth_config.rate_limit_attempts = 10
+        module = make_auth_module(auth_config)
+
+        mock_http_client.request.return_value = _resp(
+            429, body='{"error": "too many requests"}',
+            url="https://api.example.com/login", method="POST"
+        )
+
+        findings = await module._test_rate_limiting("https://api.example.com/login")
+
+        assert findings == []
+        # Stopped after the first 429 rather than issuing all 10.
+        assert mock_http_client.request.await_count == 1
+
+
+class TestSecretInUrl:
+    """Requirement 38: valid secret accepted in URL query string + redaction."""
+
+    @pytest.mark.asyncio
+    async def test_secret_in_url_detected_and_redacted(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Valid secret in URL accepted while invalid rejected => AUTH_SECRET_IN_URL (Req 38.1-38.3)."""
+        module = make_auth_module(auth_config)
+        secret = "super-secret-token-value-123"
+        ctx = AuthContext(name="u", type=AuthType.BEARER, token=secret, privilege_level=1)
+
+        # Negative control (invalid secret) is rejected (401); the valid secret is
+        # accepted (200) with distinct content so the probe reports.
+        def side_effect(method, url, **kwargs):
+            if secret in url:
+                return _resp(200, body='{"data": "authenticated ok"}', url=url, method=method)
+            return _resp(401, body='{"error": "unauthorized"}', url=url, method=method)
+
+        mock_http_client.request.side_effect = side_effect
+
+        findings = await module._test_secret_in_url("https://api.example.com/data", ctx)
+
+        assert len(findings) >= 1
+        f = findings[0]
+        assert f.category == "AUTH_SECRET_IN_URL"
+        assert f.owasp_category == "API2"
+        # The offending parameter name is one of the probed credential params.
+        assert any(p in f.evidence for p in module.SECRET_URL_PARAM_NAMES)
+        # Leakage surfaces are named (Req 38.3).
+        assert "Referer" in f.evidence or "browser history" in f.evidence
+        # The secret value itself is never echoed (redacted, Req 38.3).
+        assert secret not in f.evidence
+
+    @pytest.mark.asyncio
+    async def test_secret_in_url_suppressed_when_non_discriminating(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Endpoint that accepts any URL secret (non-discriminating) => suppressed (Req 3)."""
+        module = make_auth_module(auth_config)
+        ctx = AuthContext(name="u", type=AuthType.BEARER, token="secret-abc", privilege_level=1)
+
+        # Every request (invalid control included) returns identical success =>
+        # baseline non-discriminating => no false positive.
+        mock_http_client.request.return_value = _resp(
+            200, body='{"data": "always ok"}', url="https://api.example.com/data"
+        )
+
+        findings = await module._test_secret_in_url("https://api.example.com/data", ctx)
+
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_secret_in_url_skipped_without_secret(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """No secret in the auth context => test skipped, no requests (Req 38.1)."""
+        module = make_auth_module(auth_config)
+        ctx = AuthContext(name="u", type=AuthType.BEARER, token="", privilege_level=1)
+
+        findings = await module._test_secret_in_url("https://api.example.com/data", ctx)
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    def test_build_secret_in_url_preserves_other_params(self, auth_module):
+        """The named param is set to the secret while other params are preserved."""
+        url = "https://api.example.com/data?foo=bar&page=2"
+        built = auth_module._build_secret_in_url(url, "token", "S3CR3T")
+        assert "token=S3CR3T" in built
+        assert "foo=bar" in built
+        assert "page=2" in built
+
+
+class TestMfaBypass:
+    """Requirement 39: provisional-token MFA bypass + non-discriminating suppression."""
+
+    @pytest.mark.asyncio
+    async def test_mfa_bypass_detected(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Provisional token grants access that invalid token does not => AUTH_MFA_BYPASS (Req 39.1, 39.2)."""
+        module = make_auth_module(auth_config)
+        provisional = "provisional-pre-mfa-token"
+
+        def side_effect(method, url, **kwargs):
+            ctx = mock_http_client.current_auth_context
+            token = getattr(ctx, "token", None) if ctx else None
+            if token == provisional:
+                return _resp(200, body='{"profile": {"id": 1, "name": "real"}}',
+                             url=url, method=method)
+            # Invalid negative-control token is rejected.
+            return _resp(401, body='{"error": "unauthorized"}', url=url, method=method)
+
+        # set_auth_context should record the context used for the next request.
+        def set_ctx(ctx):
+            mock_http_client.current_auth_context = ctx
+        mock_http_client.set_auth_context.side_effect = set_ctx
+        mock_http_client.request.side_effect = side_effect
+
+        findings = await module._test_mfa_bypass(
+            provisional, "https://api.example.com/protected"
+        )
+
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.category == "AUTH_MFA_BYPASS"
+        assert f.owasp_category == "API2"
+        assert f.severity == Severity.CRITICAL
+        # Provisional token value is redacted from evidence (reuses redactor).
+        assert provisional not in f.evidence
+
+    @pytest.mark.asyncio
+    async def test_mfa_bypass_suppressed_when_non_discriminating(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Endpoint that accepts any token (non-discriminating) => suppressed (Req 39.4)."""
+        module = make_auth_module(auth_config)
+
+        # Every request returns identical success => baseline non-discriminating.
+        mock_http_client.request.return_value = _resp(
+            200, body='{"data": "always ok"}', url="https://api.example.com/protected"
+        )
+
+        findings = await module._test_mfa_bypass(
+            "provisional-token", "https://api.example.com/protected"
+        )
+
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_mfa_bypass_skipped_without_inputs(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Missing multi-step flow inputs => skipped, no requests (Req 39.5)."""
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_mfa_bypass("", "https://api.example.com/protected")
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+
+class TestResetTokenPredictability:
+    """Requirement 40: predictable reset-token detection + Safe-Mode/opt-in skip log."""
+
+    @pytest.mark.asyncio
+    async def test_sequential_reset_tokens_reported(
+        self, make_auth_module, auth_config
+    ):
+        """Sequential all-digit tokens => AUTH_PREDICTABLE_RESET_TOKEN (Req 40.1, 40.3)."""
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_reset_token_predictability(
+            ["1001", "1002", "1003"]
+        )
+
+        assert len(findings) >= 1
+        f = findings[0]
+        assert f.category == "AUTH_PREDICTABLE_RESET_TOKEN"
+        assert f.owasp_category == "API2"
+        assert "predictable" in f.evidence.lower()
+
+    @pytest.mark.asyncio
+    async def test_md5_of_email_reset_token_reported(
+        self, make_auth_module, auth_config
+    ):
+        """MD5(email) reset token => predictable hash-of-known-input (Req 40.1)."""
+        module = make_auth_module(auth_config)
+        email = "victim@example.com"
+        md5_token = hashlib.md5(email.encode()).hexdigest()
+
+        findings = await module._test_reset_token_predictability(
+            [md5_token], known_inputs=[email]
+        )
+
+        assert len(findings) == 1
+        assert findings[0].category == "AUTH_PREDICTABLE_RESET_TOKEN"
+
+    @pytest.mark.asyncio
+    async def test_random_uuid4_reset_token_not_reported(
+        self, make_auth_module, auth_config
+    ):
+        """UUIDv4 reset tokens are not predictable => no finding (Req 40.1)."""
+        import uuid as _uuid
+        module = make_auth_module(auth_config)
+
+        tokens = [str(_uuid.uuid4()) for _ in range(3)]
+        findings = await module._test_reset_token_predictability(tokens)
+
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_reset_token_skip_logged_in_safe_mode(
+        self, make_auth_module, auth_config
+    ):
+        """No observed tokens + Safe Mode => skipped with a Safe-Mode skip log (Req 40.4, 40.5)."""
+        auth_config.safe_mode = True
+        module = make_auth_module(auth_config)
+
+        with patch.object(module.logger, "info") as mock_info:
+            findings = await module._test_reset_token_predictability([])
+
+        assert findings == []
+        assert mock_info.called
+        logged = " ".join(str(c) for c in mock_info.call_args_list).lower()
+        assert "safe_mode" in logged or "safe mode" in logged
+
+    @pytest.mark.asyncio
+    async def test_reset_token_skip_logged_without_opt_in(
+        self, make_auth_module, auth_config
+    ):
+        """No observed tokens + no destructive opt-in => skipped with opt-in skip log (Req 40.4)."""
+        auth_config.safe_mode = False
+        auth_config.allow_destructive = False
+        module = make_auth_module(auth_config)
+
+        with patch.object(module.logger, "info") as mock_info:
+            findings = await module._test_reset_token_predictability([])
+
+        assert findings == []
+        assert mock_info.called
+
+
+class TestOAuthSubProbes:
+    """Requirement 41: redirect_uri / audience-confusion / missing-state sub-probes."""
+
+    @pytest.mark.asyncio
+    async def test_redirect_uri_accepted_reported(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Attacker redirect_uri accepted => AUTH_OAUTH_REDIRECT_URI (Req 41.1, 41.2)."""
+        module = make_auth_module(auth_config)
+        inputs = OAuthFlowInputs(
+            authorize_url="https://auth.example.com/authorize?client_id=abc&state=xyz",
+            registered_redirect_uri="https://app.example.com/callback",
+            attacker_redirect_uri="https://evil.example.com/callback",
+            state_present=True,
+        )
+
+        mock_http_client.request.return_value = _resp(
+            200, body='{"ok": true}', url=inputs.authorize_url
+        )
+
+        finding = await module._build_redirect_uri_finding(inputs)
+
+        assert finding is not None
+        assert finding.category == "AUTH_OAUTH_REDIRECT_URI"
+        assert finding.owasp_category == "API2"
+        assert "evil.example.com" in finding.evidence
+
+    @pytest.mark.asyncio
+    async def test_redirect_uri_rejected_no_finding(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Attacker redirect_uri rejected (400) => no finding (Req 41.1)."""
+        module = make_auth_module(auth_config)
+        inputs = OAuthFlowInputs(
+            authorize_url="https://auth.example.com/authorize?client_id=abc&state=xyz",
+            registered_redirect_uri="https://app.example.com/callback",
+            attacker_redirect_uri="https://evil.example.com/callback",
+            state_present=True,
+        )
+        mock_http_client.request.return_value = _resp(
+            400, body='{"error": "invalid redirect_uri"}', url=inputs.authorize_url
+        )
+
+        finding = await module._build_redirect_uri_finding(inputs)
+
+        assert finding is None
+
+    @pytest.mark.asyncio
+    async def test_audience_confusion_reported(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Foreign-audience token accepted => AUTH_TOKEN_AUDIENCE_CONFUSION (Req 41.3)."""
+        module = make_auth_module(auth_config)
+        foreign_token = "token-issued-for-another-app"
+        inputs = OAuthFlowInputs(
+            authorize_url="https://auth.example.com/authorize?client_id=abc&state=xyz",
+            registered_redirect_uri="https://app.example.com/callback",
+            attacker_redirect_uri="",
+            foreign_aud_token=foreign_token,
+            state_present=True,
+        )
+        mock_http_client.request.return_value = _resp(
+            200, body='{"data": "accepted"}', url=inputs.authorize_url
+        )
+
+        finding = await module._check_audience_confusion(inputs)
+
+        assert finding is not None
+        assert finding.category == "AUTH_TOKEN_AUDIENCE_CONFUSION"
+        assert finding.owasp_category == "API2"
+        # The foreign token value must be redacted from evidence.
+        assert foreign_token not in finding.evidence
+
+    def test_missing_state_reported(self, make_auth_module, auth_config):
+        """Authorization URL without a state parameter => AUTH_OAUTH_MISSING_STATE (Req 41.4)."""
+        module = make_auth_module(auth_config)
+        inputs = OAuthFlowInputs(
+            authorize_url="https://auth.example.com/authorize?client_id=abc",
+            registered_redirect_uri="https://app.example.com/callback",
+            attacker_redirect_uri="",
+            state_present=False,
+        )
+
+        finding = module._check_missing_state(inputs)
+
+        assert finding is not None
+        assert finding.category == "AUTH_OAUTH_MISSING_STATE"
+        assert finding.owasp_category == "API2"
+
+    def test_present_state_no_finding(self, make_auth_module, auth_config):
+        """A non-empty state parameter present => no missing-state finding (Req 41.4)."""
+        module = make_auth_module(auth_config)
+        inputs = OAuthFlowInputs(
+            authorize_url="https://auth.example.com/authorize?client_id=abc&state=xyz",
+            registered_redirect_uri="https://app.example.com/callback",
+            attacker_redirect_uri="",
+            state_present=True,
+        )
+
+        finding = module._check_missing_state(inputs)
+
+        assert finding is None
+
+    @pytest.mark.asyncio
+    async def test_oauth_flow_skipped_without_inputs(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """No OAuth_Flow inputs => skipped, no requests (Req 41.6)."""
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_oauth_flow(None)
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+
+class TestRevocationRace:
+    """Requirement 42: bounded token-revocation race probe."""
+
+    @pytest.mark.asyncio
+    async def test_revocation_race_detected(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Token accepted after logout under concurrency => AUTH_TOKEN_REVOCATION_RACE (Req 42.1, 42.3)."""
+        auth_config.safe_mode = False
+        auth_config.allow_aggressive = True
+        auth_config.revocation_race_requests = 4
+        module = make_auth_module(auth_config)
+
+        def side_effect(method, url, **kwargs):
+            if "logout" in url:
+                return _resp(200, body='{"message": "logged out"}', url=url, method="POST")
+            # Protected request still honored after logout.
+            return _resp(200, body='{"data": "still accessible"}', url=url, method="GET")
+
+        mock_http_client.request.side_effect = side_effect
+
+        findings = await module._test_revocation_race(
+            "valid-token",
+            "https://api.example.com/logout",
+            "https://api.example.com/protected",
+        )
+
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.category == "AUTH_TOKEN_REVOCATION_RACE"
+        assert f.owasp_category == "API2"
+        # Bounded by the configured request count (1 logout + N protected).
+        assert mock_http_client.request.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_revocation_race_skipped_without_opt_in(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Aggressive opt-in absent => probe skipped, no requests (Req 42.5)."""
+        auth_config.safe_mode = False
+        auth_config.allow_aggressive = False
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_revocation_race(
+            "valid-token",
+            "https://api.example.com/logout",
+            "https://api.example.com/protected",
+        )
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_revocation_race_skipped_in_safe_mode(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Safe Mode on => probe skipped even with opt-in (Req 42.5)."""
+        auth_config.safe_mode = True
+        auth_config.allow_aggressive = True
+        module = make_auth_module(auth_config)
+
+        findings = await module._test_revocation_race(
+            "valid-token",
+            "https://api.example.com/logout",
+            "https://api.example.com/protected",
+        )
+
+        assert findings == []
+        mock_http_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_revocation_race_no_finding_when_token_rejected_after_logout(
+        self, make_auth_module, auth_config, mock_http_client
+    ):
+        """Token rejected (401) after logout => no finding (Req 42.3)."""
+        auth_config.safe_mode = False
+        auth_config.allow_aggressive = True
+        auth_config.revocation_race_requests = 4
+        module = make_auth_module(auth_config)
+
+        def side_effect(method, url, **kwargs):
+            if "logout" in url:
+                return _resp(200, body='{"message": "logged out"}', url=url, method="POST")
+            return _resp(401, body='{"error": "token revoked"}', url=url, method="GET")
+
+        mock_http_client.request.side_effect = side_effect
+
+        findings = await module._test_revocation_race(
+            "valid-token",
+            "https://api.example.com/logout",
+            "https://api.example.com/protected",
+        )
+
+        assert findings == []

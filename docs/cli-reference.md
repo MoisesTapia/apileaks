@@ -183,6 +183,43 @@ Notes:
 - An unparseable OpenAPI/Postman source is rejected with a descriptive error and no discovery is performed.
 - Each extension expands a wordlist entry into the original entry plus one candidate per distinct normalized extension (so `W` entries with `E` distinct extensions produce `W × (E + 1)` candidates per method). Every expanded candidate counts toward `--max-requests` and stays within `--concurrency`.
 
+#### Positional Fuzz Markers (`--fuzz-keyword`, `--fuzz-mode`)
+
+Positional fuzzing places a literal keyword directly inside the target URL and sweeps each marked position with candidate values — the ffuf/wfuzz convention. This lets you fuzz a version segment, a filename, a query-parameter value, or several positions at once, instead of only appending wordlist entries to a base path.
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--fuzz-keyword` | Literal token in the target URL that marks positions to fuzz. Every non-overlapping literal occurrence becomes a marker, scanned left-to-right. Matched as a plain literal (never a regex) | `FUZZ` | `--fuzz-keyword FUZZ` |
+| `--fuzz-mode` | How two or more markers combine their wordlists: `clusterbomb` (cartesian product) or `pitchfork` (index-wise pairing). Case-insensitive | `clusterbomb` | `--fuzz-mode pitchfork` |
+
+**How markers are detected.** Every literal occurrence of the keyword in the target URL is treated as a marker (a *Marker_Position*), scanned left-to-right and counted as the number of non-overlapping occurrences. A marker may fall inside a path segment (as a substring or a whole segment), a query-parameter name or value, a filename, or a file extension. Substitution preserves every other character, path segment, and query parameter of the target URL unchanged.
+
+**When marker mode engages.** Marker mode is active whenever the target URL contains the keyword. If the target URL contains no occurrence of the keyword — and no marker-only option was supplied — `dir` falls back to the existing base-path behavior, appending each wordlist entry to the base path via URL join.
+
+**Per-marker wordlist association.** In marker mode the repeatable `--wordlist` values become the per-marker wordlists, associated with markers in the left-to-right order the markers occur (the first `--wordlist` is the wordlist of the first marker, and so on). This differs from the non-marker merge-and-de-duplicate behavior. Fallback rules:
+
+- **Fewer wordlists than markers:** the last supplied wordlist fills every remaining marker that has no explicitly associated wordlist.
+- **Exactly one wordlist, two or more markers:** that single wordlist is used for every marker.
+- **More wordlists than markers:** rejected with a descriptive error (see below).
+
+**Combination modes.** With two or more markers, `--fuzz-mode` controls how the per-marker wordlists combine:
+
+- `clusterbomb` (default): the cartesian product of all wordlists — every combination of one value per marker becomes a candidate. For `M` markers with wordlist sizes `W1 … WM`, this generates `W1 × … × WM` candidates.
+- `pitchfork`: the wordlists are iterated in parallel, pairing the i-th value of each list, stopping at the shortest wordlist — `min(W1, …, WM)` candidates. Use it to pair related lists position-by-position (e.g. a versions list with a matching filenames list).
+
+A single marker reduces to exactly `W` candidates in either mode. Marker-generated candidates obey the same discovery controls as any other candidate: URL normalization and de-duplication, the `--max-requests` budget, the `--concurrency` limit, `--rate-limit`, the User-Agent options, the response matchers/filters, and `--confirm-hits`.
+
+**Choosing a distinct keyword.** Because *every* literal occurrence of the keyword is treated as a marker, pick a keyword that does not appear in legitimate URL text. If `FUZZ` (or your chosen keyword) could collide with real path, query, or hostname text, choose a distinct token (for example `__FUZZ__`) to avoid creating unintended marker positions.
+
+**Marker-mode validation (exit-before-discovery).** These configurations are rejected with a descriptive error and issue **no** requests:
+
+- An empty or whitespace-only `--fuzz-keyword`.
+- A marker-only option (`--fuzz-keyword` or `--fuzz-mode` given explicitly on the command line) while the target URL contains no occurrence of the keyword.
+- More `--wordlist` sources than there are markers (the error names both counts).
+- `--fuzz-mode pitchfork` with an empty associated wordlist (the error identifies the empty wordlist).
+- A `--fuzz-mode` value other than `clusterbomb` or `pitchfork`.
+- An associated wordlist that cannot be read from its source (the error names the unreadable source).
+
 #### Request Context (Headers, Cookies, Auth)
 
 | Option | Description | Default | Example |
