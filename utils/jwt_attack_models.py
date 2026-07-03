@@ -23,6 +23,7 @@ class AttackType(str, Enum):
     PSYCHIC_SIGNATURE = "psychic_signature"
     TIMESTAMP_TAMPERING = "timestamp_tampering"
     CLAIM_FUZZING = "claim_fuzzing"
+    ALGORITHM_CONFUSION = "algorithm_confusion"
 
 
 class VulnerabilitySeverity(str, Enum):

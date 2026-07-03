@@ -162,17 +162,23 @@ def _make_engine(http_engine=None, signing_secret=SIGNING_SECRET,
 def test_every_attack_type_generates_nonempty_tokens():
     """Each always-on vector yields at least one non-empty token (Req 24.1).
 
-    The two conditional vectors added by Reqs 59/63 are excluded from the
-    always-on guarantee because they legitimately produce no tokens for this
-    engine configuration (asserted separately below):
+    The three conditional vectors are excluded from the always-on guarantee
+    because they legitimately produce no tokens for this engine configuration
+    (asserted separately below):
 
     * ``PSYCHIC_SIGNATURE`` applies only when the base token uses an ECDSA
       algorithm (Req 59.2); the HS256 base token here yields no token.
     * ``CLAIM_FUZZING`` requires an operator-supplied ``fuzz_target`` +
       ``fuzz_values`` (Req 63.1); with neither configured it yields no token.
+    * ``ALGORITHM_CONFUSION`` requires operator-supplied ``public_key_material``
+      to use as the HMAC key; with none configured it yields no token.
     """
     engine = _make_engine()
-    conditional = {AttackType.PSYCHIC_SIGNATURE, AttackType.CLAIM_FUZZING}
+    conditional = {
+        AttackType.PSYCHIC_SIGNATURE,
+        AttackType.CLAIM_FUZZING,
+        AttackType.ALGORITHM_CONFUSION,
+    }
     for attack_type in AttackType:
         if attack_type in conditional:
             continue
@@ -184,10 +190,13 @@ def test_every_attack_type_generates_nonempty_tokens():
 
 
 def test_conditional_vectors_yield_no_tokens_without_their_preconditions():
-    """PSYCHIC_SIGNATURE (non-ECDSA base) and CLAIM_FUZZING (no config) yield []."""
+    """PSYCHIC_SIGNATURE (non-ECDSA base), CLAIM_FUZZING (no config), and
+    ALGORITHM_CONFUSION (no public key) all yield []."""
     engine = _make_engine()
     # HS256 base token => no ECDSA psychic-signature token (Req 59.2).
     assert engine.generate_token(AttackType.PSYCHIC_SIGNATURE) == []
+    # No public key material configured => no algorithm-confusion token.
+    assert engine.generate_token(AttackType.ALGORITHM_CONFUSION) == []
     # No fuzz_target / fuzz_values configured => no claim-fuzzing token (Req 63.1).
     assert engine.generate_token(AttackType.CLAIM_FUZZING) == []
 

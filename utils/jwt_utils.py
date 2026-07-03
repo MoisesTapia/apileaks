@@ -1057,43 +1057,73 @@ def get_random_user_agents() -> list:
     ]
 
 
+# Per-section colours for JWT visualisation. Mirrors the jwt.io convention so
+# each segment is instantly recognisable: header=red, payload=magenta,
+# signature=cyan. Colours are applied via ``click.style`` which degrades
+# gracefully to plain text when the output is not a TTY.
+JWT_HEADER_COLOR = 'red'
+JWT_PAYLOAD_COLOR = 'magenta'
+JWT_SIGNATURE_COLOR = 'cyan'
+
+
+def colorize_jwt(decoded_jwt: Dict[str, Any]) -> str:
+    """Return the raw token with each segment coloured by section.
+
+    The header, payload, and signature segments are styled in their section
+    colours (with the separating dots left uncoloured) so the three parts of the
+    token can be told apart at a glance.
+    """
+    header_seg = click.style(decoded_jwt.get('raw_header', ''), fg=JWT_HEADER_COLOR, bold=True)
+    payload_seg = click.style(decoded_jwt.get('raw_payload', ''), fg=JWT_PAYLOAD_COLOR, bold=True)
+    signature_seg = click.style(decoded_jwt.get('raw_signature', ''), fg=JWT_SIGNATURE_COLOR, bold=True)
+    return f"{header_seg}.{payload_seg}.{signature_seg}"
+
+
 def print_jwt_info(decoded_jwt: Dict[str, Any]) -> None:
-    """Pretty print JWT information"""
+    """Pretty print JWT information with per-section colours."""
     click.echo("\n" + "="*60)
     click.echo("JWT Token Analysis")
     click.echo("="*60)
-    
+
+    # Colour-coded raw token so each section is visually distinguishable.
+    click.echo("\n🎫 TOKEN (colour-coded by section):")
+    click.echo("-" * 20)
+    click.echo(f"  {colorize_jwt(decoded_jwt)}")
+    click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
+               + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
+               + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
+
     # Header
-    click.echo("\n📋 HEADER:")
-    click.echo("-" * 20)
+    click.echo("\n" + click.style("📋 HEADER:", fg=JWT_HEADER_COLOR, bold=True))
+    click.echo(click.style("-" * 20, fg=JWT_HEADER_COLOR))
     for key, value in decoded_jwt['header'].items():
-        click.echo(f"  {key}: {value}")
-    
+        click.echo("  " + click.style(f"{key}: {value}", fg=JWT_HEADER_COLOR))
+
     # Payload
-    click.echo("\n🔐 PAYLOAD:")
-    click.echo("-" * 20)
+    click.echo("\n" + click.style("🔐 PAYLOAD:", fg=JWT_PAYLOAD_COLOR, bold=True))
+    click.echo(click.style("-" * 20, fg=JWT_PAYLOAD_COLOR))
     for key, value in decoded_jwt['payload'].items():
         if key in ['exp', 'iat', 'nbf']:
             # Convert timestamp to readable date
             try:
                 import datetime
                 readable_date = datetime.datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M:%S UTC')
-                click.echo(f"  {key}: {value} ({readable_date})")
+                click.echo("  " + click.style(f"{key}: {value} ({readable_date})", fg=JWT_PAYLOAD_COLOR))
             except:
-                click.echo(f"  {key}: {value}")
+                click.echo("  " + click.style(f"{key}: {value}", fg=JWT_PAYLOAD_COLOR))
         else:
-            click.echo(f"  {key}: {value}")
-    
+            click.echo("  " + click.style(f"{key}: {value}", fg=JWT_PAYLOAD_COLOR))
+
     # Signature info
-    click.echo("\n🔏 SIGNATURE:")
-    click.echo("-" * 20)
-    click.echo(f"  Algorithm: {decoded_jwt['header'].get('alg', 'Unknown')}")
-    click.echo(f"  Signature: {decoded_jwt['signature'][:20]}...")
-    
+    click.echo("\n" + click.style("🔏 SIGNATURE:", fg=JWT_SIGNATURE_COLOR, bold=True))
+    click.echo(click.style("-" * 20, fg=JWT_SIGNATURE_COLOR))
+    click.echo("  " + click.style(f"Algorithm: {decoded_jwt['header'].get('alg', 'Unknown')}", fg=JWT_SIGNATURE_COLOR))
+    click.echo("  " + click.style(f"Signature: {decoded_jwt['signature'][:20]}...", fg=JWT_SIGNATURE_COLOR))
+
     # Security warnings
     click.echo("\n⚠️  SECURITY NOTES:")
     click.echo("-" * 20)
-    
+
     alg = decoded_jwt['header'].get('alg', '').upper()
     if alg == 'NONE':
         click.echo("  🚨 WARNING: Algorithm is 'none' - no signature verification!")
@@ -1101,7 +1131,7 @@ def print_jwt_info(decoded_jwt: Dict[str, Any]) -> None:
         click.echo("  ℹ️  Uses HMAC signature - requires shared secret")
     elif alg.startswith('RS') or alg.startswith('ES'):
         click.echo("  ℹ️  Uses asymmetric signature - requires public key verification")
-    
+
     # Check expiration
     if 'exp' in decoded_jwt['payload']:
         import datetime
@@ -1112,5 +1142,5 @@ def print_jwt_info(decoded_jwt: Dict[str, Any]) -> None:
         else:
             time_left = exp_time - now
             click.echo(f"  ✅ Token expires in: {time_left}")
-    
+
     click.echo("\n" + "="*60)

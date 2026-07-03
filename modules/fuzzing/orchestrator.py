@@ -6,6 +6,8 @@ Coordinates traditional fuzzing operations for endpoints, parameters, and header
 import asyncio
 import os
 import json
+import secrets
+import string
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -37,6 +39,10 @@ from utils.graphql_probe import (
     is_graphql_response,
     introspection_enabled,
 )
+
+# Length of run-unique alphanumeric sentinel values injected during parameter
+# fuzzing. Must be >= 16 to satisfy reflection-detection requirements (R3.1).
+SENTINEL_LEN = 20
 
 
 def normalize_extensions(raw: List[str]) -> List[str]:
@@ -1326,6 +1332,35 @@ class Parameter:
     response_difference: bool = False
 
 
+# Sentinel marking a response body that could not be parsed as JSON. Distinct
+# from any valid JSON value (including ``None`` from ``json.loads("null")``), so
+# new-JSON-field detection can tell "invalid JSON" apart from a real null value.
+_INVALID_JSON = object()
+
+
+@dataclass
+class ResponseDifference:
+    """Signal-aware result of comparing a fuzz response against a baseline.
+
+    Internal to the ParameterFuzzer detection pipeline. Records whether a
+    Response_Difference was triggered and which signals fired so a finding can
+    carry the specific detection evidence (R3.5, R4.2).
+
+    Fields:
+        triggered: True when at least one difference signal fired.
+        signals: The signal names that fired
+            (e.g. ["status_code", "reflection:body", "new_json_field"]).
+        reflection_location: Where the sentinel was reflected ("body"/"header"),
+            or None when no reflection was detected.
+        new_json_fields: Sorted top-level JSON keys present in the test response
+            but absent from the baseline, or None when not applicable.
+    """
+    triggered: bool
+    signals: List[str]
+    reflection_location: Optional[str] = None
+    new_json_fields: Optional[List[str]] = None
+
+
 class ParameterFuzzer:
     """
     Parameter Fuzzer with wordlist support and boundary testing
@@ -1349,6 +1384,27 @@ class ParameterFuzzer:
         self.successful_requests = 0
         self.discovered_parameters: List[Parameter] = []
         self.parameter_test_details: List[Dict] = []  # Track parameter testing details
+
+        # Track sentinel values issued during the run so each candidate
+        # parameter receives a run-unique sentinel (R3.1).
+        self._sentinels: Dict[str, str] = {}
+
+        # Candidates excluded by Hit_Confirmation (R5.3/R5.5). Each carries a
+        # ``confirmation_status`` of "excluded_failed_retest" so a candidate that
+        # failed to reproduce (or whose retest hit a transport error/timeout) is
+        # observable even though it is deliberately kept out of the reported
+        # findings.
+        self.excluded_findings: List[Finding] = []
+
+        # Request budget (R11). ``config.parameters.max_requests`` bounds the
+        # total number of HTTP requests this fuzzer issues (baseline + fuzz +
+        # boundary + confirmation, all counted). ``None`` means the run is
+        # unbounded, so existing runs are unaffected (no behavior change). When
+        # the budget is reached mid-run the fuzzer stops issuing requests,
+        # records the stop reason here, and returns the findings gathered so far
+        # (R11.3). ``budget_stop_reason`` stays ``None`` for an unbounded run or
+        # a bounded run that never reaches its limit.
+        self.budget_stop_reason: Optional[str] = None
         
         # Boundary test values
         self.boundary_values = {
@@ -1361,7 +1417,161 @@ class ParameterFuzzer:
         
         self.logger.info("Parameter Fuzzer initialized",
                         boundary_testing=config.parameters.boundary_testing)
-    
+
+    def _make_sentinel(self, param_name: str) -> str:
+        """Return a run-unique alphanumeric sentinel for ``param_name``.
+
+        The sentinel is ``SENTINEL_LEN`` (>= 16) characters drawn from ASCII
+        letters and digits using a cryptographically strong source. Uniqueness
+        within the run is enforced by tracking issued sentinels in
+        ``self._sentinels`` (R3.1).
+        """
+        alphabet = string.ascii_letters + string.digits
+        issued = set(self._sentinels.values())
+        while True:
+            candidate = ''.join(secrets.choice(alphabet) for _ in range(SENTINEL_LEN))
+            if candidate not in issued:
+                self._sentinels[param_name] = candidate
+                return candidate
+
+    def _injection_points(self) -> Set[str]:
+        """Derive the enabled injection points from the selected HTTP methods.
+
+        Query-carrying methods (GET/DELETE) enable ``'query'`` fuzzing and
+        body-carrying methods (POST/PUT/PATCH) enable ``'body'`` fuzzing. The
+        selection reads ``config.parameters.methods`` case-insensitively; no
+        request is issued for a disabled injection point (R6.1, R6.2, R6.3).
+        """
+        methods = {m.upper() for m in self.config.parameters.methods}
+        points: Set[str] = set()
+        if methods & {'GET', 'DELETE'}:
+            points.add('query')
+        if methods & {'POST', 'PUT', 'PATCH'}:
+            points.add('body')
+        return points
+
+    def _confirmation_count(self) -> int:
+        """Return the number of Hit_Confirmation retests (0 when disabled).
+
+        ``config.parameters.confirm_hits`` of None or 0 disables confirmation,
+        so candidates are reported immediately with no retest (R5.6). Any
+        positive value is the retest count N (>= 1); the CLI supplies the
+        default of 2 when a user enables confirmation (R5.1).
+        """
+        n = self.config.parameters.confirm_hits
+        if not n:
+            return 0
+        return max(int(n), 1)
+
+    def _budget_exhausted(self) -> bool:
+        """Return True when the configured request budget has been reached.
+
+        The budget is ``config.parameters.max_requests``. When it is ``None``
+        the run is unbounded and this always returns False, so existing runs
+        that do not set a budget are unaffected. Otherwise the run is bounded
+        and this returns True once ``requests_made`` has reached the budget.
+
+        This is checked before every HTTP request (baseline, fuzz, boundary,
+        confirmation). Because ``requests_made`` already increments on every
+        issued request and the check happens *before* issuing, the total number
+        of requests the run issues can never exceed the budget B (R11.1, R11.2).
+        The first time the budget is reached the stop reason is recorded so the
+        run can be reported as partial while retaining the findings gathered so
+        far (R11.3).
+        """
+        max_requests = self.config.parameters.max_requests
+        if max_requests is not None and self.requests_made >= max_requests:
+            if self.budget_stop_reason is None:
+                self.budget_stop_reason = (
+                    f"request budget reached "
+                    f"({self.requests_made}/{max_requests} requests)"
+                )
+            return True
+        return False
+
+    async def _reissue_candidate(self, endpoint: Endpoint, injection: str,
+                                 param_name: str,
+                                 sentinel: str) -> Optional[Response]:
+        """Re-issue the candidate request through the same path used at fuzz time.
+
+        Routing by ``injection`` ("query"/"json"/"form"/"xml") to the matching
+        ``_test_*`` helper guarantees the retest increments ``requests_made``
+        exactly like the original request, so every retest counts toward the
+        request budget (R5.4). Returns the Response, or None on a transport
+        error/timeout (the ``_test_*`` helpers swallow the exception and return
+        None).
+        """
+        if injection == "query":
+            return await self._test_query_parameter(endpoint, param_name, sentinel)
+        if injection == "json":
+            return await self._test_json_parameter(endpoint, {param_name: sentinel})
+        if injection == "form":
+            return await self._test_form_parameter(endpoint, {param_name: sentinel})
+        if injection == "xml":
+            xml_payload = (
+                f"<?xml version='1.0'?><root><{param_name}>{sentinel}"
+                f"</{param_name}></root>"
+            )
+            return await self._test_xml_parameter(endpoint, xml_payload)
+        return None
+
+    async def _confirm_candidate(self, endpoint: Endpoint, injection: str,
+                                 param_name: str, sentinel: str,
+                                 baseline: Response,
+                                 expected: "ResponseDifference") -> bool:
+        """Re-issue the candidate request N times and report whether it reproduces.
+
+        N is ``config.parameters.confirm_hits`` (default 2 when enabled, >= 1).
+        Returns True only if every one of the N retests reproduces the expected
+        ResponseDifference signals (R5.2). A transport error or timeout in any
+        retest — surfaced as a None response from the shared request path —
+        counts as a non-reproduction and returns False (R5.5). Every retest is
+        issued via the same ``_test_*`` path used during fuzzing, so each counts
+        toward the request budget (R5.4).
+        """
+        retests = self._confirmation_count()
+        expected_signals = set(expected.signals)
+        for _ in range(retests):
+            response = await self._reissue_candidate(
+                endpoint, injection, param_name, sentinel
+            )
+            if response is None:
+                # Transport error/timeout => non-reproduction (R5.5).
+                return False
+            diff = self._evaluate_difference(sentinel, baseline, response)
+            if not diff.triggered or set(diff.signals) != expected_signals:
+                return False
+        return True
+
+    async def _confirm_and_annotate(self, finding: Finding, endpoint: Endpoint,
+                                    injection: str, param_name: str,
+                                    sentinel: str, baseline: Response,
+                                    expected: "ResponseDifference") -> bool:
+        """Apply Hit_Confirmation to a candidate finding and record its status.
+
+        When confirmation is disabled (``confirm_hits`` None/0), the candidate is
+        reported immediately with ``confirmation_status`` left as None and True
+        is returned (R5.6). When enabled, the candidate is retested via
+        :meth:`_confirm_candidate`: a reproduced candidate is annotated
+        ``confirmation_status="confirmed"`` and reported (True), while a
+        candidate that fails to reproduce (including a retest transport
+        error/timeout) is annotated
+        ``confirmation_status="excluded_failed_retest"``, recorded in
+        ``self.excluded_findings`` for observability, and excluded from the
+        reported findings (False) (R5.2, R5.3, R5.5).
+        """
+        if self._confirmation_count() <= 0:
+            return True
+        confirmed = await self._confirm_candidate(
+            endpoint, injection, param_name, sentinel, baseline, expected
+        )
+        if confirmed:
+            finding.confirmation_status = "confirmed"
+            return True
+        finding.confirmation_status = "excluded_failed_retest"
+        self.excluded_findings.append(finding)
+        return False
+
     async def fuzz_parameters(self, endpoints: List[Endpoint]) -> List[Finding]:
         """
         Fuzz parameters on discovered endpoints
@@ -1382,18 +1592,27 @@ class ParameterFuzzer:
             if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
         ]
         
+        # Injection points derived from the selected methods (R6). No request
+        # is issued for a disabled injection point.
+        injection_points = self._injection_points()
+
         for endpoint in suitable_endpoints:
+            # Stop cleanly once the request budget is reached, returning the
+            # findings gathered so far (R11.3).
+            if self._budget_exhausted():
+                break
+
             self.logger.debug("Fuzzing parameters for endpoint", 
                             url=endpoint.url, 
                             method=endpoint.method)
             
             # Query parameter fuzzing
-            if endpoint.method in ['GET', 'DELETE']:
+            if 'query' in injection_points and endpoint.method in ['GET', 'DELETE']:
                 query_findings = await self._fuzz_query_parameters(endpoint)
                 findings.extend(query_findings)
             
             # Body parameter fuzzing
-            if endpoint.method in ['POST', 'PUT', 'PATCH']:
+            if 'body' in injection_points and endpoint.method in ['POST', 'PUT', 'PATCH']:
                 body_findings = await self._fuzz_body_parameters(endpoint)
                 findings.extend(body_findings)
         
@@ -1420,14 +1639,19 @@ class ParameterFuzzer:
         
         # Test each parameter from wordlist
         for i, param_name in enumerate(wordlist, 1):
+            # Stop cleanly once the request budget is reached (R11.3).
+            if self._budget_exhausted():
+                break
+
             self.parameters_tested += 1
             
             # Show progress
             self.logger.info(f"Testing parameter {i}/{len(wordlist)}: {param_name}", 
                            endpoint=endpoint.url, parameter=param_name)
             
-            # Test with simple value first
-            test_response = await self._test_query_parameter(endpoint, param_name, "test_value")
+            # Test with a run-unique sentinel value
+            sentinel = self._make_sentinel(param_name)
+            test_response = await self._test_query_parameter(endpoint, param_name, sentinel)
             
             # Record parameter test details
             param_detail = {
@@ -1437,7 +1661,9 @@ class ParameterFuzzer:
                 'status': 'no_difference'
             }
             
-            if test_response and self._has_response_difference(baseline_response, test_response):
+            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
+                    if test_response else None)
+            if diff and diff.triggered:
                 param_detail['status'] = 'difference_found'
                 
                 # Parameter seems to be accepted, create finding
@@ -1465,10 +1691,20 @@ class ParameterFuzzer:
                     response_time=test_response.elapsed,
                     evidence=f"Query parameter '{param_name}' discovered - response differs from baseline",
                     recommendation="Review parameter usage and ensure proper validation",
-                    payload=f"?{param_name}=test_value",
-                    headers=dict(test_response.headers)
+                    payload=f"?{param_name}={sentinel}",
+                    headers=dict(test_response.headers),
+                    detection_signal=self._primary_signal(diff),
+                    detection_signals=diff.signals,
+                    reflection_location=diff.reflection_location,
+                    new_json_fields=diff.new_json_fields
                 )
-                findings.append(finding)
+                if await self._confirm_and_annotate(
+                    finding, endpoint, "query", param_name, sentinel,
+                    baseline_response, diff
+                ):
+                    findings.append(finding)
+                else:
+                    param_detail['status'] = 'excluded_failed_retest'
             
             # Add parameter details to tracking list
             self.parameter_test_details.append(param_detail)
@@ -1516,13 +1752,20 @@ class ParameterFuzzer:
         findings = []
         
         for param_name in wordlist:
+            # Stop cleanly once the request budget is reached (R11.3).
+            if self._budget_exhausted():
+                break
+
             self.parameters_tested += 1
             
-            # Test with JSON payload
-            json_payload = {param_name: "test_value"}
+            # Test with JSON payload using a run-unique sentinel value
+            sentinel = self._make_sentinel(param_name)
+            json_payload = {param_name: sentinel}
             test_response = await self._test_json_parameter(endpoint, json_payload)
             
-            if test_response and self._has_response_difference(baseline_response, test_response):
+            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
+                    if test_response else None)
+            if diff and diff.triggered:
                 parameter = Parameter(
                     name=param_name,
                     location="body",
@@ -1548,9 +1791,17 @@ class ParameterFuzzer:
                     evidence=f"JSON body parameter '{param_name}' discovered - response differs from baseline",
                     recommendation="Review parameter usage and ensure proper validation",
                     payload=json.dumps(json_payload),
-                    headers=dict(test_response.headers)
+                    headers=dict(test_response.headers),
+                    detection_signal=self._primary_signal(diff),
+                    detection_signals=diff.signals,
+                    reflection_location=diff.reflection_location,
+                    new_json_fields=diff.new_json_fields
                 )
-                findings.append(finding)
+                if await self._confirm_and_annotate(
+                    finding, endpoint, "json", param_name, sentinel,
+                    baseline_response, diff
+                ):
+                    findings.append(finding)
                 
                 # Boundary testing
                 if self.config.parameters.boundary_testing:
@@ -1567,13 +1818,20 @@ class ParameterFuzzer:
         findings = []
         
         for param_name in wordlist:
+            # Stop cleanly once the request budget is reached (R11.3).
+            if self._budget_exhausted():
+                break
+
             self.parameters_tested += 1
             
-            # Test with form data
-            form_data = {param_name: "test_value"}
+            # Test with form data using a run-unique sentinel value
+            sentinel = self._make_sentinel(param_name)
+            form_data = {param_name: sentinel}
             test_response = await self._test_form_parameter(endpoint, form_data)
             
-            if test_response and self._has_response_difference(baseline_response, test_response):
+            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
+                    if test_response else None)
+            if diff and diff.triggered:
                 parameter = Parameter(
                     name=param_name,
                     location="body",
@@ -1598,10 +1856,18 @@ class ParameterFuzzer:
                     response_time=test_response.elapsed,
                     evidence=f"Form parameter '{param_name}' discovered - response differs from baseline",
                     recommendation="Review parameter usage and ensure proper validation",
-                    payload=f"form-data: {param_name}=test_value",
-                    headers=dict(test_response.headers)
+                    payload=f"form-data: {param_name}={sentinel}",
+                    headers=dict(test_response.headers),
+                    detection_signal=self._primary_signal(diff),
+                    detection_signals=diff.signals,
+                    reflection_location=diff.reflection_location,
+                    new_json_fields=diff.new_json_fields
                 )
-                findings.append(finding)
+                if await self._confirm_and_annotate(
+                    finding, endpoint, "form", param_name, sentinel,
+                    baseline_response, diff
+                ):
+                    findings.append(finding)
         
         return findings
     
@@ -1611,13 +1877,20 @@ class ParameterFuzzer:
         findings = []
         
         for param_name in wordlist[:10]:  # Limit XML testing to first 10 parameters
+            # Stop cleanly once the request budget is reached (R11.3).
+            if self._budget_exhausted():
+                break
+
             self.parameters_tested += 1
             
-            # Create simple XML payload
-            xml_payload = f"<?xml version='1.0'?><root><{param_name}>test_value</{param_name}></root>"
+            # Create simple XML payload using a run-unique sentinel value
+            sentinel = self._make_sentinel(param_name)
+            xml_payload = f"<?xml version='1.0'?><root><{param_name}>{sentinel}</{param_name}></root>"
             test_response = await self._test_xml_parameter(endpoint, xml_payload)
             
-            if test_response and self._has_response_difference(baseline_response, test_response):
+            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
+                    if test_response else None)
+            if diff and diff.triggered:
                 parameter = Parameter(
                     name=param_name,
                     location="body",
@@ -1643,9 +1916,17 @@ class ParameterFuzzer:
                     evidence=f"XML parameter '{param_name}' discovered - response differs from baseline",
                     recommendation="Review parameter usage and ensure proper validation",
                     payload=xml_payload,
-                    headers=dict(test_response.headers)
+                    headers=dict(test_response.headers),
+                    detection_signal=self._primary_signal(diff),
+                    detection_signals=diff.signals,
+                    reflection_location=diff.reflection_location,
+                    new_json_fields=diff.new_json_fields
                 )
-                findings.append(finding)
+                if await self._confirm_and_annotate(
+                    finding, endpoint, "xml", param_name, sentinel,
+                    baseline_response, diff
+                ):
+                    findings.append(finding)
         
         return findings
     
@@ -1656,6 +1937,9 @@ class ParameterFuzzer:
         
         for value_type, test_values in self.boundary_values.items():
             for test_value in test_values:
+                # Stop cleanly once the request budget is reached (R11.3).
+                if self._budget_exhausted():
+                    return findings
                 try:
                     if location == "query":
                         test_response = await self._test_query_parameter(endpoint, param_name, test_value)
@@ -1720,6 +2004,9 @@ class ParameterFuzzer:
         
         for value_type, test_values in self.boundary_values.items():
             for test_value in test_values:
+                # Stop cleanly once the request budget is reached (R11.3).
+                if self._budget_exhausted():
+                    return findings
                 try:
                     json_payload = {param_name: test_value}
                     test_response = await self._test_json_parameter(endpoint, json_payload)
@@ -1755,6 +2042,10 @@ class ParameterFuzzer:
     
     async def _get_baseline_response(self, endpoint: Endpoint) -> Optional[Response]:
         """Get baseline response for comparison"""
+        # Enforce the request budget before issuing (R11.2): once the budget is
+        # reached no further request is issued, so the total never exceeds B.
+        if self._budget_exhausted():
+            return None
         try:
             response = await self.http_client.request(endpoint.method, endpoint.url)
             self.requests_made += 1
@@ -1770,6 +2061,9 @@ class ParameterFuzzer:
     async def _test_query_parameter(self, endpoint: Endpoint, param_name: str, 
                                   param_value: Any) -> Optional[Response]:
         """Test a query parameter"""
+        # Enforce the request budget before issuing (R11.2).
+        if self._budget_exhausted():
+            return None
         try:
             params = {param_name: param_value}
             response = await self.http_client.request(endpoint.method, endpoint.url, params=params)
@@ -1785,6 +2079,9 @@ class ParameterFuzzer:
     
     async def _test_json_parameter(self, endpoint: Endpoint, json_payload: Dict[str, Any]) -> Optional[Response]:
         """Test JSON parameters"""
+        # Enforce the request budget before issuing (R11.2).
+        if self._budget_exhausted():
+            return None
         try:
             headers = {'Content-Type': 'application/json'}
             response = await self.http_client.request(
@@ -1805,6 +2102,9 @@ class ParameterFuzzer:
     
     async def _test_form_parameter(self, endpoint: Endpoint, form_data: Dict[str, Any]) -> Optional[Response]:
         """Test form parameters"""
+        # Enforce the request budget before issuing (R11.2).
+        if self._budget_exhausted():
+            return None
         try:
             headers = {'Content-Type': 'application/x-www-form-urlencoded'}
             response = await self.http_client.request(
@@ -1825,6 +2125,9 @@ class ParameterFuzzer:
     
     async def _test_xml_parameter(self, endpoint: Endpoint, xml_payload: str) -> Optional[Response]:
         """Test XML parameters"""
+        # Enforce the request budget before issuing (R11.2).
+        if self._budget_exhausted():
+            return None
         try:
             headers = {'Content-Type': 'application/xml'}
             response = await self.http_client.request(
@@ -1843,29 +2146,175 @@ class ParameterFuzzer:
                             error=str(e))
             return None
     
-    def _has_response_difference(self, baseline: Response, test: Response) -> bool:
-        """Check if test response differs significantly from baseline"""
+    def _baseline_signals(self, baseline: Response, test: Response) -> List[str]:
+        """Return the existing status/size/time/content-type difference signals.
+
+        These are the four comparisons the fuzzer has always used to detect a
+        Response_Difference. Unlike the historical early-return implementation,
+        this collects *every* signal that fired (order: status_code, body_size,
+        response_time, content_type) so callers can record the full set while
+        still preserving the original triggering conditions exactly (R3.4).
+        """
+        signals: List[str] = []
+
         # Status code difference
         if baseline.status_code != test.status_code:
-            return True
-        
+            signals.append("status_code")
+
         # Significant size difference (more than 10% or 100 bytes)
         size_diff = abs(len(baseline.content) - len(test.content))
         if size_diff > max(len(baseline.content) * 0.1, 100):
-            return True
-        
+            signals.append("body_size")
+
         # Response time difference (more than 2x)
         if test.elapsed > baseline.elapsed * 2 and test.elapsed > 1.0:
-            return True
-        
+            signals.append("response_time")
+
         # Content type difference
         baseline_ct = baseline.headers.get('content-type', '').lower()
         test_ct = test.headers.get('content-type', '').lower()
         if baseline_ct != test_ct:
-            return True
-        
-        return False
-    
+            signals.append("content_type")
+
+        return signals
+
+    def _has_response_difference(self, baseline: Response, test: Response) -> bool:
+        """Check if test response differs significantly from baseline.
+
+        Thin bool wrapper preserved for existing callers (e.g. header fuzzing
+        paths) that compare responses without a sentinel. It reflects only the
+        historical status/size/time/content-type signals; reflection and
+        new-JSON-field detection require a sentinel and are routed exclusively
+        through :meth:`_evaluate_difference`.
+        """
+        return bool(self._baseline_signals(baseline, test))
+
+    def _evaluate_difference(self, sentinel: Optional[str], baseline: Response,
+                             test: Response) -> ResponseDifference:
+        """Classify a test response against the baseline into a signal record.
+
+        Runs the existing status/size/time/content-type comparisons first, then
+        reflection detection (via :meth:`_detect_reflection`), then
+        new-JSON-field detection (via :meth:`_detect_new_json_fields`). Any
+        signal sets ``triggered=True`` (R3.4, R3.5, R4.2). Signal names follow
+        the design, e.g. ``"status_code"``, ``"reflection:body"``,
+        ``"new_json_field"``.
+        """
+        signals = self._baseline_signals(baseline, test)
+
+        # Reflection detection (requires a sentinel).
+        reflection_location: Optional[str] = None
+        if sentinel:
+            reflection_location = self._detect_reflection(sentinel, baseline, test)
+            if reflection_location is not None:
+                signals.append(f"reflection:{reflection_location}")
+
+        # New-JSON-field detection (graceful skip when either body is non-JSON).
+        new_json_fields = self._detect_new_json_fields(baseline, test)
+        if new_json_fields:
+            signals.append("new_json_field")
+
+        return ResponseDifference(
+            triggered=bool(signals),
+            signals=signals,
+            reflection_location=reflection_location,
+            new_json_fields=new_json_fields if new_json_fields else None,
+        )
+
+    @staticmethod
+    def _primary_signal(diff: "ResponseDifference") -> Optional[str]:
+        """Return the representative detection signal for a finding.
+
+        Reflection takes precedence so a reflected candidate always records
+        ``detection_signal == "reflection"`` (Property 3); otherwise the first
+        signal that fired is used (which is ``"new_json_field"`` when only the
+        JSON-field diff triggered, satisfying Property 4).
+        """
+        if not diff.signals:
+            return None
+        if diff.reflection_location is not None:
+            return "reflection"
+        return diff.signals[0]
+
+    @staticmethod
+    def _serialize_headers(headers: Optional[Dict[str, str]]) -> str:
+        """Serialize response headers into a single string for substring matching.
+
+        Each header is rendered as ``name: value`` on its own line so a sentinel
+        reflected in any header name or value can be located with an exact
+        substring match.
+        """
+        if not headers:
+            return ""
+        return "\n".join(f"{name}: {value}" for name, value in headers.items())
+
+    def _detect_reflection(self, sentinel: str, baseline: Response,
+                           test: Response) -> Optional[str]:
+        """Return ``'body'`` or ``'header'`` if ``sentinel`` is reflected, else None.
+
+        The sentinel is reflected when it appears verbatim (exact substring
+        match) in the test response body or headers AND is absent from the
+        corresponding baseline location (R3.2, R3.4). A sentinel that already
+        appears in the corresponding baseline location is excluded so
+        pre-existing occurrences are never reported as reflections (R3.3).
+
+        The body is checked before the headers; the location string where the
+        reflection is found is returned so the finding can record it (R3.5).
+        Returns None when the sentinel is not reflected anywhere new.
+        """
+        if not sentinel:
+            return None
+
+        # Body reflection: present in the test body, absent from baseline body.
+        baseline_body = baseline.text or ""
+        test_body = test.text or ""
+        if sentinel in test_body and sentinel not in baseline_body:
+            return 'body'
+
+        # Header reflection: present in serialized test headers, absent from
+        # the serialized baseline headers.
+        baseline_headers = self._serialize_headers(baseline.headers)
+        test_headers = self._serialize_headers(test.headers)
+        if sentinel in test_headers and sentinel not in baseline_headers:
+            return 'header'
+
+        return None
+
+    def _detect_new_json_fields(self, baseline: Response,
+                                test: Response) -> Optional[List[str]]:
+        """Return sorted top-level JSON keys present in test but not baseline.
+
+        Both response bodies are parsed as JSON. When both parse successfully,
+        this returns the sorted list of top-level object keys present in the
+        test response but absent from the baseline response (R4.1, R4.2). The
+        list is empty when the test introduces no new top-level keys, which is
+        distinct from ``None``.
+
+        Returns ``None`` (a graceful skip, never an error) when either body is
+        not valid JSON, so remaining candidate parameters keep processing
+        (R4.3).
+
+        Only top-level keys are considered. JSON that does not parse to an
+        object (e.g. a list or scalar) is treated as having no top-level keys.
+        """
+        def _parse(response: Response):
+            try:
+                return json.loads(response.text or "")
+            except (ValueError, TypeError):
+                return _INVALID_JSON
+
+        baseline_json = _parse(baseline)
+        test_json = _parse(test)
+
+        # Either body is not valid JSON -> skip without error (R4.3).
+        if baseline_json is _INVALID_JSON or test_json is _INVALID_JSON:
+            return None
+
+        baseline_keys = set(baseline_json.keys()) if isinstance(baseline_json, dict) else set()
+        test_keys = set(test_json.keys()) if isinstance(test_json, dict) else set()
+
+        return sorted(test_keys - baseline_keys)
+
     async def _load_wordlist(self, wordlist_path: str) -> List[str]:
         """Load wordlist from file"""
         try:

@@ -34,7 +34,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from utils.jwt_attack_engine import JWTAttackEngine
 from utils.jwt_attack_models import AttackType
-from utils.jwt_utils import ES_CURVES, encode_jwt, encode_jwt_ecdsa
+from utils.jwt_utils import ES_CURVES, encode_jwt, encode_jwt_ecdsa, generate_rsa_keypair
 
 
 # ---------------------------------------------------------------------------
@@ -137,16 +137,23 @@ def es_base_tokens(draw):
 # Vectors with a documented precondition beyond "any HMAC base token":
 #   * PSYCHIC_SIGNATURE needs an ECDSA base token (Property 35 / Req 59.2).
 #   * CLAIM_FUZZING needs an operator-supplied fuzz target + values (Req 63.1).
+#   * ALGORITHM_CONFUSION needs operator-supplied public-key material used as
+#     the HMAC key (RS256->HS256 substitution).
 # Every other vector is executable from a plain HMAC base token with no extra
 # configuration. The Property 9 executability guarantee therefore holds when
 # each vector is exercised under an engine that satisfies its precondition.
 ECDSA_ONLY = {AttackType.PSYCHIC_SIGNATURE}
 REQUIRES_FUZZ = {AttackType.CLAIM_FUZZING}
+REQUIRES_PUBLIC_KEY = {AttackType.ALGORITHM_CONFUSION}
 FUZZ_TARGET = "role"
 FUZZ_VALUES = ("admin", "root", "superuser")
 
+# A fixed RSA public key reused across examples as the confusion HMAC key.
+_CONFUSION_PUBLIC_PEM = generate_rsa_keypair(2048)[1]
 
-def _make_engine(base_token, signing_secret=None, fuzz_target=None, fuzz_values=None):
+
+def _make_engine(base_token, signing_secret=None, fuzz_target=None,
+                 fuzz_values=None, public_key_material=None):
     return JWTAttackEngine(
         target_url="https://target.example/api",
         original_token=base_token,
@@ -154,6 +161,7 @@ def _make_engine(base_token, signing_secret=None, fuzz_target=None, fuzz_values=
         signing_secret=signing_secret,
         fuzz_target=fuzz_target,
         fuzz_values=fuzz_values,
+        public_key_material=public_key_material,
     )
 
 
@@ -161,26 +169,32 @@ def _engine_for(attack_type, hmac_token, es_token, *, signing_secret=None):
     """Build an engine configured to satisfy ``attack_type``'s precondition.
 
     ECDSA-only vectors get an ES* base token; fuzzing vectors get a configured
-    fuzz target/values; every other vector uses the plain HMAC base token.
+    fuzz target/values; algorithm-confusion gets public-key material; every
+    other vector uses the plain HMAC base token.
     """
     if attack_type in ECDSA_ONLY:
         return _make_engine(es_token, signing_secret=signing_secret)
     if attack_type in REQUIRES_FUZZ:
         return _make_engine(hmac_token, signing_secret=signing_secret,
                             fuzz_target=FUZZ_TARGET, fuzz_values=list(FUZZ_VALUES))
+    if attack_type in REQUIRES_PUBLIC_KEY:
+        return _make_engine(hmac_token, signing_secret=signing_secret,
+                            public_key_material=_CONFUSION_PUBLIC_PEM)
     return _make_engine(hmac_token, signing_secret=signing_secret)
 
 
 def _fully_capable_engine(es_token, signing_secret=None):
     """An engine whose base token + config satisfy EVERY vector at once.
 
-    An ES256 base token supports the ECDSA-only psychic vector, and configuring
-    a fuzz target/values supports CLAIM_FUZZING; every other vector is executable
-    from an ES256 base token too, so ``generate_all_tokens`` yields a non-empty
-    list for every member.
+    An ES256 base token supports the ECDSA-only psychic vector, configuring a
+    fuzz target/values supports CLAIM_FUZZING, and public-key material supports
+    ALGORITHM_CONFUSION; every other vector is executable from an ES256 base
+    token too, so ``generate_all_tokens`` yields a non-empty list for every
+    member.
     """
     return _make_engine(es_token, signing_secret=signing_secret,
-                        fuzz_target=FUZZ_TARGET, fuzz_values=list(FUZZ_VALUES))
+                        fuzz_target=FUZZ_TARGET, fuzz_values=list(FUZZ_VALUES),
+                        public_key_material=_CONFUSION_PUBLIC_PEM)
 
 
 # ---------------------------------------------------------------------------

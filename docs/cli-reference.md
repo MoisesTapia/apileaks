@@ -421,114 +421,218 @@ Notes:
 
 ### Examples
 
-**Basic discovery**
+The `dir` command's usage examples are organized into three levels: **basic uses**, **intermediate uses**, and **advanced uses**. Each example includes a title, a short description of what it does and what it's for, and a ready-to-copy command. The more flags you combine, the closer the example gets to the advanced level.
+
+---
+
+#### Basic uses
+
+Minimal examples to start discovering endpoints. They cover the target, the wordlist, HTTP methods, simple authentication, request pacing, and the output report name.
+
+**1. Basic discovery**
+
+Runs endpoint fuzzing against the target using the default wordlist (`wordlists/endpoints.txt`). It's the starting point for any reconnaissance.
 
 ```bash
-# Basic directory fuzzing
 python apileaks.py dir --target https://api.example.com
+```
 
-# Custom wordlist and a gentler rate limit
+**2. Custom wordlist**
+
+Uses your own list of candidate paths instead of the default wordlist. Useful when you have a dictionary specific to the target's domain or technology.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
-  --wordlist custom_endpoints.txt \
-  --rate-limit 5
+  --wordlist custom_endpoints.txt
+```
 
-# Restrict the HTTP methods that are tested
+**3. Restrict the HTTP methods tested**
+
+Restricts which HTTP verbs are tested on each candidate. Reduces the number of requests and the noise when you only care about certain methods.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --methods GET,POST
+```
 
-# Authenticated discovery with a JWT
+**4. Request pacing (rate limit)**
+
+Lowers the requests-per-second rate to be stealthier or avoid overwhelming the target. The default is `10` req/s.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 5
+```
+
+**5. Authenticated discovery with a JWT**
+
+Attaches a JWT as a credential to discover endpoints that are only visible after authenticating.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
 ```
 
-**Framework detection and version fuzzing**
+**6. Filter results by status code**
 
-```bash
-# Detect the backend framework while fuzzing
-python apileaks.py dir \
-  --target https://api.example.com \
-  --detect-framework
-
-# Enumerate API versions (/v1, /v2, /api/v1, ...)
-python apileaks.py dir \
-  --target https://api.example.com \
-  --fuzz-versions
-
-# Both, with random User-Agent rotation for WAF evasion
-python apileaks.py dir \
-  --target https://api.example.com \
-  --user-agent-random \
-  --detect-framework \
-  --fuzz-versions
-```
-
-**Status-code filtering**
+Shows only the results whose status matches a class (`2xx`), explicit codes (`200,401,403`), or a range (`400-403`).
 
 ```bash
 # Only successful responses (status class)
 python apileaks.py dir \
   --target https://api.example.com \
-  --status-code 2xx \
-  --save-session session.json
-
-# Only redirects
-python apileaks.py dir \
-  --target https://api.example.com \
-  --status-code 3xx \
-  --save-session session.json
+  --status-code 2xx
 
 # Explicit codes
 python apileaks.py dir \
   --target https://api.example.com \
-  --status-code 200,401,403 \
-  --save-session session.json
+  --status-code 200,401,403
 
 # A range of codes
 python apileaks.py dir \
   --target https://api.example.com \
-  --status-code 400-403 \
-  --save-session session.json
+  --status-code 400-403
 ```
 
-**Session persistence and reload**
+**7. Name the output file**
+
+Sets the base name of the generated report instead of letting it be auto-generated.
 
 ```bash
-# Save the full result set to a session file (source of truth)
+python apileaks.py dir \
+  --target https://api.example.com \
+  --output my-recon
+```
+
+---
+
+#### Intermediate uses
+
+Examples that combine several discovery sources, request context, recursion control, and result persistence. These are the flags you'll use in a realistic reconnaissance.
+
+**1. Multiple wordlists and extensions**
+
+Merges several wordlists (de-duplicated after normalization) and expands each entry with file extensions. `-w` and `-x` are repeatable.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  -w wordlists/endpoints.txt \
+  -w wordlists/admin.txt \
+  -x json,php
+```
+
+**2. Seed discovery from OpenAPI / Postman**
+
+Feeds discovery with paths extracted from an OpenAPI/Swagger spec or a Postman collection. Both flags are repeatable and combine with the wordlists.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --openapi api.yaml \
+  --postman collection.json
+```
+
+**3. Request context: headers, cookies, and Basic Auth**
+
+Attaches custom headers, a cookie, or HTTP Basic credentials to every discovery request. `-H` is repeatable.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  -H "X-API-Key: key123" \
+  -H "X-Env: staging" \
+  --cookie "session=abc123" \
+  --basic-auth admin:secret
+```
+
+**4. Framework detection and version fuzzing**
+
+Detects the backend framework while fuzzing and enumerates API versions (`/v1`, `/v2`, `/api/v1`, ...). You can use them separately or together.
+
+```bash
+# Framework detection only
+python apileaks.py dir \
+  --target https://api.example.com \
+  --detect-framework
+
+# Framework detection + version fuzzing
+python apileaks.py dir \
+  --target https://api.example.com \
+  --detect-framework \
+  --fuzz-versions
+```
+
+**5. User-Agent rotation (WAF evasion)**
+
+Changes the User-Agent to make detection harder. The three options are mutually exclusive: random, a fixed one, or rotation from a file.
+
+```bash
+# Random User-Agent from the built-in set
+python apileaks.py dir \
+  --target https://api.example.com \
+  --user-agent-random
+
+# A fixed User-Agent
+python apileaks.py dir \
+  --target https://api.example.com \
+  --user-agent-custom "MyScanner/1.0"
+
+# Round-robin rotation from a file
+python apileaks.py dir \
+  --target https://api.example.com \
+  --user-agent-file user_agents.txt
+```
+
+**6. Recursion control (depth, budget, concurrency)**
+
+Tunes how deep discovery recurses, the total request budget, and how many run in parallel. Lets you balance coverage against speed.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --depth 5 \
+  --max-requests 5000 \
+  --concurrency 100
+```
+
+**7. Per-request resilience (timeout and retries)**
+
+Sets the per-request timeout and how many automatic retries to make on failure. Also accepted by `scan`.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --timeout 30 \
+  --retries 5
+```
+
+**8. Session persistence and reload**
+
+Saves the full result set to a session file (the source of truth) and reloads it later without re-running discovery.
+
+```bash
+# Save the session
 python apileaks.py dir \
   --target https://api.example.com \
   --save-session session.json
 
-# Reload a prior session (skips discovery entirely) and re-render the table
-python apileaks.py dir \
-  --target https://api.example.com \
-  --load-session session.json
-
-# Reload and filter to server errors only
+# Reload the session (skips discovery) and filter to server errors
 python apileaks.py dir \
   --target https://api.example.com \
   --load-session session.json \
   --status-code 5xx
 ```
 
-**Human-readable export**
+**9. Human-readable export (Markdown / text)**
+
+Generates a readable report grouped by status class, in `md` or `txt`. You can save the session and export in the same run.
 
 ```bash
-# Markdown export (grouped by status class, ascending)
-python apileaks.py dir \
-  --target https://api.example.com \
-  --export md \
-  --export-file results.md
-
-# Plain-text export
-python apileaks.py dir \
-  --target https://api.example.com \
-  --export txt \
-  --export-file results.txt
-
-# Save the session AND export a human-readable report in one run
 python apileaks.py dir \
   --target https://api.example.com \
   --save-session session.json \
@@ -536,20 +640,165 @@ python apileaks.py dir \
   --export-file results.md
 ```
 
-**Interactive triage and targeted follow-up**
+**10. Machine-readable output (CSV / JSONL)**
+
+Writes a machine-processable output in `csv` or `jsonl`, distinct from the human-readable export. The file extension selects the format.
 
 ```bash
-# Enable the interactive selection prompt (opt-in)
 python apileaks.py dir \
   --target https://api.example.com \
-  --interactive
+  --output-format jsonl \
+  --output-file results.jsonl
+```
 
-# --triage is an alias for --interactive
+**11. Route through an intercepting proxy (Burp / Caido / Hetty)**
+
+Sends all traffic through a proxy to inspect and replay requests. Also accepts SOCKS5 URLs (requires `httpx[socks]`).
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
-  --triage
+  --proxy http://127.0.0.1:8080
+```
 
-# Reload a session, filter, and triage interactively
+---
+
+#### Advanced uses
+
+Examples that exploit the discovery engine's fine-grained capabilities: positional fuzzing, matchers/filters, method and GraphQL probing, secret detection, storage and recursion scope, hit confirmation, checkpoint/resume, TLS, interactive triage, and integration with the OWASP scan.
+
+**1. Positional fuzzing with markers (clusterbomb / pitchfork)**
+
+Places a literal keyword inside the target URL and sweeps each marked position with candidate values (ffuf/wfuzz convention). With multiple markers, `--fuzz-mode` controls how the wordlists combine.
+
+```bash
+# One marker in the version segment
+python apileaks.py dir \
+  --target "https://api.example.com/FUZZ/users" \
+  --fuzz-keyword FUZZ \
+  -w versions.txt
+
+# Two markers, cartesian product (clusterbomb)
+python apileaks.py dir \
+  --target "https://api.example.com/FUZZ/FUZZ" \
+  --fuzz-keyword FUZZ \
+  --fuzz-mode clusterbomb \
+  -w versions.txt \
+  -w endpoints.txt
+
+# Two markers paired position-by-position (pitchfork)
+python apileaks.py dir \
+  --target "https://api.example.com/__FUZZ__/__FUZZ__" \
+  --fuzz-keyword __FUZZ__ \
+  --fuzz-mode pitchfork \
+  -w versions.txt \
+  -w filenames.txt
+```
+
+**2. Response matchers and filters**
+
+Keeps (`--match-*`) or excludes (`--filter-*`) results by size, words, lines, time, or a body regex. All are repeatable and compose with `--status-code`.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --match-size ">100" \
+  --match-regex "api_key" \
+  --filter-regex "Not Found" \
+  --filter-size 0
+```
+
+**3. Method enumeration and GraphQL probing**
+
+After discovering an endpoint, issues `OPTIONS` to record the methods from the `Allow` header, and probes common GraphQL paths reporting whether introspection is enabled.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --enumerate-methods \
+  --graphql
+```
+
+**4. Secret and leaked-credential detection**
+
+Scans each response body and headers for secrets (read-only). Matched values are redacted in the output. You can supply your own patterns.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --detect-secrets \
+  --secret-patterns patterns.json
+```
+
+**5. Path and status scope (storage-time selection)**
+
+Decides which records ever get persisted. Exclude patterns take precedence over include patterns. Unlike `--status-code`, this acts before storing.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --include-path "^/api/" \
+  --exclude-path "\.png$" \
+  --include-status 2xx \
+  --exclude-status 404
+```
+
+**6. Recursion scope**
+
+Restricts which endpoints recursion descends into, by status class and/or endpoint type. It only narrows the default eligibility, never relaxes it.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --recursion-status 2xx,3xx \
+  --recursion-type admin,api_version
+```
+
+**7. Hit confirmation (reduce false positives)**
+
+Re-requests each interesting candidate `N` times and only records it if the responses are consistent (same status class and comparable size).
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --confirm-hits 3
+```
+
+**8. Checkpoint and resume**
+
+Writes periodic checkpoints (atomic writes) so an interrupted discovery can be resumed. Combine `--resume` and `--checkpoint` to resume and keep saving.
+
+```bash
+# Run while saving checkpoints
+python apileaks.py dir \
+  --target https://api.example.com \
+  --checkpoint scan.ckpt
+
+# Resume from the checkpoint and keep saving
+python apileaks.py dir \
+  --target https://api.example.com \
+  --resume scan.ckpt \
+  --checkpoint scan.ckpt
+```
+
+**9. Transport and TLS (mTLS, custom CA, DNS, redirects)**
+
+Presents a client certificate for mTLS, verifies with a custom CA, overrides DNS resolution, and allows cross-domain redirects.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --client-cert client.pem \
+  --ca-bundle ca.pem \
+  --resolve api.example.com:127.0.0.1 \
+  --allow-cross-domain-redirects
+```
+
+**10. Interactive triage and targeted follow-up**
+
+Enables the interactive triage table (opt-in). Selecting an endpoint launches a follow-up scan that inherits the rate limit, User-Agent, and request context. `--triage` is an alias for `--interactive`.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --load-session session.json \
@@ -557,25 +806,51 @@ python apileaks.py dir \
   --interactive
 ```
 
-**CI/CD-safe runs**
+**11. Discovery-to-scan integration (batch scan)**
+
+Feeds an OWASP scan directly over a batch of discovered endpoints, non-interactively, selecting by status class or `EndpointStatus`.
 
 ```bash
-# CI mode disables the interactive prompt so it never blocks a pipeline,
-# even if --interactive is also passed
+python apileaks.py dir \
+  --target https://api.example.com \
+  --scan-scope valid
+```
+
+**12. CI/CD-safe run**
+
+CI mode disables the interactive prompt so it never blocks the pipeline, even if `--interactive` is passed. Combine it with `--scan-scope` for non-interactive batch scanning.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --interactive \
   --ci-mode \
+  --scan-scope valid \
   --save-session session.json \
   --export md \
   --export-file results.md
 ```
 
-**Full triage workflow**
+**13. Combining rate limit + User-Agent with recursion and triage**
+
+`--rate-limit` and the User-Agent options apply to every request and are inherited by the targeted follow-up. Here they're combined with bounded recursion and interactive triage.
 
 ```bash
-# Discover, filter to successful endpoints, save a session, export Markdown,
-# and open the interactive prompt — all in one invocation
+python apileaks.py dir \
+  --target https://api.example.com \
+  --rate-limit 10 \
+  --user-agent-file user_agents.txt \
+  --depth 5 \
+  --max-requests 8000 \
+  --save-session session.json \
+  --interactive
+```
+
+**14. Full triage workflow (all in one invocation)**
+
+Discover, detect framework, filter to successful endpoints, save the session, export Markdown, and open the interactive prompt — all in a single command.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --wordlist wordlists/endpoints.txt \
@@ -639,7 +914,7 @@ python apileaks.py dir \
 
 ## Parameter Fuzzing (`par`)
 
-Identify hidden parameters and input validation issues.
+Discover hidden, undocumented, or debug parameters accepted by an API endpoint. The `par` command injects candidate parameter names from a wordlist and compares responses against a baseline to detect parameters that alter application behavior. See the [Parameter Fuzzing Guide](parameter-fuzzing.md) for a comprehensive walkthrough.
 
 ### Syntax
 
@@ -653,24 +928,82 @@ python apileaks.py par [OPTIONS]
 |--------|-------------|---------|
 | `--target`, `-t` | Target URL to scan | `--target https://api.example.com/users` |
 
-### Optional Parameters
+### Core Parameter Fuzzing Options
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
-| `--wordlist`, `-w` | Wordlist file for parameter fuzzing | `wordlists/parameters.txt` | `--wordlist custom_params.txt` |
-| `--output`, `-o` | Output filename for reports | Auto-generated | `--output param-scan` |
+| `--wordlist`, `-w` | Wordlist file (repeatable, merged/deduped). Use `-` for stdin | `wordlists/parameters.txt` | `--wordlist params.txt` |
+| `--methods` | HTTP methods to test (comma-separated: GET,POST,PUT,PATCH,DELETE). Controls injection points: GET/DELETE → query, POST/PUT/PATCH → body | `GET,POST` | `--methods POST,PUT` |
+| `--confirm-hits` | Re-test each candidate N times to confirm (≥1). Only stable hits are reported | Off | `--confirm-hits 3` |
+| `--max-requests` | Request budget: stop after N total requests (≥1) | Unbounded | `--max-requests 1000` |
+
+### Request Context Options
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `-H`, `--header` | Custom header (repeatable, `Name: Value` format) | — | `-H "X-API-Key: abc"` |
+| `--cookie` | Cookie value (sent as `Cookie` header) | — | `--cookie "session=xyz"` |
+| `--basic-auth` | Basic authentication (`user:pass`) | — | `--basic-auth admin:secret` |
+| `--jwt` | JWT bearer token | — | `--jwt eyJ0eXAi...` |
+
+### Resilience and Concurrency Options
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--timeout` | Per-request timeout in seconds (>0) | Same as `dir` | `--timeout 20` |
+| `--retries` | Retry count for failed requests (≥0) | Same as `dir` | `--retries 3` |
+| `--concurrency` | Max in-flight requests (≥1) | Same as `dir` | `--concurrency 50` |
+| `--rate-limit` | Requests per second limit | `10` | `--rate-limit 5` |
+
+### TLS Transport Options
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--client-cert` | Client TLS certificate path | — | `--client-cert client.pem` |
+| `--ca-bundle` | Custom CA bundle path | — | `--ca-bundle ca.pem` |
+| `--resolve` | DNS resolution override (`host:ip`) | — | `--resolve api.example.com:10.0.1.50` |
+
+### Matcher/Filter Options
+
+Response matchers retain findings; filters exclude them. Matchers are applied before filters, consistent with `dir`.
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--match-size` | Keep findings by response size | `--match-size ">100"` |
+| `--match-words` | Keep findings by word count | `--match-words ">10"` |
+| `--match-lines` | Keep findings by line count | `--match-lines ">5"` |
+| `--match-regex` | Keep findings matching regex | `--match-regex "admin"` |
+| `--match-time` | Keep findings by response time | `--match-time ">2.0"` |
+| `--filter-size` | Exclude findings by response size | `--filter-size "<50"` |
+| `--filter-words` | Exclude findings by word count | `--filter-words "<3"` |
+| `--filter-lines` | Exclude findings by line count | `--filter-lines "<2"` |
+| `--filter-regex` | Exclude findings matching regex | `--filter-regex "Not Found"` |
+| `--filter-time` | Exclude findings by response time | `--filter-time "<0.1"` |
+
+### Machine-Readable Output Options
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--output-format` | Output format (`csv` or `jsonl`) | — | `--output-format jsonl` |
+| `--output-file` | Output file path | — | `--output-file findings.jsonl` |
+
+### General Options
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--output`, `-o` | Report filename prefix | Auto-generated | `--output param-scan` |
 | `--log-level` | Logging level | `WARNING` | `--log-level INFO` |
 | `--log-file` | Log file path | Console only | `--log-file param.log` |
 | `--json-logs` | Output logs in JSON format | `false` | `--json-logs` |
-| `--rate-limit` | Requests per second limit | `10` | `--rate-limit 3` |
-| `--methods` | HTTP methods to test | `GET,POST` | `--methods GET,POST,PUT` |
-| `--jwt` | JWT token for authentication | - | `--jwt eyJ0eXAi...` |
-| `--response` | Filter by response codes | All codes | `--response 200,400,422` |
+| `--response` | Filter by response codes (legacy) | All codes | `--response 200,400` |
 | `--status-code` | Show only specific status codes | All codes | `--status-code 200,500-599` |
+| `--proxy` | HTTP/SOCKS proxy URL | — | `--proxy http://127.0.0.1:8080` |
+| `--proxy-verify-ssl` | Keep TLS verification with proxy | Off | `--proxy-verify-ssl` |
+| `--no-banner` | Suppress startup banner | Off | `--no-banner` |
 
 ### User Agent Options (Mutually Exclusive)
 
-Same as directory fuzzing - see above.
+Same as directory fuzzing — see above.
 
 ### Advanced Options
 
@@ -678,10 +1011,10 @@ Same as directory fuzzing - see above.
 |--------|-------------|---------|---------|
 | `--detect-framework`, `--df` | Enable framework detection | `false` | `--detect-framework` |
 
-### Examples
+### Basic Examples
 
 ```bash
-# Basic parameter fuzzing
+# Discover hidden parameters using the default wordlist
 python apileaks.py par --target https://api.example.com/users/123
 
 # With authentication and custom wordlist
@@ -690,27 +1023,98 @@ python apileaks.py par \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..." \
   --wordlist custom_parameters.txt
 
-# Test multiple HTTP methods
+# Fuzz only POST body parameters
 python apileaks.py par \
   --target https://api.example.com/api/v1/orders \
-  --methods GET,POST,PUT
+  --methods POST
 
-# WAF evasion with random user agents and a gentle rate limit
+# Limit total requests
 python apileaks.py par \
   --target https://api.example.com/search \
-  --user-agent-random \
+  --max-requests 500
+```
+
+### Intermediate Examples
+
+```bash
+# Hit confirmation to reduce false positives
+python apileaks.py par \
+  --target https://api.example.com/api/v1/search \
+  --confirm-hits 3 \
+  --max-requests 1500
+
+# Multiple wordlists merged and deduped
+python apileaks.py par \
+  --target https://api.example.com/api/v1/users \
+  --wordlist wordlists/parameters.txt \
+  --wordlist wordlists/admin_params.txt
+
+# Request context: headers, cookie, and basic auth
+python apileaks.py par \
+  --target https://internal-api.example.com/config \
+  -H "X-Tenant: acme" \
+  --cookie "session=abc123" \
+  --basic-auth admin:s3cr3t
+
+# Resilience against a slow target
+python apileaks.py par \
+  --target https://slow-api.example.com/endpoint \
+  --timeout 30 \
+  --retries 3 \
   --rate-limit 3
+```
 
-# Framework detection while fuzzing parameters
-python apileaks.py par \
-  --target https://api.example.com/api/v1/products \
-  --detect-framework
+### Advanced Examples
 
-# Focus on error responses
+```bash
+# Full-featured scan: auth, confirmation, budget, matchers, machine output
 python apileaks.py par \
-  --target https://api.example.com/search \
-  --status-code 400,422,500-599 \
-  --output error-parameters
+  --target https://api.example.com/api/v1/users/me \
+  --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..." \
+  -H "X-Correlation-ID: pentest-001" \
+  --wordlist wordlists/parameters.txt \
+  --wordlist wordlists/debug_params.txt \
+  --methods GET,POST \
+  --confirm-hits 3 \
+  --max-requests 2000 \
+  --rate-limit 10 \
+  --timeout 20 \
+  --concurrency 25 \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --output-format jsonl \
+  --output-file reports/par_findings.jsonl
+
+# Mutual TLS + DNS override for internal APIs
+python apileaks.py par \
+  --target https://internal-api.example.com/admin \
+  --client-cert certs/client.pem \
+  --ca-bundle certs/internal-ca.pem \
+  --resolve internal-api.example.com:10.0.1.50 \
+  --basic-auth auditor:pass
+
+# CI pipeline: bounded, quiet, machine-readable
+python apileaks.py par \
+  --target "${API_ENDPOINT}" \
+  --jwt "${JWT_TOKEN}" \
+  --max-requests 1000 \
+  --confirm-hits 2 \
+  --output-format jsonl \
+  --output-file reports/par_ci.jsonl \
+  --no-banner
+
+# WAF evasion with random user agents
+python apileaks.py par \
+  --target https://protected-api.example.com/endpoint \
+  --user-agent-random \
+  --rate-limit 3 \
+  --timeout 20
+
+# Through an intercepting proxy (Burp/Caido)
+python apileaks.py par \
+  --target https://api.example.com/api/v1/orders \
+  --proxy http://127.0.0.1:8080 \
+  --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 ```
 
 ## Security Scan (`scan`)
@@ -845,53 +1249,251 @@ Available severity levels: `critical`, `high`, `medium`, `low`
 
 ### Examples
 
-```bash
-# Basic scan (runs discovery + all OWASP modules by default)
-python apileaks.py scan --target https://api.example.com
+The `scan` command's usage examples are organized into three levels: **basic uses**, **intermediate uses**, and **advanced uses**. Each example includes a title, a short description of what it does and what it's for, and a ready-to-copy command. Remember that a plain `scan` already runs discovery plus all ten OWASP API Security Top 10 modules; the more flags you combine, the closer the example gets to the advanced level.
 
-# With specific OWASP modules and a JWT
+---
+
+#### Basic uses
+
+Minimal examples to run an orchestrated assessment. They cover the target, authentication, module selection, the output report name, status filtering, request pacing, and using a config file.
+
+**1. Basic scan**
+
+Runs endpoint discovery followed by all ten OWASP modules by default, aggregating every finding into one report. It's the starting point for a full-coverage assessment.
+
+```bash
+python apileaks.py scan --target https://api.example.com
+```
+
+**2. Authenticated scan with a JWT**
+
+Attaches a JWT so discovery and every OWASP module test the target as an authenticated user.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
-  --modules bola,auth,property \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+```
 
-# All ten OWASP API Security Top 10 modules run by default — a plain scan is enough
-python apileaks.py scan --target https://api.example.com
+**3. Restrict to specific OWASP modules**
 
-# Advanced scan with all discovery features
+Limits the run to a subset of modules instead of all ten, aggregating their findings into a single report.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --modules bola,auth,property
+```
+
+**4. Name the output report**
+
+Sets the base name of the generated report instead of letting it be auto-generated.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --output comprehensive-scan
+```
+
+**5. Filter shown status codes**
+
+Shows only responses matching the given codes/ranges, reducing noise during the run.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --status-code 200,401,403
+```
+
+**6. Adjust request pacing (rate limit)**
+
+Raises or lowers the requests-per-second rate for the whole scan. The default is `10` req/s.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --rate-limit 15
+```
+
+**7. Use a configuration file**
+
+Drives the scan from a YAML/JSON config, keeping repeatable settings out of the command line.
+
+```bash
+python apileaks.py scan \
+  --config config/production_api.yaml \
+  --target https://api.example.com
+```
+
+---
+
+#### Intermediate uses
+
+Examples that tune discovery, evasion, resilience, and logging on top of the orchestrated run. These are the flags you'll reach for in a realistic assessment.
+
+**1. Framework detection and version fuzzing**
+
+Detects the backend framework and enumerates API versions during discovery, tuning the detection confidence and the version patterns searched.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --detect-framework \
+  --fuzz-versions \
+  --framework-confidence 0.8 \
+  --version-patterns /v1,/v2,/api/v1
+```
+
+**2. User-Agent rotation (WAF evasion)**
+
+Rotates the User-Agent to make detection harder. The three options (random, fixed, file) are mutually exclusive.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --user-agent-random
+```
+
+**3. Seed extensions and per-request resilience**
+
+Expands wordlist entries with file extensions and hardens each discovery request with a timeout and retries.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  -x json,php \
+  --timeout 30 \
+  --retries 5
+```
+
+**4. Recursion control (depth, budget, concurrency)**
+
+Tunes how deep discovery recurses, the total request budget, and how many requests run in parallel.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --depth 5 \
+  --max-requests 5000 \
+  --concurrency 100
+```
+
+**5. Recursion scope**
+
+Restricts which discovered endpoints recursion descends into, by status class and/or endpoint type. It only narrows the default eligibility, never relaxes it.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --recursion-status 2xx,3xx \
+  --recursion-type admin,api_version
+```
+
+**6. Route through an intercepting proxy**
+
+Sends all scan traffic through Burp/Caido/Hetty. TLS verification is auto-disabled while proxying; re-enable it with `--proxy-verify-ssl` after installing the proxy CA.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --modules bola,auth,ssrf \
+  --proxy http://127.0.0.1:8080
+```
+
+**7. Structured logging to a file**
+
+Emits JSON-formatted logs to a file at a chosen verbosity, useful for pipelines and later analysis.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --log-level INFO \
+  --log-file full-scan.log \
+  --json-logs
+```
+
+---
+
+#### Advanced uses
+
+Examples that exploit the scan's full capabilities: bundled advanced discovery features, non-destructive runs, SARIF and baseline-gated CI/CD integration, and automated JWT detection with real key material.
+
+**1. Enable all advanced discovery features**
+
+Turns on the full advanced discovery bundle in one flag and pairs it with User-Agent rotation.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --enable-advanced \
   --user-agent-random \
   --output advanced-security-scan
+```
 
-# Non-destructive scan against a shared/production-like environment
+**2. Toggle individual advanced features**
+
+Enables specific advanced capabilities — payload encoding/obfuscation, WAF detection/evasion, subdomain discovery, and CORS analysis — without the full bundle.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --enable-payload-encoding \
+  --enable-waf-evasion \
+  --enable-subdomain-discovery \
+  --enable-cors-analysis
+```
+
+**3. Non-destructive scan**
+
+Restricts the run to safe methods and skips state-changing probes (POST/PUT/PATCH/DELETE), suitable for shared or production-like environments.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --safe-mode \
   --modules bola,auth,security_misconfig
+```
 
-# Generate a SARIF report for code-scanning dashboards
+**4. Generate a SARIF report**
+
+Emits a SARIF 2.1.0 report for code-scanning dashboards alongside the standard report.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --sarif \
   --output scan-results
+```
 
-# CI/CD gate: fail on high+ findings and emit SARIF
+**5. CI/CD gate with SARIF**
+
+Enables CI mode with deterministic exit codes, fails the pipeline on high or critical findings, and emits a SARIF artifact.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --ci-mode \
   --fail-on high \
   --sarif
+```
 
-# CI/CD with a baseline: only newly introduced findings fail the pipeline
+**6. Baseline-gated CI/CD**
+
+Compares against a baseline report so only newly introduced findings drive the severity gate.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --ci-mode \
   --fail-on medium \
   --baseline reports/previous-scan.json
+```
 
-# CI/CD, non-destructive, baseline-gated, with SARIF artifact
+**7. Full CI/CD: non-destructive, baseline-gated, with SARIF**
+
+Combines CI mode, safe methods, baseline gating, and a SARIF artifact into one pipeline-ready invocation.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --ci-mode \
@@ -899,11 +1501,36 @@ python apileaks.py scan \
   --safe-mode \
   --sarif \
   --baseline reports/baseline.json
+```
 
-# Using a configuration file
+**8. Automated JWT detection with key material**
+
+Feeds the auth module real key material so the algorithm-confusion and expired-token-acceptance checks run with a public key (or a JWKS URL) and a known signing secret.
+
+```bash
 python apileaks.py scan \
-  --config config/production_api.yaml \
-  --target https://api.example.com
+  --target https://api.example.com \
+  --modules auth \
+  --public-key ./idp_public.pem \
+  --signing-secret 's3cr3t'
+```
+
+**9. Deep discovery combined with a full orchestrated scan**
+
+Combines bounded deep recursion, extensions, resilience, and framework detection with the full module set for maximum coverage.
+
+```bash
+python apileaks.py scan \
+  --target https://api.example.com \
+  --detect-framework \
+  --fuzz-versions \
+  --depth 5 \
+  --max-requests 8000 \
+  --concurrency 100 \
+  -x json,php \
+  --timeout 30 \
+  --retries 5 \
+  --output deep-scan
 ```
 
 ## OWASP Module Commands (`owasp`)
@@ -983,9 +1610,10 @@ python apileaks.py jwt [SUBCOMMAND] [OPTIONS]
 | `verify` | Signature Verification | Verify a token's signature (HMAC secret or public key) |
 | `genkey` | Key Generation | Generate an RSA or EC keypair for testing |
 | `jwks-to-key` | JWKS Conversion | Convert a JWKS entry to a PEM public key |
-| `test-alg-none` | Algorithm Confusion | Test alg:none vulnerability |
-| `test-null-signature` | Null Signature | Test null signature bypass |
-| `brute-secret` | Secret Brute-force | Crack weak HMAC secrets |
+| `test-alg-none` | Algorithm Confusion | Test alg:none vulnerability (signature stripping) |
+| `test-null-signature` | Null Signature | Test null signature bypass (signature stripping) |
+| `test-alg-confusion` | Key Confusion | Test RS256/ES256→HS256 substitution attack |
+| `brute-secret` | Secret Brute-force | Crack weak HMAC secrets (bruteforcing HS256 key) |
 | `test-kid-injection` | Key ID Injection | Test kid parameter injection |
 | `test-jwks-spoof` | JWKS Spoofing | Test JWKS URL spoofing |
 | `test-inline-jwks` | Inline JWKS | Test inline JWKS injection |
@@ -1107,6 +1735,30 @@ python apileaks.py jwt test-null-signature TOKEN --payload '{"sub":"admin","admi
 
 # Validate against a protected endpoint
 python apileaks.py jwt test-null-signature TOKEN --url https://api.example.com/protected
+```
+
+#### Key Confusion / Substitution Attack (`jwt test-alg-confusion`)
+
+Test the RS256/ES256 → HS256 key-confusion (Substitution) attack: forge a token signed with the
+target's **public key** used as an HMAC secret. Requires `--public-key` (a PEM/DER file path or
+inline PEM). One forged token is produced per public-key representation (PEM ±newline, DER, x5c).
+
+```bash
+python apileaks.py jwt test-alg-confusion TOKEN --public-key PATH_OR_PEM [--payload CUSTOM_PAYLOAD]
+```
+
+```bash
+# Basic offline forgery from a public key file
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+# Inline PEM material
+python apileaks.py jwt test-alg-confusion TOKEN --public-key "$(cat server_pub.pem)"
+
+# Escalate a claim while forging the confused token
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem --payload '{"role":"admin"}'
+
+# Validate against a live endpoint
+python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem --url https://api.example.com/admin
 ```
 
 #### HMAC Secret Brute-force (`jwt brute-secret`)

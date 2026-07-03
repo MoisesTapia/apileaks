@@ -463,53 +463,141 @@ python apileaks.py dir \
 
 ## Parameter Fuzzing
 
-Parameter fuzzing identifies hidden parameters, injection points, and input validation issues.
+Parameter fuzzing discovers hidden, undocumented, or debug parameters accepted by an API endpoint. The `par` command injects candidate parameter names and compares responses against a baseline to detect parameters that alter application behavior. See the full [Parameter Fuzzing Guide](parameter-fuzzing.md) for a detailed walkthrough.
 
 ### Basic Parameter Fuzzing
 ```bash
-# Simple parameter fuzzing
-python apileaks.py par --target https://api.example.com
+# Discover hidden parameters using the default wordlist
+python apileaks.py par --target https://api.example.com/users/123
 
-# With custom wordlist
+# With a custom wordlist
 python apileaks.py par \
-  --target https://api.example.com \
+  --target https://api.example.com/api/v1/products \
   --wordlist wordlists/parameters.txt
+
+# Fuzz with JWT authentication
+python apileaks.py par \
+  --target https://api.example.com/api/v1/account \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# Fuzz only POST body parameters
+python apileaks.py par \
+  --target https://api.example.com/api/v1/orders \
+  --methods POST
+
+# Limit total requests issued
+python apileaks.py par \
+  --target https://api.example.com/search \
+  --max-requests 500
+```
+
+### Intermediate Parameter Fuzzing
+```bash
+# Hit confirmation: only report stable findings (reduces false positives)
+python apileaks.py par \
+  --target https://api.example.com/api/v1/search \
+  --confirm-hits 3 \
+  --max-requests 1500
+
+# Multiple wordlists merged and de-duplicated
+python apileaks.py par \
+  --target https://api.example.com/api/v1/users \
+  --wordlist wordlists/parameters.txt \
+  --wordlist wordlists/admin_params.txt
+
+# Request context: custom headers, cookie, and basic auth
+python apileaks.py par \
+  --target https://internal-api.example.com/config \
+  -H "X-API-Key: sk_live_abc123" \
+  -H "X-Tenant: acme" \
+  --cookie "session=abc123" \
+  --basic-auth admin:s3cr3t
+
+# Resilience for slow targets with concurrent requests
+python apileaks.py par \
+  --target https://slow-api.example.com/endpoint \
+  --timeout 30 \
+  --retries 3 \
+  --rate-limit 5 \
+  --concurrency 25
+
+# Response matchers: only report findings with large response bodies
+python apileaks.py par \
+  --target https://api.example.com/api/v1/data \
+  --match-size ">200" \
+  --filter-regex "Not Found"
+
+# WAF evasion with random user agents and conservative pacing
+python apileaks.py par \
+  --target https://protected-api.example.com/endpoint \
+  --user-agent-random \
+  --rate-limit 3 \
+  --timeout 20
 ```
 
 ### Advanced Parameter Fuzzing
 ```bash
-# With authentication and WAF evasion
+# Full-featured authenticated scan: confirmation, budget, matchers, machine output
 python apileaks.py par \
-  --target https://api.example.com/users \
-  --wordlist wordlists/parameters.txt \
+  --target https://api.example.com/api/v1/users/me \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
-  --user-agent-random \
+  -H "X-Correlation-ID: pentest-001" \
+  --wordlist wordlists/parameters.txt \
+  --wordlist wordlists/debug_params.txt \
+  --methods GET,POST \
+  --confirm-hits 3 \
+  --max-requests 2000 \
   --rate-limit 10 \
-  --methods GET,POST
+  --timeout 20 \
+  --concurrency 25 \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --output-format jsonl \
+  --output-file reports/par_findings.jsonl
 
-# With custom user agent and response filtering
+# Mutual TLS + DNS override for internal APIs
 python apileaks.py par \
-  --target https://api.example.com/api \
+  --target https://internal-api.example.com/admin \
+  --client-cert certs/client.pem \
+  --ca-bundle certs/internal-ca.pem \
+  --resolve internal-api.example.com:10.0.1.50 \
+  --basic-auth auditor:pass \
   --wordlist wordlists/parameters.txt \
-  --user-agent-custom "APILeak Security Scanner v2.0" \
-  --status-code 200-299,400-499 \
-  --output parameter_discovery
+  --confirm-hits 2
 
-# Focus on injection detection
+# CI pipeline: bounded, quiet, machine-readable
 python apileaks.py par \
-  --target https://api.example.com/search \
-  --wordlist wordlists/injection_params.txt \
-  --status-code 500-599 \
-  --user-agent-random \
-  --output injection_testing
-
-# With framework detection
-python apileaks.py par \
-  --target https://api.example.com \
+  --target "${API_ENDPOINT}" \
+  --jwt "${JWT_TOKEN}" \
   --wordlist wordlists/parameters.txt \
-  --detect-framework \
+  --methods GET,POST \
+  --confirm-hits 2 \
+  --max-requests 1000 \
+  --match-size ">100" \
+  --filter-regex "Not Found" \
+  --output-format jsonl \
+  --output-file reports/par_ci.jsonl \
+  --no-banner
+
+# Through an intercepting proxy (Burp/Caido)
+python apileaks.py par \
+  --target https://api.example.com/api/v1/orders \
+  --proxy http://127.0.0.1:8080 \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# E-commerce: find debug/admin parameters on the checkout endpoint
+python apileaks.py par \
+  --target https://shop.example.com/api/checkout \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
-  --output framework_aware_param_scan
+  -H "X-Cart-ID: test-cart-001" \
+  --wordlist wordlists/parameters.txt \
+  --wordlist wordlists/ecommerce_params.txt \
+  --methods POST \
+  --confirm-hits 3 \
+  --max-requests 1500 \
+  --rate-limit 8 \
+  --output-format jsonl \
+  --output-file reports/checkout_params.jsonl
 ```
 
 ## Security Scan (`scan`)

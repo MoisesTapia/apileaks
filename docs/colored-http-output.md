@@ -46,16 +46,61 @@ python apileaks.py scan --target https://api.example.com --status-code 200-299,4
 
 ### Practical Examples
 
-#### Directory Fuzzing - Find Valid Endpoints
+The status-code filtering examples are organized into three levels: **basic uses**, **intermediate uses**, and **advanced uses**. Each example includes a title, a short description of what it does and what it's for, and a ready-to-copy command. The level rises as you combine the filter with wordlists, authentication, OWASP modules, and performance tuning.
+
+---
+
+#### Basic uses
+
+A single-criterion filter on a simple command. Ideal for quickly reducing noise.
+
+**1. Show only successful responses**
+
+Limits the output to `2xx` codes so you can see at a glance which endpoints respond correctly.
+
 ```bash
-# Only show successful endpoints (200, 201, 202, etc.)
+python apileaks.py dir --target https://api.example.com --status-code 200
+```
+
+**2. Show only client errors**
+
+Focuses the output on `404` (or other `4xx`) to review nonexistent or protected paths.
+
+```bash
+python apileaks.py dir --target https://api.example.com --status-code 404
+```
+
+**3. Show a range of codes**
+
+Use a range to see a whole family of responses, for example all `2xx`.
+
+```bash
+python apileaks.py dir --target https://api.example.com --status-code 200-299
+```
+
+---
+
+#### Intermediate uses
+
+Combine the filter with wordlists, authentication, and several codes at once to steer the reconnaissance.
+
+**1. Directory fuzzing: find valid endpoints**
+
+Shows only successful endpoints using a custom wordlist and a random User-Agent for basic WAF evasion.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --wordlist wordlists/endpoints.txt \
   --status-code 200-299 \
   --user-agent-random
+```
 
-# Focus on authentication-related responses
+**2. Directory fuzzing: authentication responses**
+
+Focuses the output on authentication-related responses (`401,403`) while authenticating with a JWT.
+
+```bash
 python apileaks.py dir \
   --target https://api.example.com \
   --wordlist wordlists/endpoints.txt \
@@ -63,35 +108,79 @@ python apileaks.py dir \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
-#### Parameter Fuzzing - Detect Parameter Injection
+**3. Parameter fuzzing: detect possible injection**
+
+Looks for server errors (`5xx`) that might indicate parameter injection.
+
 ```bash
-# Look for server errors that might indicate injection
 python apileaks.py par \
   --target https://api.example.com/search \
   --wordlist wordlists/parameters.txt \
   --status-code 500-599
+```
 
-# Focus on successful parameter discoveries
+**4. Parameter fuzzing: successful discoveries**
+
+Focuses the output on parameters that produce successful responses (`200,201`).
+
+```bash
 python apileaks.py par \
   --target https://api.example.com/api \
   --wordlist wordlists/parameters.txt \
   --status-code 200,201
 ```
 
-#### Full Scan - Comprehensive Analysis
+---
+
+#### Advanced uses
+
+The filter combined with an orchestrated OWASP scan, framework detection, WAF evasion, and high-volume performance optimization.
+
+**1. Full scan: monitor only critical responses**
+
+During a scan with OWASP modules, show only the codes that matter most (`200,401,403,500`).
+
 ```bash
-# Monitor only critical responses during full scan
 python apileaks.py scan \
   --target https://api.example.com \
   --status-code 200,401,403,500 \
   --modules bola,auth,property
+```
 
-# Focus on redirect chains and successful responses
+**2. Full scan: redirect chains and successes**
+
+Combines mixed range syntax with framework detection and version fuzzing to follow redirects and successful responses.
+
+```bash
 python apileaks.py scan \
   --target https://api.example.com \
   --status-code 200-299,300-399 \
   --detect-framework \
   --fuzz-versions
+```
+
+**3. Combine the filter with WAF evasion**
+
+Pairs status filtering with User-Agent rotation for stealthier reconnaissance.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist wordlists/endpoints.txt \
+  --user-agent-random \
+  --status-code 200-299,401,403
+```
+
+**4. High-volume performance optimization**
+
+On large-volume scans, the filter reduces output overhead; combine it with a high rate-limit to speed things up.
+
+```bash
+python apileaks.py dir \
+  --target https://api.example.com \
+  --wordlist wordlists/large_endpoints.txt \
+  --status-code 200-299 \
+  --rate-limit 50
 ```
 
 ### Filter Syntax

@@ -192,6 +192,15 @@ class EnhancedOrchestrator:
                     # Continue with other phases unless it's a critical dependency
                     if phase_name in ["discovery"]:
                         raise  # Critical phases should stop execution
+                    # A fatal parameter-fuzzing error (orchestrator construction
+                    # failure or an unreachable target) must abort the run with a
+                    # non-success exit status (Requirements 1.5, 1.6), mirroring
+                    # how the discovery phase surfaces its critical failures
+                    # instead of swallowing them. Imported lazily to avoid a
+                    # module-level import cycle with core.engine.
+                    from .engine import ParameterFuzzingError
+                    if isinstance(e, ParameterFuzzingError):
+                        raise
             
             # Finalize results
             execution_time = (datetime.now() - start_time).total_seconds()

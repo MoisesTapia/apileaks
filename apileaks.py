@@ -23,6 +23,10 @@ from utils.jwt_utils import (
     decode_jwt,
     encode_jwt,
     print_jwt_info,
+    colorize_jwt,
+    JWT_HEADER_COLOR,
+    JWT_PAYLOAD_COLOR,
+    JWT_SIGNATURE_COLOR,
     verify_hmac_secret,
     verify_token,
     generate_rsa_keypair,
@@ -202,6 +206,38 @@ def _validate_confirm_hits(ctx, param, value):
     return value
 
 
+SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
+def _validate_methods(ctx, param, value):
+    """Click callback: parse/normalize --methods and reject invalid values.
+
+    ``--methods`` is a comma-separated list of HTTP methods that drives the
+    ParameterFuzzer's injection-point selection (query-carrying vs body-carrying
+    methods). Supported tokens are ``{GET, POST, PUT, PATCH, DELETE}``,
+    case-insensitive. An empty/whitespace-only value is rejected (Requirement
+    6.4) and a value containing no supported HTTP method is rejected while naming
+    the offending value (Requirement 6.5), both before any request is issued.
+    Unsupported tokens are ignored only when at least one supported token is
+    present. Returns the normalized (upper-cased, de-duplicated, order-preserving)
+    list of supported methods written to ``fuzzing.parameters.methods``
+    (Requirement 6.1).
+    """
+    if value is None or not value.strip():
+        raise click.BadParameter("--methods must not be empty or whitespace-only")
+    tokens = [tok.strip().upper() for tok in value.split(",") if tok.strip()]
+    normalized = []
+    for tok in tokens:
+        if tok in SUPPORTED_METHODS and tok not in normalized:
+            normalized.append(tok)
+    if not normalized:
+        raise click.BadParameter(
+            f"--methods contains no supported HTTP method (got {value!r}); "
+            f"supported methods are {', '.join(SUPPORTED_METHODS)}"
+        )
+    return normalized
+
+
 def _validate_timeout(ctx, param, value):
     """Click callback: reject a non-positive --timeout, naming the value.
 
@@ -365,6 +401,25 @@ def parse_header_options(header):
         # is scoped to --basic-auth).
         parsed[name.strip()] = value.strip() if sep else ''
     return parsed
+
+
+def validate_header_options(header):
+    """Validate repeatable ``--header``/``-H`` values are in ``Name: Value`` form.
+
+    A provided custom-header option that does not contain a ``:`` separating a
+    name from a value is malformed; this rejects it with a descriptive error
+    naming the offending header and exits BEFORE any request is issued
+    (Requirement 7.5). Well-formed values are left for :func:`parse_header_options`
+    to split; this only guards the colon-separator precondition.
+    """
+    for raw in header or ():
+        if ':' not in raw:
+            click.echo(
+                f"Error: Malformed --header value '{raw}': expected 'Name: Value' "
+                "with a ':' separating the header name from its value.",
+                err=True,
+            )
+            sys.exit(1)
 
 
 def parse_basic_auth(basic_auth):
@@ -633,6 +688,48 @@ def _resolve_dir_candidates(wordlists, openapi_sources, postman_sources):
     return candidate_set, seed_methods, None
 
 
+# Default parameter wordlist used by ``par`` when no ``--wordlist`` is supplied
+# (Requirement 10.4).
+DEFAULT_PARAMETER_WORDLIST = "wordlists/parameters.txt"
+
+
+def _resolve_par_candidates(wordlists):
+    """Resolve the merged, de-duplicated parameter candidate set for ``par``.
+
+    Mirrors the ``dir`` command's repeatable ``--wordlist`` handling
+    (Requirement 10.1): every provided ``--wordlist`` source is read via
+    :func:`_read_wordlist_entries` (which strips surrounding whitespace and
+    drops blank/comment lines), and the combined entries are de-duplicated
+    while preserving first-seen order. Both query and body candidate sets are
+    fed from this single merged set (Requirement 10.2).
+
+    When no ``--wordlist`` is supplied, the default parameter wordlist
+    ``wordlists/parameters.txt`` is used (Requirement 10.4).
+
+    Raises :class:`ValueError` naming the unreadable file when a wordlist source
+    cannot be read, so the caller can stop before any request (Requirement
+    10.3).
+    """
+    sources = list(wordlists or [])
+    if not sources:
+        sources = [DEFAULT_PARAMETER_WORDLIST]
+
+    seen = set()
+    merged = []
+    for source in sources:
+        try:
+            entries = _read_wordlist_entries(source)
+        except OSError as exc:
+            raise ValueError(
+                f"unreadable wordlist file '{source}': {exc}"
+            ) from exc
+        for entry in entries:
+            if entry not in seen:
+                seen.add(entry)
+                merged.append(entry)
+    return merged
+
+
 def prepare_output_filename(output_param):
     """Prepare output filename, ensuring it goes to reports directory"""
     if not output_param:
@@ -664,7 +761,7 @@ APILeak v0.2.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None, module_configs=None):
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None, module_configs=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None):
     """Create an enhanced configuration with all advanced features integrated
 
     ``module_configs`` generalizes the per-module pre-load config channel: it is
@@ -912,6 +1009,44 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         config['authentication']['contexts'][0]['username'] = username
         config['authentication']['contexts'][0]['password'] = password
     
+    # Thread the transversal transport/TLS options into the config here so both
+    # `dir` and `par` centralize this wiring in config creation rather than
+    # patching the returned dict inline in each command body. The CLI validators
+    # have already parsed/validated these before any request: the client cert
+    # (str or (cert, key) tuple), the CA bundle path, and the parsed --resolve
+    # (host, ip) tuple. A None value leaves the APILeakConfig default untouched
+    # (load_config_from_dict reads these via ``config_data.get(...)``), so this
+    # block is a no-op for callers that do not supply them and cannot regress
+    # `dir`/`scan`/`full` behavior (Requirements 9.1, 9.2, 9.3).
+    if client_cert is not None:
+        config['client_cert'] = client_cert
+    if ca_bundle is not None:
+        config['ca_bundle'] = ca_bundle
+    if resolve is not None:
+        config['resolve'] = resolve
+
+    # Thread the parameter-fuzzing controls into ``fuzzing.parameters.*`` so the
+    # `par` path wires these through config creation (mirroring how the
+    # transversal keys above are centralized) instead of patching config_dict in
+    # the `par` command body. These map onto the extended ParameterFuzzingConfig
+    # consumed by the ParameterFuzzer: ``methods`` drives injection-point
+    # selection (R6.1), ``confirm_hits`` enables Hit_Confirmation (R5.1),
+    # ``max_requests`` is the Request_Budget (R11.1), and the query/body
+    # candidate sets override the file-based wordlists (R10.1, R10.2). A None
+    # value leaves the dataclass default in place, so this block is inert for
+    # `dir`/`scan`/`full` which never supply these arguments.
+    parameters_cfg = config['fuzzing']['parameters']
+    if parameter_methods is not None:
+        parameters_cfg['methods'] = parameter_methods
+    if confirm_hits is not None:
+        parameters_cfg['confirm_hits'] = confirm_hits
+    if parameter_max_requests is not None:
+        parameters_cfg['max_requests'] = parameter_max_requests
+    if query_candidates is not None:
+        parameters_cfg['query_candidates'] = query_candidates
+    if body_candidates is not None:
+        parameters_cfg['body_candidates'] = body_candidates
+
     # For parameter fuzzing, disable endpoint discovery and use the target directly
     if scan_type == "par":
         config['fuzzing']['endpoints']['enabled'] = False
@@ -919,9 +1054,17 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     return config
 
 
-def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None):
-    """Create a default configuration when no config file is provided (legacy compatibility)"""
-    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth)
+def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None):
+    """Create a default configuration when no config file is provided (legacy compatibility)
+
+    The trailing keyword arguments (``client_cert``/``ca_bundle``/``resolve`` and
+    the ``parameter_*``/``confirm_hits``/``query_candidates``/``body_candidates``
+    set) are the transversal + parameter-fuzzing keys threaded through config
+    creation so the ``par`` command centralizes its wiring here rather than
+    patching the returned dict inline. They all default to None, so existing
+    positional callers (``dir``/``scan``/``full`` and the tests) are unaffected.
+    """
+    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth, None, None, client_cert, ca_bundle, resolve, parameter_methods, confirm_hits, parameter_max_requests, query_candidates, body_candidates)
     """Create a default configuration when no config file is provided"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -1081,6 +1224,99 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
     return config
 
 
+# ---------------------------------------------------------------------------
+# Shared CLI option decorator stacks
+# ---------------------------------------------------------------------------
+#
+# These reusable Click decorator stacks group the transversal request-context,
+# resilience, concurrency, TLS-transport, matcher/filter, and machine-output
+# options so they can be applied identically to multiple commands (starting
+# with ``dir``; ``par`` gains parity in a later task) without duplicating the
+# option names, help text, defaults, or validator callbacks.
+#
+# Each stack applies its options bottom-up so that when it is used as a single
+# decorator the resulting option display/registration order matches the order
+# in which the options are written here (top to bottom).
+
+
+def request_context_options(f):
+    """Shared request-context options: ``--header``/``-H``, ``--cookie``, ``--basic-auth``."""
+    f = click.option('--basic-auth', 'basic_auth', metavar='user:pass',
+                     help='HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.')(f)
+    f = click.option('--cookie', 'cookie', metavar='COOKIE',
+                     help='Raw Cookie header string applied to every discovery request.')(f)
+    f = click.option('--header', '-H', 'header', multiple=True, metavar='"Name: Value"',
+                     help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.')(f)
+    return f
+
+
+def resilience_options(f):
+    """Shared resilience options: ``--timeout``, ``--retries``."""
+    f = click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
+                     help='Number of automatic retries for each failed discovery request '
+                          '(must be >= 0; default: 2).')(f)
+    f = click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
+                     help='Per-request timeout in seconds applied to every discovery request '
+                          '(must be > 0; default: 10).')(f)
+    return f
+
+
+def concurrency_options(f):
+    """Shared concurrency options: ``--max-requests``, ``--concurrency``."""
+    f = click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
+                     help='Max concurrent in-flight discovery requests (default: 50).')(f)
+    f = click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
+                     help='Global request budget for discovery (default: unbounded).')(f)
+    return f
+
+
+def tls_options(f):
+    """Shared TLS-transport options: ``--client-cert``, ``--ca-bundle``, ``--resolve``."""
+    f = click.option('--resolve', 'resolve', metavar='host:ip', default=None, callback=_validate_resolve,
+                     help='Override DNS resolution for the named host to the supplied IP for every '
+                          'discovery request (e.g. api.example.com:127.0.0.1).')(f)
+    f = click.option('--ca-bundle', 'ca_bundle', metavar='PATH', default=None, callback=_validate_ca_bundle,
+                     help='Custom CA bundle used to verify target certificates for every discovery request.')(f)
+    f = click.option('--client-cert', 'client_cert', metavar='PATH[:KEY]', default=None, callback=_validate_client_cert,
+                     help='Client certificate for mutual TLS, presented on every discovery request. '
+                          'A combined cert+key PEM PATH, or a cert:key pair of paths.')(f)
+    return f
+
+
+def matcher_filter_options(f):
+    """Shared response matcher/filter options: ``--match-*`` and ``--filter-*``."""
+    f = click.option('--filter-time', 'filter_time', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response time (seconds) satisfies EXPR. Repeatable.')(f)
+    f = click.option('--filter-regex', 'filter_regex', multiple=True, metavar='REGEX',
+                     help='Exclude results whose response body matches the regular expression REGEX. Repeatable.')(f)
+    f = click.option('--filter-lines', 'filter_lines', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response line count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--filter-words', 'filter_words', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response word count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--filter-size', 'filter_size', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-time', 'match_time', multiple=True, metavar='EXPR',
+                     help='Match results whose response time (seconds) satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-regex', 'match_regex', multiple=True, metavar='REGEX',
+                     help='Match results whose response body matches the regular expression REGEX. Repeatable.')(f)
+    f = click.option('--match-lines', 'match_lines', multiple=True, metavar='EXPR',
+                     help='Match results whose response line count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-words', 'match_words', multiple=True, metavar='EXPR',
+                     help='Match results whose response word count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-size', 'match_size', multiple=True, metavar='EXPR',
+                     help='Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.')(f)
+    return f
+
+
+def machine_output_options(f):
+    """Shared machine-readable output options: ``--output-format``, ``--output-file``."""
+    f = click.option('--output-file', 'output_file', type=click.Path(),
+                     help='Destination path for the machine-readable output (extension selects the format)')(f)
+    f = click.option('--output-format', 'output_format', type=click.Choice(['csv', 'jsonl']),
+                     help='Write a machine-readable discovery output in the selected format (csv or jsonl)')(f)
+    return f
+
+
 @click.group()
 @click.option('--no-banner', is_flag=True, help='Suppress banner output')
 @click.pass_context
@@ -1170,21 +1406,13 @@ def cli(ctx, no_banner):
                    'Overrides APILEAK_MAX_DEPTH and the config default (3).')
 @click.option('--recursive/--no-recursive', 'recursive', default=None,
               help='Enable or disable recursive discovery (default: enabled).')
-@click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
-              help='Global request budget for discovery (default: unbounded).')
-@click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
-              help='Max concurrent in-flight discovery requests (default: 50).')
+@concurrency_options
 @click.option('--confirm-hits', 'confirm_hits', type=int, default=None, callback=_validate_confirm_hits,
               metavar='N',
               help='Enable Hit_Confirmation: re-request each interesting candidate N times '
                    'and record it only when the responses are consistent (must be >= 1; '
                    'default: off).')
-@click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
-              help='Per-request timeout in seconds applied to every discovery request '
-                   '(must be > 0; default: 10).')
-@click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
-              help='Number of automatic retries for each failed discovery request '
-                   '(must be >= 0; default: 2).')
+@resilience_options
 @click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
               help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
                    'e.g. -x json,php or -x .json -x .php. Leading dots are optional.')
@@ -1192,12 +1420,7 @@ def cli(ctx, no_banner):
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
 @click.option('--jwt', help='JWT token to use for authentication')
-@click.option('--header', '-H', 'header', multiple=True, metavar='"Name: Value"',
-              help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.')
-@click.option('--cookie', 'cookie', metavar='COOKIE',
-              help='Raw Cookie header string applied to every discovery request.')
-@click.option('--basic-auth', 'basic_auth', metavar='user:pass',
-              help='HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.')
+@request_context_options
 @click.option('--enumerate-methods', 'enumerate_methods', is_flag=True, default=False,
               help='Enumerate allowed HTTP methods per discovered endpoint via an OPTIONS '
                    'request (parses the Allow header; default: off).')
@@ -1206,26 +1429,7 @@ def cli(ctx, no_banner):
                    'introspection is enabled (read-only introspection query; default: off).')
 @click.option('--response', help='Filter by response codes (e.g., 200,301,404 or 200-300)')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
-@click.option('--match-size', 'match_size', multiple=True, metavar='EXPR',
-              help='Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.')
-@click.option('--match-words', 'match_words', multiple=True, metavar='EXPR',
-              help='Match results whose response word count satisfies EXPR. Repeatable.')
-@click.option('--match-lines', 'match_lines', multiple=True, metavar='EXPR',
-              help='Match results whose response line count satisfies EXPR. Repeatable.')
-@click.option('--match-regex', 'match_regex', multiple=True, metavar='REGEX',
-              help='Match results whose response body matches the regular expression REGEX. Repeatable.')
-@click.option('--match-time', 'match_time', multiple=True, metavar='EXPR',
-              help='Match results whose response time (seconds) satisfies EXPR. Repeatable.')
-@click.option('--filter-size', 'filter_size', multiple=True, metavar='EXPR',
-              help='Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.')
-@click.option('--filter-words', 'filter_words', multiple=True, metavar='EXPR',
-              help='Exclude results whose response word count satisfies EXPR. Repeatable.')
-@click.option('--filter-lines', 'filter_lines', multiple=True, metavar='EXPR',
-              help='Exclude results whose response line count satisfies EXPR. Repeatable.')
-@click.option('--filter-regex', 'filter_regex', multiple=True, metavar='REGEX',
-              help='Exclude results whose response body matches the regular expression REGEX. Repeatable.')
-@click.option('--filter-time', 'filter_time', multiple=True, metavar='EXPR',
-              help='Exclude results whose response time (seconds) satisfies EXPR. Repeatable.')
+@matcher_filter_options
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during directory fuzzing')
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing during directory discovery')
 @click.option('--save-session', 'save_session', type=click.Path(), help='Save discovery results to a JSON session file (source of truth for reload)')
@@ -1234,8 +1438,7 @@ def cli(ctx, no_banner):
 @click.option('--resume', 'resume', type=click.Path(), help='Resume an interrupted discovery run from the discovery checkpoint at PATH (loaded before discovery; combine with --checkpoint to keep checkpointing)')
 @click.option('--export', 'export_format', type=click.Choice(['md', 'txt']), help='Write a human-readable discovery export in the selected format (md or txt)')
 @click.option('--export-file', 'export_file', type=click.Path(), help='Destination path for the human-readable export (extension selects the format)')
-@click.option('--output-format', 'output_format', type=click.Choice(['csv', 'jsonl']), help='Write a machine-readable discovery output in the selected format (csv or jsonl)')
-@click.option('--output-file', 'output_file', type=click.Path(), help='Destination path for the machine-readable output (extension selects the format)')
+@machine_output_options
 @click.option('--interactive', '--triage', 'interactive', is_flag=True, help='Enable interactive triage mode (opt-in; auto-disabled in CI mode)')
 @click.option('--scan-scope', 'scan_scope', metavar='SCOPE', default=None,
               help='Non-interactively define a Batch_Scan_Scope as all discovered records of a '
@@ -1245,17 +1448,10 @@ def cli(ctx, no_banner):
 @click.option('--ci-mode', 'ci_mode', is_flag=True, help='Enable CI mode (disables the interactive triage prompt so it never blocks a pipeline)')
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets. SOCKS5 proxies with auth are supported, e.g. socks5://user:pass@host:port.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
-@click.option('--client-cert', 'client_cert', metavar='PATH[:KEY]', default=None, callback=_validate_client_cert,
-              help='Client certificate for mutual TLS, presented on every discovery request. '
-                   'A combined cert+key PEM PATH, or a cert:key pair of paths.')
-@click.option('--ca-bundle', 'ca_bundle', metavar='PATH', default=None, callback=_validate_ca_bundle,
-              help='Custom CA bundle used to verify target certificates for every discovery request.')
+@tls_options
 @click.option('--allow-cross-domain-redirects', 'allow_cross_domain_redirects', is_flag=True, default=False,
               help='Follow redirects to other domains during discovery. By default discovery '
                    'follows redirects only to the same domain as the originating request.')
-@click.option('--resolve', 'resolve', metavar='host:ip', default=None, callback=_validate_resolve,
-              help='Override DNS resolution for the named host to the supplied IP for every '
-                   'discovery request (e.g. api.example.com:127.0.0.1).')
 @click.option('--detect-secrets', 'detect_secrets', is_flag=True, default=False,
               help='Scan each discovery response body and headers for secrets/leaked '
                    'credentials (read-only; default: off). Matched values are redacted.')
@@ -2785,14 +2981,18 @@ def _run_scoped_owasp_scan(
 
 @cli.command()
 @click.option('--target', '-t', required=True, help='Target URL to scan')
-@click.option('--wordlist', '-w', help='Wordlist file for parameter fuzzing')
+@click.option('--wordlist', '-w', 'wordlist', multiple=True,
+              help='Wordlist file of candidate parameter names for parameter '
+                   'fuzzing. Repeatable; merged and de-duplicated across all '
+                   'values. Use "-" to read entries from stdin. Defaults to '
+                   'wordlists/parameters.txt when omitted.')
 @click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
               default='WARNING', help='Logging level')
 @click.option('--log-file', help='Log file path (optional)')
 @click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
 @click.option('--rate-limit', type=int, help='Requests per second limit')
-@click.option('--methods', default='GET,POST', 
+@click.option('--methods', default='GET,POST', callback=_validate_methods,
               help='HTTP methods to test (comma-separated)')
 @click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
@@ -2803,8 +3003,19 @@ def _run_scoped_owasp_scan(
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during parameter fuzzing')
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
+@concurrency_options
+@click.option('--confirm-hits', 'confirm_hits', type=int, default=None, callback=_validate_confirm_hits,
+              metavar='N',
+              help='Enable Hit_Confirmation: re-request each interesting candidate N times '
+                   'and record it only when the responses are consistent (must be >= 1; '
+                   'default: off).')
+@resilience_options
+@request_context_options
+@matcher_filter_options
+@machine_output_options
+@tls_options
 @click.pass_context
-def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl):
+def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl, concurrency, confirm_hits, max_requests, timeout, retries, header, cookie, basic_auth, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, output_format, output_file, client_cert, ca_bundle, resolve):
     """Parameter fuzzing - discover hidden parameters in API endpoints
     
     \b
@@ -2813,16 +3024,80 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
       python apileaks.py par --target URL --jwt TOKEN --wordlist params.txt
       python apileaks.py par --target URL --user-agent-random --rate-limit 3
     """
-    
+
+    # Legacy `par` option audit (Requirements 2.5, 2.6).
+    #
+    # Every legacy `par` option present before the `dir`-parity work is RETAINED
+    # here with its original semantics (R2.5): --target, --wordlist (now also
+    # repeatable, backward-compatible with a single value), --output, --log-level,
+    # --log-file, --json-logs, --rate-limit, --methods, --user-agent-random/
+    # --user-agent-custom/--user-agent-file, --jwt, --response, --status-code,
+    # --detect-framework/--df, --proxy, and --proxy-verify-ssl are all accepted
+    # without terminating execution. The parity options added by tasks 11.1-11.5
+    # (request-context, resilience, concurrency, TLS, matcher/filter,
+    # machine-output, --confirm-hits) are purely ADDITIVE and each mirrors the
+    # option `dir` already exposes, so no legacy single-purpose flag was replaced
+    # or superseded. `--methods` was previously accepted but ignored ("not used");
+    # it is now wired to real injection-point semantics (R6), an enhancement of a
+    # retained option rather than a deprecation.
+    #
+    # Consequently there are NO deprecated `par` options: no deprecation notice is
+    # emitted because none is warranted (R2.6 is conditional on a deprecated
+    # option existing). Should a `par` option ever be superseded in future, emit a
+    # non-terminating notice via `_emit_deprecation_notice(<option>, <replacement>)`
+    # (the same helper `full`/`main` use), which writes to stderr and leaves
+    # stdout and the exit code unchanged.
+
     # Validate user agent options
     validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
-    
+
+    # Validate basic-auth conflicts/format before any parameter fuzzing runs so a
+    # --basic-auth + --jwt conflict (Requirement 7.7) or a colon-less value
+    # (Requirement 7.6) exits before any request is issued, identical to `dir`.
+    validate_basic_auth_options(basic_auth, jwt)
+
+    # Validate custom-header format before any parameter fuzzing runs so a
+    # colon-less --header value (Requirement 7.5) is rejected with a descriptive
+    # error naming the malformed header and exits before any request is issued.
+    validate_header_options(header)
+
     # Setup logging
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("par")
     
     logger.info("APILeak parameter fuzzing starting", version="0.2.0", target=target)
-    
+
+    # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
+    # grammar understood by parse_selectors, reusing `dir`'s selector plumbing
+    # verbatim (Requirement 12.7). Status matching continues to use the existing
+    # --status-code flag, so it is intentionally not included here.
+    match_exprs = (
+        [f"size:{expr}" for expr in match_size]
+        + [f"words:{expr}" for expr in match_words]
+        + [f"lines:{expr}" for expr in match_lines]
+        + [f"regex:{expr}" for expr in match_regex]
+        + [f"time:{expr}" for expr in match_time]
+    )
+    filter_exprs = (
+        [f"size:{expr}" for expr in filter_size]
+        + [f"words:{expr}" for expr in filter_words]
+        + [f"lines:{expr}" for expr in filter_lines]
+        + [f"regex:{expr}" for expr in filter_regex]
+        + [f"time:{expr}" for expr in filter_time]
+    )
+
+    # Parse selectors at CLI parse time so a syntactically invalid matcher/filter
+    # expression is surfaced as a descriptive CLI error and NO parameter fuzzing
+    # request is issued (Requirement 12.4), consistent with `dir`. The parsed
+    # matchers/filters are threaded into the finding-selection pipeline by a
+    # later task; parsing here guarantees the exit-before-request behavior.
+    try:
+        matchers, filters = parse_selectors(match_exprs, filter_exprs)
+    except SelectorError as exc:
+        logger.error("Invalid response selector expression", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
     try:
         # Prepare user agent configuration
         user_agent_config = None
@@ -2846,22 +3121,106 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         
         # Parse status code filter for HTTP output
         status_code_filter = parse_status_codes(status_code) if status_code else None
-        
-        # Create default configuration for parameter fuzzing
-        config_dict = create_default_config(target, wordlist, "par", user_agent_config, output_filename, advanced_config, status_code_filter)
+
+        # Parse operator-supplied request-context headers, cookie, and basic-auth
+        # reusing `dir`'s helpers verbatim (Requirements 7.1-7.3). The cookie is
+        # carried as a 'Cookie' header so it rides the same custom_headers path as
+        # --header (Requirement 7.2).
+        extra_headers = parse_header_options(header)
+        if cookie:
+            extra_headers['Cookie'] = cookie
+        basic_auth_creds = parse_basic_auth(basic_auth)
+
+        # Resolve the merged, de-duplicated candidate parameter set from the
+        # repeatable --wordlist sources BEFORE any request, reusing `dir`'s
+        # wordlist-reading helper. An unreadable source is surfaced as a
+        # descriptive error naming the file and stops before any request
+        # (Requirement 10.3). When --wordlist is omitted the default
+        # wordlists/parameters.txt is used (Requirement 10.4).
+        try:
+            candidate_parameters = _resolve_par_candidates(wordlist)
+        except ValueError as exc:
+            logger.error("Unreadable parameter wordlist", error=str(exc))
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
+
+        # An empty merged candidate set completes WITHOUT issuing any request and
+        # reports that no candidate parameters were available (Requirement 10.5).
+        if not candidate_parameters:
+            click.echo(
+                "No candidate parameters available: no wordlist entries to fuzz."
+            )
+            return
+
+        # Create default configuration for parameter fuzzing. The wordlist file
+        # path is left at its default; the merged candidate set below overrides
+        # the file-based wordlists via query_candidates/body_candidates.
+        #
+        # The transversal transport/TLS options (--client-cert/--ca-bundle/
+        # --resolve) and the parameter-fuzzing controls (--methods, --confirm-hits,
+        # --max-requests, and the merged query/body candidate sets) are threaded
+        # THROUGH create_default_config so the `par` wiring is centralized in the
+        # config-creation path — mirroring how the transversal keys are
+        # centralized there — rather than being patched onto config_dict inline.
+        # The CLI validators have already parsed/validated each of these before
+        # any request is issued (Requirements 5.1, 6.1, 9.1-9.3, 10.1, 10.2, 11.1).
+        config_dict = create_default_config(
+            target, None, "par", user_agent_config, output_filename,
+            advanced_config, status_code_filter, extra_headers, basic_auth_creds,
+            client_cert=client_cert, ca_bundle=ca_bundle, resolve=resolve,
+            parameter_methods=methods, confirm_hits=confirm_hits,
+            parameter_max_requests=max_requests,
+            query_candidates=candidate_parameters,
+            body_candidates=candidate_parameters,
+        )
         config_dict['proxy'] = proxy
         config_dict['proxy_verify_ssl'] = proxy_verify_ssl
-        
+
         # Apply CLI overrides
         if rate_limit:
             config_dict['rate_limiting']['requests_per_second'] = rate_limit
+        # Thread the per-request resilience and concurrency controls into the
+        # config exactly as `dir` does (Requirement 8). --timeout becomes the
+        # target read timeout (8.1), --retries becomes the RetryConfig source
+        # (8.2), and --concurrency limits in-flight requests (8.3). Each falls
+        # back to the config defaults when not supplied (8.6). These stay inline
+        # here (as they do in `dir`) since they are shared fuzzing/target keys,
+        # not part of the centralized par-path threading above.
+        if timeout is not None:
+            config_dict['target']['timeout'] = timeout
+        if retries is not None:
+            config_dict['fuzzing']['retries'] = retries
+        if concurrency is not None:
+            config_dict['fuzzing']['concurrency'] = concurrency
         if jwt:
             config_dict['authentication']['contexts'][0]['token'] = jwt
             config_dict['authentication']['contexts'][0]['type'] = 'bearer'
         if response:
             config_dict['fuzzing']['response_filter'] = parse_response_codes(response)
-        # Note: methods parameter is not used for parameter fuzzing as it's handled differently
-        
+
+        # Thread the parsed response matchers/filters into the shared FuzzingConfig
+        # fields so parameter findings are narrowed by the SAME matcher-before-filter
+        # pipeline `dir` uses: retain only findings satisfying every matcher, then
+        # exclude any finding satisfying any filter (Requirements 12.1-12.3). The
+        # selectors were already parsed above at CLI time (exit-before-request on an
+        # invalid expression, Requirement 12.4); here they flow through to the
+        # engine's finding-selection step. When no selectors were supplied both
+        # lists are empty and selection is a no-op.
+        config_dict['fuzzing']['matchers'] = matchers
+        config_dict['fuzzing']['filters'] = filters
+
+        # Thread the machine-readable output selections (--output-format/
+        # --output-file) into the shared FuzzingConfig so the engine writes the
+        # selected parameter findings (including their detection-signal fields)
+        # through the same CSV/JSON Lines machine writer `dir` uses
+        # (Requirements 12.5, 12.6). --output-format is already constrained to
+        # csv/jsonl by click.Choice at parse time, so an unsupported format is
+        # rejected before any request and no file is written (Requirement 12.6).
+        # When neither option is supplied both stay None and no machine output
+        # is written, leaving the default report behavior unchanged.
+        config_dict['fuzzing']['output_format'] = output_format
+        config_dict['fuzzing']['output_file'] = output_file
+
         # Load configuration through ConfigurationManager
         config_manager = ConfigurationManager()
         apileak_config = config_manager.load_config_from_dict(config_dict)
@@ -3712,19 +4071,22 @@ def _build_jwt_http_engine(timeout=30, verify_ssl=True):
 
 def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
                      signing_secret=None, fuzz_target=None, fuzz_values=None,
-                     canary_value=None):
+                     canary_value=None, public_key_material=None):
     """Construct a :class:`JWTAttackEngine` for a CLI subcommand.
 
     ``fuzz_target``/``fuzz_values`` drive the CLAIM_FUZZING vector (Req 63.1) and
     ``canary_value`` corroborates — but never replaces — analyzer-based success
-    (Reqs 67.3-67.5). All three default to ``None`` so the single-token path is
-    preserved unchanged when no new option is supplied (Req 67.5).
+    (Reqs 67.3-67.5). ``public_key_material`` supplies the target's asymmetric
+    public key (PEM/DER path or inline PEM) used by the ALGORITHM_CONFUSION
+    vector. All default to ``None`` so the single-token path is preserved
+    unchanged when no new option is supplied (Req 67.5).
     """
     return JWTAttackEngine(
         target_url=url or "",
         original_token=token,
         http_engine=http_engine,
         signing_secret=signing_secret,
+        public_key_material=public_key_material,
         custom_headers=custom_headers or {},
         post_data=data,
         fuzz_target=fuzz_target,
@@ -3778,7 +4140,7 @@ def _report_attack_result(result):
 
 
 def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
-                    verify_ssl=True, signing_secret=None):
+                    verify_ssl=True, signing_secret=None, public_key_material=None):
     """Drive one JWT attack vector through the engine.
 
     When ``url`` is provided the vector is executed against the endpoint through
@@ -3786,7 +4148,8 @@ def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
     analyzer; otherwise the generated tokens are displayed for manual testing.
     """
     if not url:
-        engine = _make_jwt_engine(token, url, custom_headers, data)
+        engine = _make_jwt_engine(token, url, custom_headers, data,
+                                  public_key_material=public_key_material)
         _display_generated_tokens(engine, attack_type)
         click.echo(f"\n⚠️  Manual Testing Required (no --url provided):")
         click.echo("• Test each generated token against your API endpoints")
@@ -3798,7 +4161,8 @@ def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
         try:
             engine = _make_jwt_engine(
                 token, url, custom_headers, data,
-                http_engine=http_engine, signing_secret=signing_secret)
+                http_engine=http_engine, signing_secret=signing_secret,
+                public_key_material=public_key_material)
             _display_generated_tokens(engine, attack_type)
             click.echo(f"\n🎯 Testing against endpoint: {url}")
             result = await engine.execute_attack(attack_type)
@@ -3852,6 +4216,7 @@ def jwt(ctx):
       verify              Verify a token signature against key material (no network)
       test-alg-none       Test algorithm confusion (alg:none) attacks
       test-null-signature Test null signature bypass attacks
+      test-alg-confusion  Test RS256/ES256 -> HS256 key confusion (substitution)
       brute-secret        Brute-force weak HMAC secrets
       test-kid-injection  Test Key ID (kid) injection vulnerabilities
       test-jwks-spoof     Test JWKS URL spoofing attacks
@@ -3928,11 +4293,14 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         click.echo("JWT Token Generated")
         click.echo("="*60)
         click.echo(f"\n🔑 Secret Used: {secret}")
-        click.echo(f"📋 Header: {json.dumps(header_dict)}")
-        click.echo(f"🔐 Payload: {json.dumps(payload_dict)}")
-        click.echo(f"\n🎫 Generated Token:")
+        click.echo("📋 Header: " + click.style(json.dumps(header_dict), fg=JWT_HEADER_COLOR))
+        click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
+        click.echo(f"\n🎫 Generated Token (colour-coded by section):")
         click.echo("-" * 20)
-        click.echo(token)
+        click.echo(colorize_jwt(decode_jwt(token)))
+        click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
+                   + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
+                   + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
         click.echo("\n" + "="*60)
         
     except ValueError as e:
@@ -4256,6 +4624,97 @@ def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
         click.echo("• Validate signature length and format before verification")
         click.echo("• Use established JWT libraries with proper validation")
         click.echo("• Implement signature presence checks before cryptographic verification")
+
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+def _load_public_key_material_cli(material):
+    """Resolve operator-supplied public-key material for the CLI.
+
+    ``material`` may be a filesystem path to a PEM/DER file or inline PEM
+    text. Returns raw bytes when a readable file is found (so binary DER works),
+    otherwise the original string (inline PEM). Mirrors the auth module's
+    path-or-inline resolution so both entry points behave identically.
+    """
+    try:
+        path = Path(material)
+        if path.exists() and path.is_file():
+            return path.read_bytes()
+    except (OSError, ValueError):
+        pass
+    return material
+
+
+@jwt.command('test-alg-confusion')
+@click.argument('token')
+@click.option('--public-key', 'public_key', required=True, metavar='PATH_OR_PEM',
+              help='Target RSA/EC public key (PEM/DER file path or inline PEM) used as the HMAC secret')
+@click.option('--payload', help='Custom payload to inject (JSON format)')
+@click.option('--url', '-u', help='Target URL to test the confusion attack against (optional)')
+@click.option('--header', '-H', multiple=True, help='Custom headers for endpoint testing (format: "Name: Value")')
+@click.option('--data', '-d', help='POST data for endpoint testing')
+@click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
+@click.pass_context
+def jwt_test_alg_confusion(ctx, token, public_key, payload, url, header, data, timeout):
+    """Test algorithm/key confusion attack (RS256/ES256 -> HS256 substitution)
+
+    \b
+    🧪 CRITICAL SEVERITY ATTACK
+    Algorithm confusion (aka Substitution Attack) forges a token that a server
+    validates with the SAME public key it uses for RS*/ES* verification, but
+    treated as an HS256 HMAC secret:
+
+    1️⃣ Switch the header alg from RS256/ES256 to HS256\b
+    2️⃣ HMAC-sign header.payload using the server's PUBLIC KEY bytes as the secret\b
+    3️⃣ Every public-key representation is tried (PEM ±newline, DER, x5c cert)\b
+    4️⃣ A server that accepts the forged token confuses the key's role
+
+    \b
+    Examples:
+      # Generate confusion tokens for manual testing
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+      # Inject an admin payload and test against a live endpoint
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key key.pem \\
+          --payload '{"role":"admin"}' --url https://api.example.com/admin
+    """
+    try:
+        click.echo("🔍 Algorithm/Key Confusion Attack (RS256/ES256 -> HS256)")
+        click.echo("="*55)
+        click.echo("🔥 SEVERITY: CRITICAL - Signature forged with the public key")
+        click.echo("")
+
+        custom_headers = _parse_custom_headers(header)
+        public_key_material = _load_public_key_material_cli(public_key)
+
+        # Decode original token for display.
+        decoded = decode_jwt(token)
+        click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
+        click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
+        click.echo("")
+
+        # Merge a custom payload onto the base token before running the vector.
+        base_token = token
+        if payload:
+            try:
+                custom_payload = json.loads(payload)
+            except json.JSONDecodeError:
+                click.echo(f"❌ Invalid JSON payload: {payload}")
+                return
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.ALGORITHM_CONFUSION, url,
+                        custom_headers, data, timeout,
+                        public_key_material=public_key_material)
+
+        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("• Bind each key to a single algorithm; never share keys across alg families")
+        click.echo("• Enforce an algorithm allowlist (e.g. only RS256) during verification")
+        click.echo("• Never let the token header dictate the verification algorithm")
 
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)

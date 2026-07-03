@@ -119,6 +119,26 @@ class ParameterFuzzingConfig:
     query_wordlist: str = "wordlists/parameters.txt"
     body_wordlist: str = "wordlists/parameters.txt"
     boundary_testing: bool = True
+    # HTTP methods that drive injection-point selection (Requirement 6.1). The
+    # fuzzer derives query fuzzing from query-carrying methods (GET/DELETE) and
+    # body fuzzing from body-carrying methods (POST/PUT/PATCH). Defaults to
+    # ["GET", "POST"] so both injection points run by default.
+    methods: List[str] = field(default_factory=lambda: ["GET", "POST"])
+    # Hit_Confirmation retest count (Requirement 5.1). None/0 => confirmation is
+    # disabled and candidates are reported immediately; >=1 => the candidate is
+    # re-tested N additional times (default 2 when enabled) and only reported if
+    # every retest reproduces the signal.
+    confirm_hits: Optional[int] = None
+    # Request_Budget upper bound (Requirement 11.1/11.5). None => unbounded; when
+    # set, the total number of HTTP requests issued by the run must never exceed
+    # this value.
+    max_requests: Optional[int] = None
+    # In-memory merged/deduped query candidate set (Requirement 10.1/10.2). When
+    # not None, it overrides the ``query_wordlist`` file for query fuzzing.
+    query_candidates: Optional[List[str]] = None
+    # In-memory merged/deduped body candidate set (Requirement 10.1/10.2). When
+    # not None, it overrides the ``body_wordlist`` file for body fuzzing.
+    body_candidates: Optional[List[str]] = None
 
 
 @dataclass
@@ -183,6 +203,29 @@ class FuzzingConfig:
     # candidates are re-requested ``count`` times and only recorded when the
     # responses are consistent (35.2-35.6).
     hit_confirmation: HitConfirmationConfig = field(default_factory=HitConfirmationConfig)
+    # Response matchers/filters (Requirement 12.1-12.3). Shared with the ``dir``
+    # selection pipeline: these are the SAME ``ResponseSelector`` objects
+    # produced by ``utils.response_selector.parse_selectors`` that ``dir`` builds
+    # from its ``--match-*``/``--filter-*`` flags. The ``par`` command threads
+    # its parsed selectors through ``config_dict['fuzzing']['matchers']`` /
+    # ``['filters']`` so parameter findings are narrowed by the identical
+    # matcher-before-filter code path (retain every matcher, then exclude any
+    # filter). Both default to empty lists so, when no selectors are supplied
+    # (and for dir/scan/full, which never thread them here), selection is a
+    # no-op and behavior is unchanged (Requirement 2 preservation).
+    matchers: List[Any] = field(default_factory=list)
+    filters: List[Any] = field(default_factory=list)
+    # Machine-readable output settings for ``par`` findings (Requirement 12.5,
+    # 12.6). Shared with the ``dir`` machine-output surface: ``par`` threads its
+    # ``--output-format``/``--output-file`` selections through
+    # ``config_dict['fuzzing']['output_format']`` / ``['output_file']`` so the
+    # engine writes parameter findings (including their detection-signal fields)
+    # through the same CSV/JSON Lines machine writer. Both default to None so,
+    # when no machine output is requested (and for dir/scan/full, which never
+    # thread them here), no file is written and behavior is unchanged
+    # (Requirement 2 preservation).
+    output_format: Optional[str] = None
+    output_file: Optional[str] = None
 
 
 @dataclass
@@ -957,6 +1000,19 @@ class ConfigurationManager:
         endpoints_data = data.get('endpoints', {})
         endpoints = EndpointFuzzingConfig(**endpoints_data)
         
+        # Map ``fuzzing.parameters.*`` into the extended ParameterFuzzingConfig
+        # (Requirements 11.4, 12.4; design §4). The dataclass was extended in
+        # task 4.1 with defaulted fields ``methods``, ``confirm_hits``,
+        # ``max_requests``, ``query_candidates`` and ``body_candidates`` in
+        # addition to the original ``enabled``/``query_wordlist``/
+        # ``body_wordlist``/``boundary_testing`` fields. The ``**params_data``
+        # unpacking maps every key the CLI threads under this path
+        # (apileaks.py::par writes methods/confirm_hits/max_requests/
+        # query_candidates/body_candidates) onto the matching dataclass field;
+        # any key the CLI omits falls back to the field's default. This is the
+        # single mapping site, so ``validate_configuration()`` (invoked by the
+        # CLI immediately after ``load_config_from_dict`` and before any request)
+        # always runs against the fully-populated config.
         params_data = data.get('parameters', {})
         parameters = ParameterFuzzingConfig(**params_data)
         
@@ -997,7 +1053,20 @@ class ConfigurationManager:
             # when absent so recursion uses its default eligibility (Req 34.3, 34.4).
             recursion_scope=data.get('recursion_scope'),
             # Hit_Confirmation built above; defaults to disabled (Req 35.1, 35.6).
-            hit_confirmation=hit_confirmation
+            hit_confirmation=hit_confirmation,
+            # Response matchers/filters threaded in by the ``par`` CLI
+            # (Requirements 12.1-12.3). These are the parsed ``ResponseSelector``
+            # objects from ``parse_selectors``; both default to empty lists when
+            # absent so parameter-finding selection is a no-op unless selectors
+            # were supplied, and dir/scan/full are unaffected.
+            matchers=data.get('matchers', []),
+            filters=data.get('filters', []),
+            # Machine-readable output settings threaded in by the ``par`` CLI
+            # (Requirements 12.5, 12.6). Both default to None when absent so no
+            # machine output is written unless the operator requested it, and
+            # dir/scan/full are unaffected.
+            output_format=data.get('output_format'),
+            output_file=data.get('output_file'),
         )
     
     def _build_secret_scan_config(self, data: Dict[str, Any]) -> SecretScanConfig:

@@ -8,6 +8,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[Installation Guide](installation.md)** - Complete installation instructions
 - **[User Guide](user-guide.md)** - Comprehensive user guide and tutorials
 - **[Usage Examples](usage-examples.md)** - Practical usage examples and scenarios
+- **[Parameter Fuzzing Guide](parameter-fuzzing.md)** - Hidden parameter discovery with detection signals, confirmation, and budget control
 - **[Configuration Guide](configuration.md)** - Detailed configuration options
 - **[JWT Attack Testing](jwt-attacks.md)** - Comprehensive JWT security testing guide
 - **[Payload Generator](payload-generator.md)** - Advanced payload generation and obfuscation

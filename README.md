@@ -39,7 +39,7 @@ APILeak's CLI is organized into four families:
 | `par` | Parameter fuzzing — discover hidden parameters |
 | `owasp <module>` | Run **one** OWASP API Security Top 10 module in isolation |
 | `scan` | Orchestrated scan — runs discovery + all (or selected) OWASP modules and aggregates findings |
-| `jwt <subcommand>` | Manual JWT attack & utility toolkit (12 subcommands) |
+| `jwt <subcommand>` | Manual JWT attack & utility toolkit (13 subcommands) |
 
 > **Deprecation:** the legacy `full` command (and the hidden `main`) still work but are deprecated aliases of `scan`. They emit a one-line notice to stderr and behave identically. Migrate scripts to `scan`. Selecting modules through `full --modules bola` is deprecated in favor of `apileaks owasp bola`.
 

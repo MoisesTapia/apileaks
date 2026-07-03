@@ -4,7 +4,7 @@ Aggregates and manages security findings from all modules
 """
 
 from typing import List, Dict, Any, Optional, Set, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
 import hashlib
@@ -50,6 +50,14 @@ class Finding:
     confidence: Optional[str] = None
     headers: Dict[str, str] = None
     timestamp: datetime = None
+    # Parameter-fuzzing detection-signal fields (R3.5/R4.2/R5). All defaulted
+    # so existing Finding construction sites and other commands are unaffected
+    # (behavior preservation, R2).
+    detection_signal: Optional[str] = None            # R3.5/R4.2: e.g. "reflection", "new_json_field", "status_code"
+    detection_signals: List[str] = field(default_factory=list)  # all signals that fired
+    reflection_location: Optional[str] = None         # R3.5: "body" | "header"
+    new_json_fields: Optional[List[str]] = None        # R4.2: absent-in-baseline keys detected
+    confirmation_status: Optional[str] = None          # R5: "confirmed" | "excluded_failed_retest" | None
     
     def __post_init__(self):
         if self.headers is None:

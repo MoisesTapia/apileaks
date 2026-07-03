@@ -4,7 +4,7 @@ These tests lock in the two families the restructure must leave intact:
 
 * The Discovery_Command_Family (``dir`` / ``par``) stays at the **top level** and
   is **never** registered under the ``owasp`` group (R8.1, R8.3, R8.4, R8.5).
-* The manual JWT toolkit (``jwt`` group) keeps exactly its twelve named
+* The manual JWT toolkit (``jwt`` group) keeps exactly its thirteen named
   subcommands and its help identifies it as a manual toolkit (R7.1, R7.3).
 * The ``owasp auth`` subcommand help distinguishes the automated
   JWT_Module_Tests from the manual ``jwt`` group (R7.2 distinction, R7.4, R7.5).
@@ -26,7 +26,7 @@ from click.testing import CliRunner
 from apileaks import cli
 
 
-# The exact twelve JWT_CLI_Group subcommands (R7.1). Order-independent set.
+# The exact thirteen JWT_CLI_Group subcommands (R7.1). Order-independent set.
 EXPECTED_JWT_SUBCOMMANDS = {
     "decode",
     "encode",
@@ -35,6 +35,7 @@ EXPECTED_JWT_SUBCOMMANDS = {
     "jwks-to-key",
     "test-alg-none",
     "test-null-signature",
+    "test-alg-confusion",
     "brute-secret",
     "test-kid-injection",
     "test-jwks-spoof",
@@ -149,11 +150,11 @@ def test_owasp_dir_and_owasp_par_error_nonzero():
 
 
 # --------------------------------------------------------------------------- #
-# R7.1: the jwt group has exactly the twelve named subcommands.
+# R7.1: the jwt group has exactly the thirteen named subcommands.
 # --------------------------------------------------------------------------- #
 
 def test_jwt_group_has_exactly_the_twelve_named_subcommands():
-    """The ``jwt`` group exposes exactly the twelve named subcommands (R7.1).
+    """The ``jwt`` group exposes exactly the thirteen named subcommands (R7.1).
 
     No subcommand is added to or removed from the set.
 
@@ -161,7 +162,7 @@ def test_jwt_group_has_exactly_the_twelve_named_subcommands():
     """
     jwt_group = _jwt_group()
     assert set(jwt_group.commands) == EXPECTED_JWT_SUBCOMMANDS
-    assert len(jwt_group.commands) == 12
+    assert len(jwt_group.commands) == 13
 
 
 def test_jwt_subcommand_names_match_character_for_character():

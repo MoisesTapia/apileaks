@@ -1,0 +1,9 @@
+[
+  "discovery",
+  "advanced_discovery",
+  "waf_detection",
+  "traditional_fuzzing",
+  "owasp_testing",
+  "security_analysis",
+  "results_aggregation"
+]

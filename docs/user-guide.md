@@ -96,10 +96,10 @@ For the complete list of `dir` options (triage, scope, robustness, and batch-sca
 
 ### Parameter Fuzzing
 
-Identify hidden parameters and input validation issues:
+Discover hidden, undocumented, or debug parameters accepted by an API endpoint. The `par` command injects candidate parameter names and detects parameters that alter application behavior via reflection, new JSON fields, and response difference signals. See the full [Parameter Fuzzing Guide](parameter-fuzzing.md) for a detailed walkthrough.
 
 ```bash
-# Basic parameter fuzzing
+# Basic: discover hidden parameters with the default wordlist
 python apileaks.py par --target https://api.example.com
 
 # With authentication
@@ -107,11 +107,24 @@ python apileaks.py par \
   --target https://api.example.com/users \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
-# Test specific HTTP methods
+# Control injection points via --methods
 python apileaks.py par \
   --target https://api.example.com \
   --methods GET,POST,PUT \
   --wordlist wordlists/parameters.txt
+
+# Hit confirmation to reduce false positives
+python apileaks.py par \
+  --target https://api.example.com/api/v1/search \
+  --confirm-hits 3 \
+  --max-requests 1000
+
+# Request context: custom headers, cookie, and auth
+python apileaks.py par \
+  --target https://api.example.com/api/v1/profile \
+  -H "X-API-Key: key123" \
+  --cookie "session=abc" \
+  --basic-auth admin:secret
 ```
 
 ### Security Scan
