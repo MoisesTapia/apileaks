@@ -187,9 +187,11 @@ class ReportGenerator:
                 if hasattr(endpoint, 'discovered_via'):
                     ET.SubElement(ep_elem, "discovered_via").text = endpoint.discovered_via
         
-        # Convert to pretty-printed XML string
+        # Convert to pretty-printed XML string.
+        # minidom.parseString is called on XML we generated ourselves via ElementTree,
+        # not on untrusted external input, so XXE and XML-injection risks do not apply.
         xml_str = ET.tostring(root, encoding='unicode')
-        dom = minidom.parseString(xml_str)
+        dom = minidom.parseString(xml_str)  # nosec B318
         pretty_xml = dom.toprettyxml(indent="  ")
         
         # Remove empty lines and fix encoding declaration

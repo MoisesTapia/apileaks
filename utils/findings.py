@@ -607,10 +607,12 @@ class FindingsCollector:
         Returns:
             True if duplicate, False otherwise
         """
-        # Create deduplication key based on endpoint, method, category, and evidence hash
-        evidence_hash = hashlib.md5(finding.evidence.encode()).hexdigest()[:8]
+        # Create deduplication key based on endpoint, method, category, and evidence hash.
+        # usedforsecurity=False: this hash is used only for deduplication, not for any
+        # cryptographic or security purpose, so a non-collision-resistant hash is acceptable.
+        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
-        
+
         return dedup_key in self._deduplication_cache
     
     def _add_to_deduplication_cache(self, finding: Finding) -> None:
@@ -620,7 +622,7 @@ class FindingsCollector:
         Args:
             finding: Finding to add to cache
         """
-        evidence_hash = hashlib.md5(finding.evidence.encode()).hexdigest()[:8]
+        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
         self._deduplication_cache.add(dedup_key)
     
