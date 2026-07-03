@@ -1,4 +1,4 @@
-name: Escaneo de Librerías — Safety & pip-audit
+name: Escaneo de Librerías
 
 on:
   push:
@@ -16,11 +16,10 @@ on:
 
 jobs:
   pip-audit:
-    name: pip-audit (CVEs en dependencias)
+    name: pip-audit (CVEs)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
 
     steps:
       - name: Checkout
@@ -34,50 +33,14 @@ jobs:
       - name: Instalar pip-audit
         run: pip install pip-audit
 
-      - name: Run pip-audit (SARIF)
-        run: |
-          pip-audit \
-            --requirement requirements.txt \
-            --format sarif \
-            --output pip-audit-results.sarif \
-            --progress-spinner off
-        continue-on-error: true
-
-      - name: Upload SARIF a GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: pip-audit-results.sarif
-          category: pip-audit-dependencies
-
-      - name: Run pip-audit (JSON — para artefacto)
-        run: |
-          pip-audit \
-            --requirement requirements.txt \
-            --format json \
-            --output pip-audit-results.json \
-            --progress-spinner off
-        continue-on-error: true
-
-      - name: Mostrar resumen en logs
+      - name: Run pip-audit
         run: |
           pip-audit \
             --requirement requirements.txt \
             --progress-spinner off
-        # Falla el job si hay vulnerabilidades conocidas
-
-      - name: Upload artefactos
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dependency-scan-results
-          path: |
-            pip-audit-results.sarif
-            pip-audit-results.json
-          retention-days: 30
 
   safety:
-    name: Safety (base de datos PyUp)
+    name: Safety (PyUp DB)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -98,9 +61,6 @@ jobs:
         run: |
           safety check \
             --file requirements.txt \
-            --full-report \
-            --output text
-        # safety check sale con código != 0 si encuentra CVEs → falla el job
+            --full-report
         env:
-          # Token opcional de Safety DB (más actualizado)
           SAFETY_API_KEY: ${{ secrets.SAFETY_API_KEY }}

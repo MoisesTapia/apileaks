@@ -17,7 +17,7 @@ on:
 
 jobs:
   license-check:
-    name: License Checker (pip-licenses)
+    name: pip-licenses
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,44 +39,14 @@ jobs:
       - name: Instalar pip-licenses
         run: pip install pip-licenses
 
-      - name: Generar reporte de licencias (tabla)
+      - name: Listar licencias
         run: |
           pip-licenses \
-            --format=markdown \
+            --format=columns \
             --with-authors \
-            --with-urls \
-            --output-file licenses-report.md
-
-      - name: Mostrar reporte en logs
-        run: cat licenses-report.md
+            --with-urls
 
       - name: Validar licencias permitidas
         run: |
-          # Falla si se detectan licencias copyleft fuertes
-          FORBIDDEN="GPL-3.0,GPL-2.0,AGPL-3.0,LGPL-2.1,LGPL-3.0"
           pip-licenses \
-            --format=plain-vertical \
-            --with-license-file \
-            --no-license-path \
-            --allow-only="${{ vars.ALLOWED_LICENSES || 'MIT;Apache Software License;BSD License;ISC License (ISCL);Python Software Foundation License;Mozilla Public License 2.0 (MPL 2.0);The Unlicense (Unlicense);Public Domain' }}" \
-          && echo "✅ Todas las licencias están permitidas" \
-          || (echo "❌ Licencias no permitidas detectadas. Revisar licenses-report.md" && exit 1)
-
-      - name: Generar reporte JSON
-        if: always()
-        run: |
-          pip-licenses \
-            --format=json \
-            --with-authors \
-            --with-urls \
-            --output-file licenses-report.json
-
-      - name: Upload artefactos
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: license-report
-          path: |
-            licenses-report.md
-            licenses-report.json
-          retention-days: 30
+            --allow-only="MIT License;Apache Software License;BSD License;ISC License (ISCL);Python Software Foundation License;Mozilla Public License 2.0 (MPL 2.0);The Unlicense (Unlicense);Public Domain"
