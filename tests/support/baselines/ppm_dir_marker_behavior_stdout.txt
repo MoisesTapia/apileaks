@@ -1,0 +1,28 @@
+
+🎯 Target: https://api.example.test/FUZZ
+⚡ Rate Limit: 10 req/sec
+
+
+============================================================
+APILeak Enhanced Scan Completed Successfully
+============================================================
+Target: https://api.example.test/FUZZ
+Scan ID: <SCAN_ID>
+Duration: <DURATION>
+📊 Discovery stats: 8 endpoint(s) tested, 4 discovered, 8 request(s), 50.0% success rate, recursion depth 0
+Total Endpoints Tested: 8
+📍 Endpoints Found:
+  - GET https://api.example.test/users (200)
+  - GET https://api.example.test/users/users (200)
+  - GET https://api.example.test/users/users/users (200)
+  - GET https://api.example.test/users/users/users/users (200)
+Total Findings: 0
+Critical: 0
+High: 0
+Medium: 0
+Low: 0
+Info: 0
+OWASP Coverage: 0.0% (0/10 categories)
+
+Reports generated:
+  - <REPORT_FILE>

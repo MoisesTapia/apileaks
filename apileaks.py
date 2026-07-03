@@ -761,7 +761,7 @@ APILeak v0.2.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None, module_configs=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None):
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None, module_configs=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None, fuzz_keyword="FUZZ", fuzz_mode="clusterbomb", marker_wordlists=None):
     """Create an enhanced configuration with all advanced features integrated
 
     ``module_configs`` generalizes the per-module pre-load config channel: it is
@@ -1047,6 +1047,15 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     if body_candidates is not None:
         parameters_cfg['body_candidates'] = body_candidates
 
+    # Thread the three marker-mode keys into ``fuzzing.parameters.*`` for the
+    # ``par`` command (Requirements 2.4, 2.5, 5.1, 7.1). These are defaulted
+    # so ``dir``/``scan``/``full``/OWASP callers that never pass them are
+    # completely unaffected.
+    if scan_type == "par":
+        parameters_cfg['fuzz_keyword'] = fuzz_keyword
+        parameters_cfg['fuzz_mode'] = fuzz_mode
+        parameters_cfg['marker_wordlists'] = marker_wordlists
+
     # For parameter fuzzing, disable endpoint discovery and use the target directly
     if scan_type == "par":
         config['fuzzing']['endpoints']['enabled'] = False
@@ -1054,7 +1063,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     return config
 
 
-def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None):
+def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None, fuzz_keyword="FUZZ", fuzz_mode="clusterbomb", marker_wordlists=None):
     """Create a default configuration when no config file is provided (legacy compatibility)
 
     The trailing keyword arguments (``client_cert``/``ca_bundle``/``resolve`` and
@@ -1063,8 +1072,12 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
     creation so the ``par`` command centralizes its wiring here rather than
     patching the returned dict inline. They all default to None, so existing
     positional callers (``dir``/``scan``/``full`` and the tests) are unaffected.
+    The three marker-mode keys (``fuzz_keyword``, ``fuzz_mode``,
+    ``marker_wordlists``) mirror ``EndpointFuzzingConfig``'s shape and are only
+    written under ``config_dict['fuzzing']['parameters']`` for ``scan_type=="par"``,
+    so all other commands are unaffected (Requirements 2.4, 2.5, 5.1, 7.1).
     """
-    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth, None, None, client_cert, ca_bundle, resolve, parameter_methods, confirm_hits, parameter_max_requests, query_candidates, body_candidates)
+    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth, None, None, client_cert, ca_bundle, resolve, parameter_methods, confirm_hits, parameter_max_requests, query_candidates, body_candidates, fuzz_keyword, fuzz_mode, marker_wordlists)
     """Create a default configuration when no config file is provided"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -3003,6 +3016,15 @@ def _run_scoped_owasp_scan(
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during parameter fuzzing')
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
+@click.option('--fuzz-keyword', 'fuzz_keyword', default='FUZZ', show_default=True,
+              metavar='KEYWORD',
+              help='Literal token in the target URL marking positions to fuzz. '
+                   'When present, par runs in Marker_Mode and the repeatable '
+                   '--wordlist values are the per-marker wordlists in marker order.')
+@click.option('--fuzz-mode', 'fuzz_mode',
+              type=click.Choice(['clusterbomb', 'pitchfork'], case_sensitive=False),
+              default='clusterbomb', show_default=True,
+              help='Combination strategy for multiple markers (Marker_Mode).')
 @concurrency_options
 @click.option('--confirm-hits', 'confirm_hits', type=int, default=None, callback=_validate_confirm_hits,
               metavar='N',
@@ -3015,7 +3037,7 @@ def _run_scoped_owasp_scan(
 @machine_output_options
 @tls_options
 @click.pass_context
-def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl, concurrency, confirm_hits, max_requests, timeout, retries, header, cookie, basic_auth, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, output_format, output_file, client_cert, ca_bundle, resolve):
+def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, fuzz_keyword, fuzz_mode, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl, concurrency, confirm_hits, max_requests, timeout, retries, header, cookie, basic_auth, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, output_format, output_file, client_cert, ca_bundle, resolve):
     """Parameter fuzzing - discover hidden parameters in API endpoints
     
     \b
@@ -3131,26 +3153,96 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             extra_headers['Cookie'] = cookie
         basic_auth_creds = parse_basic_auth(basic_auth)
 
-        # Resolve the merged, de-duplicated candidate parameter set from the
-        # repeatable --wordlist sources BEFORE any request, reusing `dir`'s
-        # wordlist-reading helper. An unreadable source is surfaced as a
-        # descriptive error naming the file and stops before any request
-        # (Requirement 10.3). When --wordlist is omitted the default
-        # wordlists/parameters.txt is used (Requirement 10.4).
+        # ------------------------------------------------------------------ #
+        # Marker-mode validation (Requirements 1.5, 1.6, 2.3, 5.1, 7.4,   #
+        # 7.5, 7.6, 10.1–10.7), strictly exit-before-request.              #
+        # Mirrors the dir command marker-validation block verbatim but      #
+        # threads into config_dict['fuzzing']['parameters'].                #
+        # ------------------------------------------------------------------ #
+        marker_only_requested = (
+            ctx.get_parameter_source('fuzz_keyword')
+            == click.core.ParameterSource.COMMANDLINE
+            or ctx.get_parameter_source('fuzz_mode')
+            == click.core.ParameterSource.COMMANDLINE
+        )
+        marker_wordlists = None
         try:
-            candidate_parameters = _resolve_par_candidates(wordlist)
+            # 1. Keyword validity (R1.5 / R10.1).
+            resolved_fuzz_keyword = validate_fuzz_keyword(fuzz_keyword)
+
+            # 2. Marker presence for marker-only mode (R1.6 / R10.2).
+            markers = find_markers(target, resolved_fuzz_keyword)
+            if not markers and marker_only_requested:
+                raise ValueError(
+                    "no Fuzz_Marker found in target URL "
+                    f"{target!r} for keyword {resolved_fuzz_keyword!r}"
+                )
+
+            # 3. Fuzz-mode selection (R5.1 / R10.3).
+            resolved_fuzz_mode = parse_fuzz_mode(fuzz_mode)
+
+            if markers:
+                # 4. Associate wordlists with markers in left-to-right order
+                #    (R7.1–R7.4 / R10.4). Each --wordlist source is wrapped so
+                #    associate_wordlists operates on source references.
+                wordlist_sources = [[src] for src in wordlist]
+                if not wordlist_sources:
+                    # R7.7: no --wordlist supplied → default parameter wordlist
+                    # covers every marker position.
+                    wordlist_sources = [[DEFAULT_PARAMETER_WORDLIST]]
+                associated_sources = associate_wordlists(markers, wordlist_sources)
+
+                # 5. Read each associated wordlist (R7.6 / R10.6).
+                marker_wordlists = []
+                for assoc in associated_sources:
+                    source = assoc[0]
+                    try:
+                        marker_wordlists.append(_read_wordlist_entries(source))
+                    except OSError as exc:
+                        raise ValueError(
+                            f"unreadable wordlist source '{source}': {exc}"
+                        ) from exc
+
+                # 6. Pitchfork empty-wordlist check (R7.5 / R10.5).
+                if resolved_fuzz_mode == FuzzMode.PITCHFORK:
+                    for marker, entries in zip(markers, marker_wordlists):
+                        if not entries:
+                            raise ValueError(
+                                "Pitchfork_Mode requires a non-empty wordlist for "
+                                "every marker; the wordlist for marker at order "
+                                f"{marker.order} is empty"
+                            )
         except ValueError as exc:
-            logger.error("Unreadable parameter wordlist", error=str(exc))
+            logger.error("Invalid marker-mode configuration", error=str(exc))
             click.echo(f"Error: {exc}", err=True)
             sys.exit(1)
 
-        # An empty merged candidate set completes WITHOUT issuing any request and
-        # reports that no candidate parameters were available (Requirement 10.5).
-        if not candidate_parameters:
-            click.echo(
-                "No candidate parameters available: no wordlist entries to fuzz."
-            )
-            return
+        # In Name_Discovery_Mode (no markers, no marker-only option) resolve
+        # the merged, de-duplicated candidate parameter set from the repeatable
+        # --wordlist sources BEFORE any request.  This path is gated on
+        # marker_wordlists is None so Marker_Mode never runs it (R2.1).
+        candidate_parameters = None
+        if marker_wordlists is None:
+            # Resolve the merged, de-duplicated candidate parameter set from the
+            # repeatable --wordlist sources BEFORE any request, reusing `dir`'s
+            # wordlist-reading helper. An unreadable source is surfaced as a
+            # descriptive error naming the file and stops before any request
+            # (Requirement 10.3). When --wordlist is omitted the default
+            # wordlists/parameters.txt is used (Requirement 10.4).
+            try:
+                candidate_parameters = _resolve_par_candidates(wordlist)
+            except ValueError as exc:
+                logger.error("Unreadable parameter wordlist", error=str(exc))
+                click.echo(f"Error: {exc}", err=True)
+                sys.exit(1)
+
+            # An empty merged candidate set completes WITHOUT issuing any request
+            # and reports that no candidate parameters were available (R10.5).
+            if not candidate_parameters:
+                click.echo(
+                    "No candidate parameters available: no wordlist entries to fuzz."
+                )
+                return
 
         # Create default configuration for parameter fuzzing. The wordlist file
         # path is left at its default; the merged candidate set below overrides
@@ -3164,6 +3256,10 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         # centralized there — rather than being patched onto config_dict inline.
         # The CLI validators have already parsed/validated each of these before
         # any request is issued (Requirements 5.1, 6.1, 9.1-9.3, 10.1, 10.2, 11.1).
+        #
+        # In Marker_Mode: query_candidates/body_candidates are None (name-discovery
+        # path is skipped); fuzz_keyword, fuzz_mode, marker_wordlists are threaded.
+        # In Name_Discovery_Mode: marker_wordlists is None (marker gate stays off).
         config_dict = create_default_config(
             target, None, "par", user_agent_config, output_filename,
             advanced_config, status_code_filter, extra_headers, basic_auth_creds,
@@ -3172,6 +3268,9 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
             parameter_max_requests=max_requests,
             query_candidates=candidate_parameters,
             body_candidates=candidate_parameters,
+            fuzz_keyword=resolved_fuzz_keyword,
+            fuzz_mode=resolved_fuzz_mode.value,
+            marker_wordlists=marker_wordlists,
         )
         config_dict['proxy'] = proxy
         config_dict['proxy_verify_ssl'] = proxy_verify_ssl

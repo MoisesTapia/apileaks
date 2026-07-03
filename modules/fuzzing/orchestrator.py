@@ -29,6 +29,7 @@ from modules.fuzzing.markers import (
     find_markers,
     generate_marker_candidates,
     parse_fuzz_mode,
+    substitute_markers,
 )
 from utils.discovery_progress import DiscoveryProgress
 from utils.discovery_session import status_code_class, DiscoveryResult
@@ -1415,6 +1416,16 @@ class ParameterFuzzer:
             'object': [{}, {'test': 'value'}, None, 'null', '', 'not_object']
         }
         
+        # Marker mode / positional fuzzing state (Requirements 1.1, 5.1, 7.1).
+        # Mirror EndpointFuzzer's pattern: precompute the three marker-related
+        # fields from config so fuzz_parameters only needs a simple branch check.
+        # ``_param_marker_wordlists is None`` is the Name_Discovery_Mode sentinel
+        # — when None, the marker gate never fires and the existing name-discovery
+        # path runs unchanged (R2.1).
+        self._param_marker_wordlists = self.config.parameters.marker_wordlists
+        self._param_fuzz_keyword = self.config.parameters.fuzz_keyword
+        self._param_fuzz_mode = parse_fuzz_mode(self.config.parameters.fuzz_mode)
+
         self.logger.info("Parameter Fuzzer initialized",
                         boundary_testing=config.parameters.boundary_testing)
 
@@ -1606,6 +1617,16 @@ class ParameterFuzzer:
                             url=endpoint.url, 
                             method=endpoint.method)
             
+            # Marker_Mode gate (R2.1, R2.2, R2.7): when the endpoint URL contains
+            # at least one Fuzz_Marker AND per-marker wordlists are configured,
+            # delegate entirely to _fuzz_markers and skip the name-discovery path.
+            # The name-discovery branches below remain byte-for-byte unchanged.
+            markers = find_markers(endpoint.url, self._param_fuzz_keyword)
+            use_markers = bool(markers) and self._param_marker_wordlists is not None
+            if use_markers:
+                findings.extend(await self._fuzz_markers(endpoint, markers))
+                continue
+
             # Query parameter fuzzing
             if 'query' in injection_points and endpoint.method in ['GET', 'DELETE']:
                 query_findings = await self._fuzz_query_parameters(endpoint)
@@ -1623,6 +1644,212 @@ class ParameterFuzzer:
         
         return findings
     
+    async def _test_marker_candidate(
+        self, method: str, candidate_url: str
+    ) -> Optional[Response]:
+        """Issue one request for a fully-substituted Marker_Candidate URL.
+
+        Wraps ``http_client.request`` with the budget check and ``requests_made``
+        increment so every candidate request AND every Hit_Confirmation retest
+        count toward the Request_Budget, identical to the bookkeeping in
+        ``_test_query_parameter`` (R5.4, R6.3, R11.1).
+        """
+        if self._budget_exhausted():
+            return None
+        try:
+            response = await self.http_client.request(method.upper(), candidate_url)
+            self.requests_made += 1
+            if response.status_code < 500:
+                self.successful_requests += 1
+            return response
+        except Exception as exc:
+            self.logger.debug(
+                "Marker candidate request failed",
+                method=method,
+                url=candidate_url,
+                error=str(exc),
+            )
+            return None
+
+    async def _fuzz_markers(
+        self, endpoint: "Endpoint", markers: list
+    ) -> "List[Finding]":
+        """Marker_Mode: sweep marked positions in endpoint.url with candidate values.
+
+        Reuses generate_marker_candidates (URL production), _evaluate_difference
+        (signals), _confirm_and_annotate (Hit_Confirmation), _budget_exhausted
+        (Request_Budget), and the shared finding/selection pipeline. The
+        name-discovery path is untouched (R2.1).
+        """
+        import itertools as _itertools
+
+        findings: "List[Finding]" = []
+
+        # ------------------------------------------------------------------ #
+        # 1. Selected methods (R8)
+        # ------------------------------------------------------------------ #
+        methods_cfg = [m.upper() for m in self.config.parameters.methods]
+        query_methods = [m for m in methods_cfg if m in ("GET", "DELETE")]
+        body_methods = [m for m in methods_cfg if m in ("POST", "PUT", "PATCH")]
+        selected_methods = query_methods + body_methods
+
+        if not selected_methods:
+            self.logger.debug("No selected methods for Marker_Mode; skipping", url=endpoint.url)
+            return findings
+
+        # ------------------------------------------------------------------ #
+        # 2. Neutral-sentinel baseline per selected method (R9.1, R11.1,
+        #    Design Decision 3)
+        # ------------------------------------------------------------------ #
+        s = self._make_sentinel(endpoint.url)
+        baseline_url = substitute_markers(endpoint.url, markers, [s] * len(markers))
+
+        baselines: "Dict[str, Optional[Response]]" = {}
+        for method in selected_methods:
+            if self._budget_exhausted():
+                return findings
+            try:
+                if method in ("POST", "PUT", "PATCH"):
+                    # Body-carrying method: empty body, value stays in URL (R8.3)
+                    resp = await self.http_client.request(method, baseline_url, data="")
+                else:
+                    resp = await self.http_client.request(method, baseline_url)
+                self.requests_made += 1
+                if resp.status_code < 500:
+                    self.successful_requests += 1
+                baselines[method] = resp
+            except Exception as exc:
+                self.logger.debug(
+                    "Marker baseline request failed",
+                    method=method,
+                    url=baseline_url,
+                    error=str(exc),
+                )
+                baselines[method] = None
+
+        # ------------------------------------------------------------------ #
+        # 3. Candidate generation and request composition (R3, R4, R5, R6, R8)
+        #
+        #    generate_marker_candidates yields the fully-substituted URLs.
+        #    We iterate the combination logic in lockstep to get the value
+        #    tuples for provenance (finding payload).  The URL always comes
+        #    from generate_marker_candidates / substitute_markers.
+        # ------------------------------------------------------------------ #
+        wordlists = self._param_marker_wordlists  # List[List[str]]
+        fuzz_mode = self._param_fuzz_mode
+
+        if fuzz_mode.value == "pitchfork":
+            value_combos = _itertools.zip_longest(*wordlists)
+        else:
+            value_combos = _itertools.product(*wordlists)
+
+        candidate_gen = generate_marker_candidates(
+            endpoint.url, markers, wordlists, fuzz_mode
+        )
+
+        for candidate_url, value_combo in zip(candidate_gen, value_combos):
+            if self._budget_exhausted():
+                break
+
+            self.parameters_tested += 1
+
+            # Issue one request per selected method (R8.1, R8.2, R8.3)
+            for method in selected_methods:
+                if self._budget_exhausted():
+                    break
+
+                baseline_resp = baselines.get(method)
+
+                if method in ("POST", "PUT", "PATCH"):
+                    # Body-carrying method: issue against candidate_url with
+                    # empty body; value stays at its literal URL position (R8.3)
+                    test_resp = await self._test_marker_candidate(method, candidate_url)
+                else:
+                    # Query-carrying method: no body (R8.1)
+                    test_resp = await self._test_marker_candidate(method, candidate_url)
+
+                if test_resp is None or baseline_resp is None:
+                    continue
+
+                # ---------------------------------------------------------- #
+                # 4. Detection (R9)
+                # Evaluate with sentinel=None: Marker_Mode uses operator
+                # wordlist values, not a generated sentinel, so only the
+                # baseline-vs-test body/header/JSON/status/size/time signals
+                # apply (R9.2).
+                # ---------------------------------------------------------- #
+                diff = self._evaluate_difference(None, baseline_resp, test_resp)
+                if not diff.triggered:
+                    continue
+
+                # Build the payload representation
+                substituted_values = [
+                    v for v in (value_combo or []) if v is not None
+                ]
+                payload_str = (
+                    substituted_values[0]
+                    if len(substituted_values) == 1
+                    else str(substituted_values)
+                )
+
+                finding = Finding(
+                    id=str(uuid4()),
+                    scan_id="",
+                    category="PARAMETER_FOUND",
+                    owasp_category=None,
+                    severity=Severity.INFO,
+                    endpoint=candidate_url,
+                    method=method,
+                    status_code=test_resp.status_code,
+                    response_size=len(test_resp.content),
+                    response_time=test_resp.elapsed,
+                    evidence=(
+                        f"Marker candidate {candidate_url!r} differs from baseline"
+                    ),
+                    recommendation=(
+                        "Review the parameter value at the marked position and "
+                        "ensure proper validation"
+                    ),
+                    payload=payload_str,
+                    headers=dict(test_resp.headers),
+                    detection_signal=self._primary_signal(diff),
+                    detection_signals=diff.signals,
+                    reflection_location=diff.reflection_location,
+                    new_json_fields=diff.new_json_fields,
+                )
+
+                # ---------------------------------------------------------- #
+                # 5. Hit_Confirmation (R11.3) — reuse _confirm_and_annotate
+                # For marker retests we wrap _test_marker_candidate so retests
+                # also count toward the budget (R11.1).
+                # ---------------------------------------------------------- #
+                if self._confirmation_count() > 0:
+                    retests = self._confirmation_count()
+                    expected_signals = set(diff.signals)
+                    confirmed = True
+                    for _ in range(retests):
+                        retest_resp = await self._test_marker_candidate(method, candidate_url)
+                        if retest_resp is None:
+                            confirmed = False
+                            break
+                        retest_diff = self._evaluate_difference(
+                            None, baseline_resp, retest_resp
+                        )
+                        if not retest_diff.triggered or set(retest_diff.signals) != expected_signals:
+                            confirmed = False
+                            break
+
+                    if confirmed:
+                        finding.confirmation_status = "confirmed"
+                    else:
+                        finding.confirmation_status = "excluded_failed_retest"
+                        self.excluded_findings.append(finding)
+                        continue
+
+                findings.append(finding)
+
+        return findings
+
     async def _fuzz_query_parameters(self, endpoint: Endpoint) -> List[Finding]:
         """Fuzz query parameters for an endpoint"""
         findings = []

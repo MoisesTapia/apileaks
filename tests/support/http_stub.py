@@ -1,12 +1,14 @@
-"""Offline ``HTTPRequestEngine`` stub for parameter-fuzzing tests.
+"""Offline ``HTTPRequestEngine`` stub for parameter-fuzzing and marker tests.
 
 **Feature: parameter-fuzzing, Task 1.1 (Testing Strategy: Stubbing)**
+**Feature: par-positional-markers, Task 1.1 (Testing Strategy: Stubbing)**
 
 This module provides a deterministic, network-free stand-in for
 :class:`utils.http_client.HTTPRequestEngine`. It is the shared harness for the
-parameter-fuzzing property and example tests: it records every issued request
-(method, URL, headers, params, body, auth context) and returns scripted
-:class:`utils.http_client.Response` objects with **no real network access**.
+parameter-fuzzing and par-positional-markers property and example tests: it
+records every issued request (method, URL, headers, params, body, auth context)
+and returns scripted :class:`utils.http_client.Response` objects with **no real
+network access**.
 
 Why a duck-typed double (not a subclass)?
     :class:`HTTPRequestEngine.__init__` constructs an ``httpx.AsyncClient`` lazily
@@ -42,6 +44,24 @@ Determinism
     No randomness, no timing, no I/O. ``response_time`` is whatever the script
     specifies (default ``0.01``), so reflection, JSON-diff, budget, confirmation,
     injection-point, and request-context assertions are fully reproducible.
+
+Marker-test assertion helpers
+    :meth:`HTTPRequestEngineStub.assert_request_per_candidate` — asserts that
+    exactly one request was issued for every URL in the given candidate set and
+    no other (non-baseline) requests were issued.
+
+    :meth:`HTTPRequestEngineStub.assert_query_value_in_url` — asserts that a
+    particular substituted value appears in the URL of every matching request and
+    is NOT present only in the request body, verifying query-position values stay
+    in the URL under body methods (Property 9).
+
+    :meth:`HTTPRequestEngineStub.assert_neutral_sentinel_baseline` — asserts that
+    a given sentinel token appears in the URLs of the very first group of requests,
+    confirming that a neutral-sentinel baseline was issued before any candidate
+    sweep (Property 8 / Design Decision 3).
+
+    :meth:`HTTPRequestEngineStub.assert_budget_not_exceeded` — asserts that the
+    total request count never exceeded a given budget N (Property 10).
 """
 
 from __future__ import annotations
@@ -60,7 +80,17 @@ __all__ = [
     "RecordedRequest",
     "HTTPRequestEngineStub",
     "ResponseSpec",
+    "MarkerAssertionError",
 ]
+
+
+class MarkerAssertionError(AssertionError):
+    """Raised by :class:`HTTPRequestEngineStub` marker assertion helpers.
+
+    Subclasses :class:`AssertionError` so ``pytest`` reports it as a test
+    failure with a clean diff, while still being distinguishable from a plain
+    assertion if a test needs to catch it specifically.
+    """
 
 
 @dataclass
@@ -332,6 +362,188 @@ class HTTPRequestEngineStub:
         """Clear recorded requests and metrics (scripting is preserved)."""
         self.requests.clear()
         self.metrics = PerformanceMetrics()
+
+    # ------------------------------------------------------------------
+    # Marker-test assertion helpers
+    # (Feature: par-positional-markers, Task 1.1)
+    # ------------------------------------------------------------------
+
+    def assert_request_per_candidate(
+        self,
+        candidate_urls: "List[str]",
+        *,
+        method: "Optional[str]" = None,
+        extra_requests: int = 0,
+    ) -> None:
+        """Assert exactly one request was issued per candidate URL (and no others).
+
+        Used by Property 8 (request-per-candidate) tests to verify that
+        Marker_Mode issues exactly one request per fully-substituted
+        Marker_Candidate URL and no extra candidate requests.
+
+        Args:
+            candidate_urls: the expected set of fully-substituted candidate
+                URLs.  Order does not matter; the assertion checks set equality.
+            method: when given, only requests with this HTTP method are
+                considered.  Use this to isolate one method in a multi-method
+                run.
+            extra_requests: the number of non-candidate requests (e.g.
+                baseline requests) already counted in ``self.requests``, so the
+                total expected call count is
+                ``len(candidate_urls) + extra_requests``.
+
+        Raises:
+            MarkerAssertionError: if the set of (method-filtered) request URLs
+                does not equal the expected candidate set, or the total count
+                is wrong.
+        """
+        target_requests = (
+            [r for r in self.requests if r.method == str(method).upper()]
+            if method is not None
+            else list(self.requests)
+        )
+        issued_urls = [r.url for r in target_requests]
+        issued_set = set(issued_urls)
+        candidate_set = set(candidate_urls)
+
+        missing = candidate_set - issued_set
+        unexpected = issued_set - candidate_set - set()  # may include baselines
+        # Only flag unexpected URLs that are truly unexpected (not extras).
+        # We check exact count equality to catch duplicates.
+        if missing:
+            raise MarkerAssertionError(
+                f"Missing candidate requests: {sorted(missing)}\n"
+                f"Issued URLs: {sorted(issued_set)}"
+            )
+        expected_total = len(candidate_urls) + extra_requests
+        if len(target_requests) != expected_total:
+            raise MarkerAssertionError(
+                f"Expected {expected_total} total requests "
+                f"({len(candidate_urls)} candidates + {extra_requests} extra), "
+                f"got {len(target_requests)}.\n"
+                f"Issued URLs: {issued_urls}"
+            )
+
+    def assert_query_value_in_url(
+        self,
+        value: str,
+        *,
+        method: "Optional[str]" = None,
+    ) -> None:
+        """Assert the substituted value is in the URL, never only in the body.
+
+        Used by Property 9 (query-position value stays in URL under body
+        methods) to verify that a query-position marker's substituted value is
+        always carried at its query URL position and is never relocated into the
+        request body.
+
+        For every matching request this asserts:
+        - ``value`` appears somewhere in the request URL, AND
+        - ``value`` is NOT present *exclusively* in the body (it may appear in
+          both the URL and body, but if it is absent from the URL that is a
+          violation).
+
+        Args:
+            value: the substituted candidate value to check for.
+            method: when given, only requests with this HTTP method are
+                checked.
+
+        Raises:
+            MarkerAssertionError: if any matching request carries ``value``
+                in the body but NOT in its URL.
+        """
+        target_requests = (
+            [r for r in self.requests if r.method == str(method).upper()]
+            if method is not None
+            else list(self.requests)
+        )
+        for req in target_requests:
+            if not req.carries_value(value):
+                continue  # this request doesn't carry the value at all — skip
+            if value not in req.url:
+                # value is in the body but absent from the URL — violation
+                body_repr = (
+                    repr(req.json) if req.json is not None
+                    else repr(req.data) if req.data is not None
+                    else "<empty>"
+                )
+                raise MarkerAssertionError(
+                    f"Value {value!r} was NOT found in the request URL {req.url!r} "
+                    f"but IS present in the body {body_repr}. "
+                    "Query-position values must stay in the URL (Property 9 / R8.3)."
+                )
+
+    def assert_neutral_sentinel_baseline(
+        self,
+        sentinel_token: str,
+        *,
+        method: "Optional[str]" = None,
+        baseline_count: int = 1,
+    ) -> None:
+        """Assert the first ``baseline_count`` requests used a neutral sentinel URL.
+
+        Used by Property 8 / Design Decision 3 tests to verify that
+        Marker_Mode issues a neutral-sentinel baseline request before sweeping
+        candidates.  Checks that the first ``baseline_count`` (method-filtered)
+        requests all carry ``sentinel_token`` in their URL, confirming the
+        neutral-sentinel substitution was applied.
+
+        Args:
+            sentinel_token: the neutral sentinel value (e.g. the output of
+                ``ParameterFuzzer._make_sentinel``) expected in the baseline
+                request URLs.
+            method: when given, only requests with this HTTP method are
+                inspected.
+            baseline_count: how many leading baseline requests are expected
+                (default 1; use ``len(methods)`` in multi-method runs).
+
+        Raises:
+            MarkerAssertionError: if fewer than ``baseline_count`` requests
+                were issued, or if any of the first ``baseline_count`` requests
+                does not carry ``sentinel_token`` in its URL.
+        """
+        target_requests = (
+            [r for r in self.requests if r.method == str(method).upper()]
+            if method is not None
+            else list(self.requests)
+        )
+        if len(target_requests) < baseline_count:
+            raise MarkerAssertionError(
+                f"Expected at least {baseline_count} baseline request(s) "
+                f"but only {len(target_requests)} request(s) were issued."
+            )
+        for i, req in enumerate(target_requests[:baseline_count]):
+            if sentinel_token not in req.url:
+                raise MarkerAssertionError(
+                    f"Baseline request #{i + 1} URL {req.url!r} does not contain "
+                    f"the neutral sentinel token {sentinel_token!r}. "
+                    "The neutral-sentinel baseline must be issued before candidates "
+                    "(Property 8 / Design Decision 3 / R9.1)."
+                )
+
+    def assert_budget_not_exceeded(self, budget: int) -> None:
+        """Assert the total request count never exceeded ``budget``.
+
+        Used by Property 10 (request budget bounds total requests) tests to
+        independently verify the stub-observed request count against the
+        configured Request_Budget.  This is a simple upper-bound check;
+        detailed budget-stop-reason and partial-findings assertions live in the
+        property test itself (which cross-checks against
+        ``ParameterFuzzer.requests_made`` and ``budget_stop_reason``).
+
+        Args:
+            budget: the configured Request_Budget (``--max-requests`` value).
+
+        Raises:
+            MarkerAssertionError: if ``self.call_count > budget``.
+        """
+        if self.call_count > budget:
+            raise MarkerAssertionError(
+                f"Stub recorded {self.call_count} requests, exceeding the "
+                f"configured budget of {budget}. "
+                "Total requests (baseline + candidates + confirmation retests) "
+                "must never exceed the Request_Budget (Property 10 / R11.1)."
+            )
 
     # ------------------------------------------------------------------
     # Internal resolution

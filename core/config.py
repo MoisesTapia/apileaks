@@ -139,6 +139,14 @@ class ParameterFuzzingConfig:
     # In-memory merged/deduped body candidate set (Requirement 10.1/10.2). When
     # not None, it overrides the ``body_wordlist`` file for body fuzzing.
     body_candidates: Optional[List[str]] = None
+    # Marker_Mode fields (identical shape to EndpointFuzzingConfig, Requirements
+    # 1.1, 5.1, 7.1). All three are optional/defaulted so existing construction
+    # calls are unaffected. ``marker_wordlists is None`` is the
+    # Name_Discovery_Mode sentinel that keeps the existing query/body fuzzing
+    # path untouched (R2.1).
+    fuzz_keyword: str = "FUZZ"
+    fuzz_mode: str = "clusterbomb"
+    marker_wordlists: Optional[List[List[str]]] = None
 
 
 @dataclass

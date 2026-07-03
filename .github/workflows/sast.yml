@@ -1,0 +1,62 @@
+name: SAST — Bandit
+
+on:
+  push:
+    branches: [main, develop, v0.2.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bandit:
+    name: Bandit Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # para subir SARIF
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit[toml] bandit-sarif-formatter
+
+      - name: Run Bandit (SARIF)
+        run: |
+          bandit -r . \
+            --exclude ./venv,./tests,./ci-cd \
+            --format sarif \
+            --output bandit-results.sarif \
+            --severity-level medium \
+            --confidence-level medium
+        continue-on-error: true   # no romper si hay hallazgos; el umbral se aplica abajo
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit-sast
+
+      - name: Run Bandit (texto — resumen en logs)
+        run: |
+          bandit -r . \
+            --exclude ./venv,./tests,./ci-cd \
+            --severity-level high \
+            --confidence-level high \
+            --format txt
+        # Falla el job si Bandit encuentra hallazgos HIGH/HIGH
+
+      - name: Upload artefacto Bandit
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-sarif
+          path: bandit-results.sarif
+          retention-days: 30
