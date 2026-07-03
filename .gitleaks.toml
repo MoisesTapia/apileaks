@@ -1,0 +1,29 @@
+# Gitleaks configuration for APILeak
+# Extends the default ruleset and suppresses false positives from
+# documentation examples, sample configs, and test fixtures.
+
+title = "APILeak Gitleaks Config"
+
+[extend]
+# Inherit all default rules
+useDefault = true
+
+[allowlist]
+description = "Suppress false positives from docs, sample configs, and test fixtures"
+
+# Paths that intentionally contain placeholder tokens
+paths = [
+    # Documentation — all tokens are illustrative examples
+    '''docs/''',
+
+    # Sample / example configuration files — tokens are placeholders
+    '''config/examples/''',
+    '''config/sample_config\.yaml''',
+    '''config/advanced_framework_version_config\.yaml''',
+
+    # Test fixtures — fake secrets used as test inputs
+    '''tests/''',
+
+    # CI/CD example files
+    '''ci-cd/''',
+]

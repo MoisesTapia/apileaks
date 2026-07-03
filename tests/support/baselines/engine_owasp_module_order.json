@@ -1,0 +1,12 @@
+[
+  "bola",
+  "auth",
+  "property",
+  "function_auth",
+  "resource",
+  "ssrf",
+  "business_flow",
+  "security_misconfig",
+  "inventory",
+  "unsafe_consumption"
+]

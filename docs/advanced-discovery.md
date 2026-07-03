@@ -98,13 +98,13 @@ advanced_discovery:
   security_headers: true
 ```
 
-### Configuración Completa
+### Full Configuration
 
 ```yaml
 advanced_discovery:
   enabled: true
   
-  # Configuración de descubrimiento de subdominios
+  # Subdomain discovery configuration
   subdomain_discovery: true
   subdomain_wordlist:
     - "api"
@@ -131,7 +131,7 @@ advanced_discovery:
     - "sandbox"
     - "internal"
   
-  # Configuración de análisis CORS
+  # CORS analysis configuration
   cors_analysis: true
   cors_test_origins:
     - "https://evil.com"
@@ -141,18 +141,18 @@ advanced_discovery:
     - "null"
     - "*"
   
-  # Configuración de headers de seguridad
+  # Security headers configuration
   security_headers: true
   
-  # Configuración de rendimiento
+  # Performance configuration
   max_concurrent: 10
   timeout: 10.0
 ```
 
-### Configuración Solo Advanced Discovery
+### Advanced Discovery Only Configuration
 
 ```yaml
-# Para ejecutar solo Advanced Discovery sin fuzzing tradicional
+# To run only Advanced Discovery without traditional fuzzing
 target:
   base_url: "https://api.example.com"
 
@@ -162,7 +162,7 @@ advanced_discovery:
   cors_analysis: true
   security_headers: true
 
-# Deshabilitar otros módulos
+# Disable other modules
 fuzzing:
   endpoints:
     enabled: false
@@ -175,67 +175,67 @@ owasp_testing:
   enabled_modules: []
 ```
 
-## Uso desde CLI
+## CLI Usage
 
-### 1. **Ejecución Básica**
+### 1. **Basic Execution**
 
 ```bash
-# Escaneo completo con Advanced Discovery habilitado
-python apileaks.py full --target https://api.example.com
+# Full scan with Advanced Discovery enabled
+python apileaks.py scan --target https://api.example.com
 ```
 
-### 2. **Con Archivo de Configuración**
+### 2. **With Configuration File**
 
 ```bash
-# Usar configuración personalizada
-python apileaks.py full --config config/advanced_discovery.yaml
+# Use custom configuration
+python apileaks.py scan --config config/advanced_discovery.yaml
 ```
 
-### 3. **Con Parámetros Adicionales**
+### 3. **With Additional Parameters**
 
 ```bash
-# Con rate limiting y autenticación
-python apileaks.py full \
+# With rate limiting and authentication
+python apileaks.py scan \
   --target https://api.example.com \
   --rate-limit 5 \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..." \
   --output advanced_scan
 ```
 
-### 4. **Con Evasión de WAF**
+### 4. **With WAF Evasion**
 
 ```bash
-# Con User-Agent aleatorio para evadir WAF
-python apileaks.py full \
+# With random User-Agent to evade WAF
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --rate-limit 3
 ```
 
-### 5. **Con Logging Detallado**
+### 5. **With Detailed Logging**
 
 ```bash
-# Con logging para debugging
-python apileaks.py full \
+# With logging for debugging
+python apileaks.py scan \
   --target https://api.example.com \
   --log-level DEBUG \
   --log-file advanced_discovery.log
 ```
 
-## Ejemplos Prácticos
+## Practical Examples
 
-### Ejemplo 1: Escaneo de API Corporativa
+### Example 1: Corporate API Scan
 
 ```bash
-# Configuración para API corporativa con múltiples subdominios
-python apileaks.py full \
+# Configuration for a corporate API with multiple subdomains
+python apileaks.py scan \
   --config config/corporate_api.yaml \
   --target https://api.company.com \
   --rate-limit 5 \
   --output corporate_scan_$(date +%Y%m%d)
 ```
 
-**Archivo de configuración (`config/corporate_api.yaml`):**
+**Configuration file (`config/corporate_api.yaml`):**
 ```yaml
 target:
   base_url: "https://api.company.com"
@@ -267,23 +267,23 @@ rate_limiting:
   adaptive: true
 ```
 
-### Ejemplo 2: Análisis de Seguridad Rápido
+### Example 2: Quick Security Analysis
 
 ```bash
-# Solo análisis de seguridad sin fuzzing
-python apileaks.py full \
+# Security analysis only, without fuzzing
+python apileaks.py scan \
   --config config/security_only.yaml \
   --target https://api.example.com
 ```
 
-**Archivo de configuración (`config/security_only.yaml`):**
+**Configuration file (`config/security_only.yaml`):**
 ```yaml
 target:
   base_url: "https://api.example.com"
 
 advanced_discovery:
   enabled: true
-  subdomain_discovery: false  # Deshabilitar para escaneo rápido
+  subdomain_discovery: false  # Disable for a quick scan
   cors_analysis: true
   security_headers: true
   max_concurrent: 10
@@ -301,20 +301,20 @@ owasp_testing:
   enabled_modules: []
 ```
 
-### Ejemplo 3: Descubrimiento Completo de Infraestructura
+### Example 3: Complete Infrastructure Discovery
 
 ```bash
-# Descubrimiento exhaustivo con wordlist personalizada
-python apileaks.py full \
+# Exhaustive discovery with a custom wordlist
+python apileaks.py scan \
   --config config/infrastructure_discovery.yaml \
   --target https://example.com \
   --rate-limit 3 \
   --output infrastructure_scan
 ```
 
-## Interpretación de Resultados
+## Results Interpretation
 
-### Salida de Consola
+### Console Output
 
 ```
 🎯 Target: https://api.example.com
@@ -344,35 +344,35 @@ Low: 4
 Info: 0
 ```
 
-### Tipos de Findings
+### Finding Types
 
 #### 🔴 **CRITICAL**
-- `CORS_WILDCARD_WITH_CREDENTIALS`: CORS con wildcard (*) y credenciales habilitadas
+- `CORS_WILDCARD_WITH_CREDENTIALS`: CORS with wildcard (*) and credentials enabled
 
 #### 🟠 **HIGH**
-- `CORS_WILDCARD_ORIGIN`: CORS con wildcard origin
-- `CORS_SUSPICIOUS_ORIGINS`: Orígenes sospechosos permitidos
-- `MISSING_SECURITY_HEADERS`: Múltiples headers críticos faltantes
+- `CORS_WILDCARD_ORIGIN`: CORS with wildcard origin
+- `CORS_SUSPICIOUS_ORIGINS`: Suspicious origins allowed
+- `MISSING_SECURITY_HEADERS`: Multiple critical headers missing
 
 #### 🟡 **MEDIUM**
-- `SENSITIVE_SUBDOMAIN_EXPOSURE`: Subdominios sensibles expuestos (dev, staging)
-- `CORS_DANGEROUS_METHODS`: Métodos peligrosos permitidos via CORS
-- `INSECURE_SECURITY_HEADERS`: Headers con configuración insegura
-- `LOW_SECURITY_HEADERS_SCORE`: Puntuación baja de headers de seguridad
+- `SENSITIVE_SUBDOMAIN_EXPOSURE`: Sensitive subdomains exposed (dev, staging)
+- `CORS_DANGEROUS_METHODS`: Dangerous methods allowed via CORS
+- `INSECURE_SECURITY_HEADERS`: Headers with insecure configuration
+- `LOW_SECURITY_HEADERS_SCORE`: Low security headers score
 
 #### 🔵 **INFO**
-- `SUBDOMAIN_DISCOVERY`: Subdominios descubiertos
+- `SUBDOMAIN_DISCOVERY`: Discovered subdomains
 
-### Reporte HTML
+### HTML Report
 
-El reporte HTML incluye:
-- **Dashboard**: Vista general con métricas
-- **Subdominios Descubiertos**: Lista completa con estado
-- **Análisis CORS**: Resultados por endpoint
-- **Headers de Seguridad**: Puntuación y recomendaciones
-- **Findings Detallados**: Con evidencia y recomendaciones
+The HTML report includes:
+- **Dashboard**: Overview with metrics
+- **Discovered Subdomains**: Complete list with status
+- **CORS Analysis**: Results per endpoint
+- **Security Headers**: Score and recommendations
+- **Detailed Findings**: With evidence and recommendations
 
-### Reporte JSON
+### JSON Report
 
 ```json
 {
@@ -396,7 +396,7 @@ El reporte HTML incluye:
 }
 ```
 
-## Integración CI/CD
+## CI/CD Integration
 
 ### GitHub Actions
 
@@ -421,7 +421,7 @@ jobs:
       
       - name: Run Advanced Discovery
         run: |
-          python apileaks.py full \
+          python apileaks.py scan \
             --config config/ci_advanced_discovery.yaml \
             --target ${{ secrets.API_TARGET }} \
             --output ci_scan_${{ github.run_number }} \
@@ -447,7 +447,7 @@ advanced-discovery:
   script:
     - pip install -r requirements.txt
     - |
-      python apileaks.py full \
+      python apileaks.py scan \
         --config config/ci_advanced_discovery.yaml \
         --target $API_TARGET \
         --output ci_scan_$CI_PIPELINE_ID \
@@ -463,139 +463,139 @@ advanced-discovery:
     - develop
 ```
 
-### Variables de Entorno
+### Environment Variables
 
 ```bash
-# Configuración via variables de entorno
+# Configuration via environment variables
 export APILEAK_TARGET="https://api.example.com"
 export APILEAK_RATE_LIMIT="5"
 export APILEAK_OUTPUT_DIR="reports"
 export APILEAK_TIMEOUT="15"
 
-# Ejecutar con variables
-python apileaks.py full --config config/advanced_discovery.yaml
+# Run with variables
+python apileaks.py scan --config config/advanced_discovery.yaml
 ```
 
 ## Troubleshooting
 
-### Problemas Comunes
+### Common Problems
 
 #### 1. **DNS Resolution Failed**
 ```
 Error: DNS resolution failed for subdomain
 ```
-**Solución:**
-- Verificar conectividad de red
-- Usar `dns_resolution: false` en configuración para omitir verificación DNS
-- Verificar que el dominio objetivo sea válido
+**Solution:**
+- Check network connectivity
+- Use `dns_resolution: false` in the configuration to skip DNS verification
+- Verify that the target domain is valid
 
-#### 2. **Rate Limiting Detectado**
+#### 2. **Rate Limiting Detected**
 ```
 Warning: Rate limit detected, backing off
 ```
-**Solución:**
-- Reducir `requests_per_second` en configuración
-- Aumentar `timeout` para requests
-- Habilitar `adaptive: true` en rate limiting
+**Solution:**
+- Reduce `requests_per_second` in the configuration
+- Increase `timeout` for requests
+- Enable `adaptive: true` in rate limiting
 
-#### 3. **Timeouts en CORS Analysis**
+#### 3. **Timeouts in CORS Analysis**
 ```
 Error: CORS test failed - timeout
 ```
-**Solución:**
-- Aumentar `timeout` en configuración CORS
-- Reducir `max_concurrent` para menos concurrencia
-- Verificar que el endpoint responda a OPTIONS requests
+**Solution:**
+- Increase `timeout` in the CORS configuration
+- Reduce `max_concurrent` for less concurrency
+- Verify that the endpoint responds to OPTIONS requests
 
 #### 4. **No Subdomains Found**
 ```
 Info: No accessible subdomains found
 ```
-**Posibles Causas:**
-- Dominio no tiene subdominios públicos
-- Wordlist muy limitada
-- Rate limiting muy agresivo del servidor
+**Possible Causes:**
+- Domain has no public subdomains
+- Wordlist too limited
+- Server's rate limiting too aggressive
 
-**Solución:**
-- Expandir `subdomain_wordlist`
-- Verificar manualmente algunos subdominios
-- Ajustar rate limiting
+**Solution:**
+- Expand `subdomain_wordlist`
+- Manually verify some subdomains
+- Adjust rate limiting
 
-### Configuración de Debug
+### Debug Configuration
 
 ```yaml
-# Configuración para debugging
+# Configuration for debugging
 advanced_discovery:
   enabled: true
   subdomain_discovery: true
   cors_analysis: true
   security_headers: true
-  max_concurrent: 1  # Reducir concurrencia
-  timeout: 30.0      # Aumentar timeout
+  max_concurrent: 1  # Reduce concurrency
+  timeout: 30.0      # Increase timeout
 
 rate_limiting:
-  requests_per_second: 1  # Muy lento para debugging
+  requests_per_second: 1  # Very slow for debugging
   burst_size: 1
 ```
 
 ```bash
-# Ejecutar con debug completo
-python apileaks.py full \
+# Run with full debug
+python apileaks.py scan \
   --config config/debug_advanced_discovery.yaml \
   --target https://api.example.com \
   --log-level DEBUG \
   --log-file debug.log
 ```
 
-### Logs Útiles
+### Useful Logs
 
 ```bash
-# Filtrar logs de Advanced Discovery
+# Filter Advanced Discovery logs
 grep "advanced_discovery" debug.log
 
-# Ver solo errores
+# Show errors only
 grep "ERROR" debug.log | grep "advanced_discovery"
 
-# Ver estadísticas finales
+# Show final statistics
 grep "statistics" debug.log
 ```
 
-## Mejores Prácticas
+## Best Practices
 
-### 1. **Rate Limiting Responsable**
-- Usar `requests_per_second: 5-10` para APIs públicas
-- Habilitar `adaptive: true` para ajuste automático
-- Respetar `Retry-After` headers
+### 1. **Responsible Rate Limiting**
+- Use `requests_per_second: 5-10` for public APIs
+- Enable `adaptive: true` for automatic adjustment
+- Respect `Retry-After` headers
 
-### 2. **Configuración de Timeouts**
-- `timeout: 10-15` segundos para la mayoría de casos
-- Aumentar para APIs lentas o con alta latencia
-- Considerar la ubicación geográfica del servidor
+### 2. **Timeout Configuration**
+- `timeout: 10-15` seconds for most cases
+- Increase for slow or high-latency APIs
+- Consider the server's geographic location
 
-### 3. **Wordlists Personalizadas**
-- Adaptar `subdomain_wordlist` según la organización
-- Incluir patrones específicos de la empresa
-- Considerar convenciones de naming
+### 3. **Custom Wordlists**
+- Adapt `subdomain_wordlist` to the organization
+- Include company-specific patterns
+- Consider naming conventions
 
-### 4. **Seguridad Operacional**
-- No ejecutar contra APIs de producción sin autorización
-- Usar rate limiting conservador
-- Monitorear logs del servidor objetivo
+### 4. **Operational Security**
+- Do not run against production APIs without authorization
+- Use conservative rate limiting
+- Monitor the target server's logs
 
-### 5. **Interpretación de Resultados**
-- Priorizar findings CRITICAL y HIGH
-- Verificar manualmente findings de subdominios sensibles
-- Correlacionar con otros hallazgos de seguridad
+### 5. **Results Interpretation**
+- Prioritize CRITICAL and HIGH findings
+- Manually verify sensitive subdomain findings
+- Correlate with other security findings
 
 ---
 
-## 📚 Referencias Adicionales
+## 📚 Additional References
 
-- [Configuración General](configuration.md)
+- [General Configuration](configuration.md)
 - [WAF Evasion](waf-evasion.md)
 - [OWASP API Security Top 10](owasp/README.md)
 - [CLI Reference](cli-reference.md)
 
 ---
 
-**¿Necesitas ayuda?** Consulta nuestra [guía de troubleshooting](advanced/troubleshooting.md) o crea un issue en GitHub.
+**Need help?** Check our [troubleshooting guide](advanced/troubleshooting.md) or open an issue on GitHub.

@@ -1,0 +1,11 @@
+{
+  "critical": 0,
+  "finding_categories": [],
+  "high": 0,
+  "info": 0,
+  "low": 0,
+  "medium": 0,
+  "owasp_tested_categories": 0,
+  "owasp_total_categories": 10,
+  "total_findings": 0
+}

@@ -8,6 +8,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[Installation Guide](installation.md)** - Complete installation instructions
 - **[User Guide](user-guide.md)** - Comprehensive user guide and tutorials
 - **[Usage Examples](usage-examples.md)** - Practical usage examples and scenarios
+- **[Parameter Fuzzing Guide](parameter-fuzzing.md)** - Hidden parameter discovery with detection signals, confirmation, and budget control
 - **[Configuration Guide](configuration.md)** - Detailed configuration options
 - **[JWT Attack Testing](jwt-attacks.md)** - Comprehensive JWT security testing guide
 - **[Payload Generator](payload-generator.md)** - Advanced payload generation and obfuscation
@@ -23,6 +24,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 ### OWASP Modules Documentation
 - **[OWASP Coverage](owasp-coverage.md)** - OWASP API Security Top 10 coverage analysis
 - **[OWASP Modules Guide](owasp-modules-guide.md)** - Complete OWASP testing modules guide
+- **[BOLA Testing (API1)](owasp/bola-testing.md)** - Broken Object Level Authorization testing
 - **[Property Level Auth](owasp/property-level-auth.md)** - Property Level Authorization testing
 
 ### Advanced Topics

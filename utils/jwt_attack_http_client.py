@@ -15,8 +15,14 @@ from .jwt_attack_models import RequestDetails, ResponseDetails
 
 class JWTAttackHTTPClient:
     """
-    HTTP client specialized for JWT attack testing
-    
+    HTTP client specialized for JWT attack testing.
+
+    Retained only as a standalone fallback (Requirement 14.4): the scan/CLI
+    paths route JWT HTTP through the shared ``HTTPRequestEngine`` via
+    :class:`~utils.jwt_attack_engine.JWTAttackEngine`. This client remains
+    available for standalone ``jwt`` use without a configured engine and is not
+    imported by the consolidated attack pipeline.
+
     Features:
     - JWT token injection in Authorization header
     - Custom header support
@@ -97,7 +103,7 @@ class JWTAttackHTTPClient:
         """
         headers = {
             'Authorization': f'Bearer {jwt_token}',
-            'User-Agent': 'APILeak-JWT-Attack-Tester/0.1.0',
+            'User-Agent': 'APILeak-JWT-Attack-Tester/0.2.0',
             'Accept': 'application/json'
         }
         
@@ -362,7 +368,7 @@ class JWTAttackHTTPClient:
                         method, 
                         self.base_url, 
                         timeout=10.0,
-                        headers={'User-Agent': 'APILeak-JWT-Attack-Tester/0.1.0'}
+                        headers={'User-Agent': 'APILeak-JWT-Attack-Tester/0.2.0'}
                     )
                     
                     self.logger.info("Connectivity test successful",

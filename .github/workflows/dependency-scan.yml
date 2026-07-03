@@ -1,0 +1,62 @@
+name: Dependency Scanning
+
+on:
+  push:
+    branches: [main, develop, v0.2.0]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily scan at 06:00 UTC to catch new CVEs
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  pip-audit:
+    name: pip-audit (CVEs)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --progress-spinner off
+
+  safety:
+    name: Safety (PyUp DB)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Safety
+        run: pip install safety
+
+      - name: Run Safety
+        run: |
+          safety check \
+            --file requirements.txt \
+            --full-report
+        env:
+          SAFETY_API_KEY: ${{ secrets.SAFETY_API_KEY }}

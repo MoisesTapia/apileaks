@@ -1,0 +1,23 @@
+
+🎯 Target: https://api.example.test
+🛡️  OWASP Modules: bola
+⚡ Rate Limit: 10 req/sec
+
+
+============================================================
+APILeak Enhanced Scan Completed Successfully
+============================================================
+Target: https://api.example.test
+Scan ID: <SCAN_ID>
+Duration: <DURATION>
+📊 Discovery stats: 1350 endpoint(s) tested, 30 discovered, 442680 request(s), 99.7% success rate, recursion depth 0
+Total Findings: 0
+Critical: 0
+High: 0
+Medium: 0
+Low: 0
+Info: 0
+OWASP Coverage: 0.0% (0/10 categories)
+
+Reports generated:
+  - <REPORT_FILE>

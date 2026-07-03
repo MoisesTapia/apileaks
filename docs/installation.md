@@ -270,21 +270,21 @@ networks:
 
 ```bash
 # Use specific tags in production
-docker build -t apileak:v0.1.0 .
+docker build -t apileak:v0.2.0 .
 
 # Run with resource limits
 docker run --rm \
   --memory=1g \
   --cpus=1.0 \
   -v $(pwd)/config:/app/config \
-  apileak:v0.1.0
+  apileak:v0.2.0
 
 # Run in detached mode for long scans
 docker run -d \
   --name apileak-scan \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:v0.1.0 \
+  apileak:v0.2.0 \
   --config config/production_config.yaml
 ```
 
@@ -299,7 +299,7 @@ After installation, verify APILeak works correctly:
 python apileaks.py --help
 
 # Should show:
-# APILeak v0.1.0 - Enterprise API Fuzzing Tool
+# APILeak v0.2.0 - Enterprise API Fuzzing Tool
 # Usage: apileaks.py [OPTIONS]
 ```
 

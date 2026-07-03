@@ -1,0 +1,27 @@
+{
+  "dir": {
+    "endpoints_enabled": true,
+    "headers_enabled": false,
+    "owasp_modules": [],
+    "parameters_enabled": false
+  },
+  "full": {
+    "endpoints_enabled": true,
+    "headers_enabled": true,
+    "owasp_modules": [
+      "bola",
+      "auth",
+      "property",
+      "resource",
+      "function_auth",
+      "ssrf"
+    ],
+    "parameters_enabled": true
+  },
+  "par": {
+    "endpoints_enabled": false,
+    "headers_enabled": false,
+    "owasp_modules": [],
+    "parameters_enabled": true
+  }
+}

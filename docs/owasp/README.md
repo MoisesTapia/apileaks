@@ -4,20 +4,33 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 
 ## 📊 Coverage Overview
 
-| Rank | Category | Module | Status | Priority | Description |
-|------|----------|--------|--------|----------|-------------|
-| **API1** | [Broken Object Level Authorization](bola-testing.md) | `bola_testing` | ✅ Complete | P0 | Unauthorized access to objects |
-| **API2** | [Broken Authentication](auth-testing.md) | `auth_testing` | ✅ Complete | P0 | Authentication mechanism flaws |
-| **API3** | [Broken Object Property Level Authorization](property-level-auth.md) | `property_testing` | ✅ Complete | P0 | Property-level access control issues |
-| **API4** | [Unrestricted Resource Consumption](resource-consumption.md) | `resource_testing` | 🔄 In Progress | P1 | DoS through resource exhaustion |
-| **API5** | [Broken Function Level Authorization](function-level-auth.md) | `function_auth_testing` | 🔄 In Progress | P0 | Function-level access control flaws |
-| **API6** | Unrestricted Access to Sensitive Business Flows | `business_flows` | 📋 Planned | P1 | Business logic bypass |
-| **API7** | [Server Side Request Forgery](ssrf-testing.md) | `ssrf_testing` | 🔄 In Progress | P1 | SSRF vulnerabilities |
-| **API8** | Security Misconfiguration | `security_config` | 📋 Planned | P1 | Configuration security issues |
-| **API9** | Improper Inventory Management | `inventory_mgmt` | 📋 Planned | P2 | API inventory and versioning |
-| **API10** | Unsafe Consumption of APIs | `unsafe_consumption` | 📋 Planned | P2 | Third-party API consumption risks |
+| Rank | Category | Module key | Status | Priority | Summary |
+|------|----------|-----------|--------|----------|---------|
+| **API1** | [Broken Object Level Authorization](bola-testing.md) | `bola` | ✅ Complete | P0 | Broken Object Level Authorization (BOLA) detection |
+| **API2** | [Broken Authentication](auth-testing.md) | `auth` | ✅ Complete | P0 | Broken Authentication detection |
+| **API3** | [Broken Object Property Level Authorization](property-level-auth.md) | `property` | ✅ Complete | P0 | Broken Object Property Level Authorization detection |
+| **API4** | [Unrestricted Resource Consumption](resource-consumption.md) | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
+| **API5** | [Broken Function Level Authorization](function-level-auth.md) | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
+| **API6** | Unrestricted Access to Sensitive Business Flows | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
+| **API7** | [Server-Side Request Forgery](ssrf-testing.md) | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
+| **API8** | Security Misconfiguration | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
+| **API9** | Improper Inventory Management | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
+| **API10** | Unsafe Consumption of APIs | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
 
 **Legend**: ✅ Complete | 🔄 In Progress | 📋 Planned
+
+### Running the modules
+
+```bash
+# Isolated single-module run (recommended for focused red-team runs)
+python apileaks.py owasp bola --target https://api.example.com
+
+# Orchestrated run — all modules by default, or a subset with --modules
+python apileaks.py scan --target https://api.example.com
+python apileaks.py scan --target https://api.example.com --modules bola,auth
+```
+
+> `scan` is the primary orchestrator (discovery + all registered modules by default). `full` and `main` are deprecated, hidden aliases of `scan` (still functional, but they emit a stderr notice). Prefer `apileaks owasp <key>` for a single module — e.g. `full --modules bola` → `apileaks owasp bola`. Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
 
 ## 🎯 Implementation Strategy
 
@@ -196,13 +209,13 @@ Focus on specific vulnerability categories:
 
 ```bash
 # Test only authentication vulnerabilities
-python apileaks.py --config config.yaml --modules auth
+python apileaks.py owasp auth --config config.yaml
 
 # Test privilege escalation vulnerabilities  
-python apileaks.py --config config.yaml --modules bola,function_auth
+python apileaks.py scan --config config.yaml --modules bola,function_auth
 
 # Test data exposure vulnerabilities
-python apileaks.py --config config.yaml --modules property,ssrf
+python apileaks.py scan --config config.yaml --modules property,ssrf
 ```
 
 ### CI/CD Integration
@@ -213,7 +226,7 @@ Integrate OWASP testing into CI/CD pipelines:
 # .github/workflows/api-security.yml
 - name: Run OWASP API Security Tests
   run: |
-    python apileaks.py \
+    python apileaks.py scan \
       --config config/ci.yaml \
       --modules bola,auth,property \
       --no-banner \
@@ -280,14 +293,13 @@ finding = Finding(
 ### Quick OWASP Scan
 
 ```bash
-# Run all available OWASP modules
-python apileaks.py \
+# Run all available OWASP modules (all enabled by default)
+python apileaks.py scan \
   --config config/api_config.yaml \
-  --target https://api.example.com \
-  --modules all
+  --target https://api.example.com
 
 # Run only P0 (critical) modules
-python apileaks.py \
+python apileaks.py scan \
   --config config/api_config.yaml \
   --target https://api.example.com \
   --modules bola,auth,property

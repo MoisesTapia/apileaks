@@ -101,7 +101,7 @@ docker run --rm \
 docker run --rm \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --modules "bola,auth,property,function_auth,resource,ssrf" \
   --jwt "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..." \
@@ -111,7 +111,7 @@ docker run --rm \
 docker run --rm \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/production_api.yaml
 ```
 
@@ -121,7 +121,7 @@ docker run --rm \
 # Framework detection and version fuzzing
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --detect-framework \
   --fuzz-versions \
@@ -132,7 +132,7 @@ docker run --rm \
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
   -v $(pwd)/wordlists:/app/wordlists \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --user-agent-random \
   --enable-waf-evasion \
@@ -177,7 +177,7 @@ services:
       - APILEAK_TARGET=${API_TARGET_URL}
       - APILEAK_JWT_TOKEN=${API_JWT_TOKEN}
       - APILEAK_MODULES=${OWASP_MODULES:-bola,auth,property}
-    command: ["full", "--target", "${API_TARGET_URL}", "--output", "docker-full-scan"]
+    command: ["scan", "--target", "${API_TARGET_URL}", "--output", "docker-full-scan"]
     profiles: ["full"]
 ```
 
@@ -197,7 +197,7 @@ OWASP_MODULES=bola,auth,property,function_auth \
 docker-compose --profile full up
 
 # Run one-off scan
-docker-compose run --rm apileak full \
+docker-compose run --rm apileak scan \
   --target https://api.example.com \
   --output one-off-scan
 ```
@@ -211,7 +211,7 @@ docker-compose run --rm apileak full \
   run: |
     docker run --rm \
       -v $(pwd)/reports:/app/reports \
-      apileak:latest full \
+      apileak:latest scan \
       --target ${{ vars.API_TARGET_URL }} \
       --jwt ${{ secrets.API_JWT_TOKEN }} \
       --output github-scan-${{ github.run_id }} \
@@ -231,7 +231,7 @@ security-scan:
     - |
       docker run --rm \
         -v $(pwd)/reports:/app/reports \
-        apileak:latest full \
+        apileak:latest scan \
         --target $API_TARGET_URL \
         --jwt $API_JWT_TOKEN \
         --output gitlab-scan-$CI_PIPELINE_ID \
@@ -249,7 +249,7 @@ stage('Security Scan') {
                 docker build -t apileak:latest .
                 docker run --rm \
                   -v $(pwd)/reports:/app/reports \
-                  apileak:latest full \
+                  apileak:latest scan \
                   --target ${API_TARGET_URL} \
                   --jwt ${API_JWT_TOKEN} \
                   --output jenkins-scan-${BUILD_ID} \
@@ -285,7 +285,7 @@ docker run --rm \
   -v $(pwd)/reports:/app/reports:rw \
   -v $(pwd)/logs:/app/logs:rw \
   -v $(pwd)/wordlists:/app/wordlists:ro \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/my-api.yaml \
   --output complete-scan
 ```
@@ -385,7 +385,7 @@ docker run --rm \
 docker run --rm \
   --memory=2g \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full --target https://api.example.com
+  apileak:latest scan --target https://api.example.com
 ```
 
 #### SSL Certificate Issues
@@ -428,7 +428,7 @@ docker run --rm \
 
 ### Production Usage
 
-1. **Use specific tags**: `apileak:v0.1.0` instead of `latest`
+1. **Use specific tags**: `apileak:v0.2.0` instead of `latest`
 2. **Set resource limits**: Prevent resource exhaustion
 3. **Use read-only volumes**: For configuration and wordlists
 4. **Enable health checks**: Monitor container health
@@ -473,7 +473,7 @@ spec:
       containers:
       - name: apileak
         image: apileak:latest
-        args: ["full", "--target", "https://api.example.com", "--ci-mode"]
+        args: ["scan", "--target", "https://api.example.com", "--ci-mode"]
         env:
         - name: APILEAK_JWT_TOKEN
           valueFrom:
@@ -504,7 +504,7 @@ spec:
     {
       "name": "apileak",
       "image": "apileak:latest",
-      "command": ["full", "--target", "https://api.example.com", "--ci-mode"],
+      "command": ["scan", "--target", "https://api.example.com", "--ci-mode"],
       "environment": [
         {
           "name": "APILEAK_LOG_LEVEL",
@@ -599,7 +599,7 @@ docker run --rm \
 # Basic full scan
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --output docker_full_scan
 
@@ -607,7 +607,7 @@ docker run --rm \
 docker run --rm \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/api_config.yaml \
   --target https://api.example.com \
   --output config_based_scan
@@ -684,7 +684,7 @@ docker run --rm \
   -v $(pwd)/wordlists:/app/wordlists \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/api_config.yaml \
   --target https://api.example.com \
   --user-agent-file wordlists/user_agents.txt \
@@ -694,12 +694,11 @@ docker run --rm \
 
 ### OWASP Security Testing
 ```bash
-# OWASP BOLA testing
+# OWASP BOLA testing (single module in isolation)
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest owasp bola \
   --target https://api.example.com \
-  --modules bola \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --user-agent-random \
   --output docker_bola_test
@@ -707,19 +706,18 @@ docker run --rm \
 # Multiple OWASP modules
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --user-agent-random \
   --output docker_owasp_comprehensive
 
-# All available OWASP modules
+# All available OWASP modules (default when --modules is omitted)
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
-  --modules all \
   --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   --user-agent-random \
   --rate-limit 8 \
@@ -731,7 +729,7 @@ docker run --rm \
 # Framework detection
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --detect-framework \
   --framework-confidence 0.8 \
@@ -741,7 +739,7 @@ docker run --rm \
 # Version fuzzing
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --fuzz-versions \
   --version-patterns "/v1,/v2,/api/v1,/api/v2" \
@@ -751,7 +749,7 @@ docker run --rm \
 # Combined framework detection and version fuzzing
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --detect-framework \
   --fuzz-versions \
@@ -778,7 +776,7 @@ services:
       - API_TARGET=https://api.example.com
       - APILEAK_RATE_LIMIT=10
     command: >
-      full
+      scan
       --target $API_TARGET
       --user-agent-random
       --modules bola,auth,property
@@ -830,7 +828,7 @@ services:
       - API_TARGET=https://api.example.com
       - JWT_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
     command: >
-      full
+      scan
       --target $API_TARGET
       --modules bola,auth,property
       --jwt $JWT_TOKEN
@@ -920,7 +918,7 @@ jobs:
       run: |
         docker run --rm \
           -v ${{ github.workspace }}/reports:/app/reports \
-          apileak:ci full \
+          apileak:ci scan \
           --target ${{ secrets.API_TARGET }} \
           --modules bola,auth,property \
           --user-agent-random \
@@ -985,7 +983,7 @@ security-test:
     - |
       docker run --rm \
         -v $CI_PROJECT_DIR/reports:/app/reports \
-        $DOCKER_IMAGE full \
+        $DOCKER_IMAGE scan \
         --target $API_TARGET \
         --modules bola,auth,property \
         --user-agent-random \
@@ -1063,7 +1061,7 @@ pipeline {
                 sh '''
                     docker run --rm \
                         -v ${WORKSPACE}/reports:/app/reports \
-                        ${DOCKER_IMAGE} full \
+                        ${DOCKER_IMAGE} scan \
                         --target ${API_TARGET} \
                         --modules bola,auth,property \
                         --user-agent-random \
@@ -1111,7 +1109,7 @@ docker run --rm \
   -e JWT_TOKEN \
   -e APILEAK_RATE_LIMIT \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target $API_TARGET \
   --jwt $JWT_TOKEN \
   --user-agent-random \
@@ -1140,7 +1138,7 @@ docker run --rm \
   -v $(pwd)/wordlists:/app/wordlists \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/user_agents:/app/user_agents \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/comprehensive.yaml \
   --target https://api.example.com \
   --user-agent-file user_agents/custom_agents.txt \
@@ -1155,7 +1153,7 @@ docker run --rm \
 docker run --rm \
   --memory="1g" \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --output memory_limited_scan
 
@@ -1163,7 +1161,7 @@ docker run --rm \
 docker run --rm \
   --cpus="2.0" \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --output cpu_limited_scan
 
@@ -1172,7 +1170,7 @@ docker run --rm \
   --memory="2g" \
   --cpus="1.5" \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --output resource_limited_scan
@@ -1250,7 +1248,7 @@ docker run --rm \
 # Use specific version tags instead of latest
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:v0.1.0 dir \
+  apileak:v0.2.0 dir \
   --target https://api.example.com
 ```
 
@@ -1261,7 +1259,7 @@ docker run --rm \
   --memory="1g" \
   --cpus="1.0" \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com
 ```
 
@@ -1271,7 +1269,7 @@ docker run --rm \
 docker run --rm \
   -e JWT_TOKEN \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --target https://api.example.com \
   --jwt $JWT_TOKEN
 ```

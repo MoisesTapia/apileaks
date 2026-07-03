@@ -25,7 +25,7 @@ fuzzing:
     enabled: true
     wordlist: "wordlists/headers.txt"
     custom_headers:
-      User-Agent: "APILeak/0.1.0"
+      User-Agent: "APILeak/0.2.0"
       Accept: "application/json"
     random_user_agent: false
     
@@ -264,7 +264,7 @@ framework_specific:
 # ============================================================================
 
 # Ejemplo 1: Reconocimiento rápido
-# Usar con: python apileaks.py full --config config/advanced_framework_version_config.yaml --target https://api.example.com
+# Usar con: python apileaks.py scan --config config/advanced_framework_version_config.yaml --target https://api.example.com
 # Configuración optimizada para identificación rápida de tecnologías
 
 # Ejemplo 2: Análisis profundo de versiones

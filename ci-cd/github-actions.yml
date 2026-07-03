@@ -240,7 +240,7 @@ jobs:
           -e APILEAK_MODULES="${{ vars.OWASP_MODULES || 'bola,auth,property,function_auth' }}" \
           -v $(pwd)/reports:/app/reports \
           -v $(pwd)/config:/app/config:ro \
-          ${{ needs.build-and-test.outputs.image }} full \
+          ${{ needs.build-and-test.outputs.image }} scan \
           --target ${{ vars.API_TARGET_URL }} \
           --output apileak-full-${{ github.run_id }} \
           --log-level ${{ env.APILEAK_LOG_LEVEL }} \

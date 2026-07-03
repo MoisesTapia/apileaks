@@ -1,32 +1,46 @@
-# 🚀 Integración CI/CD - APILeak
+# 🚀 CI/CD Integration - APILeak
 
-Esta guía cubre la integración de APILeak en pipelines de CI/CD para automatizar las pruebas de seguridad de APIs.
+This guide covers integrating APILeak into CI/CD pipelines to automate API security testing.
 
-## 📋 Tabla de Contenidos
+## 📋 Table of Contents
 
-1. [Configuración Básica](#configuración-básica)
+1. [Basic Configuration](#basic-configuration)
 2. [GitHub Actions](#github-actions)
 3. [GitLab CI](#gitlab-ci)
 4. [Jenkins](#jenkins)
 5. [Azure DevOps](#azure-devops)
 6. [Docker Integration](#docker-integration)
-7. [Exit Codes y Manejo de Errores](#exit-codes)
-8. [Variables de Entorno](#variables-de-entorno)
-9. [Mejores Prácticas](#mejores-prácticas)
+7. [Exit Codes and Error Handling](#exit-codes)
+8. [Environment Variables](#environment-variables)
+9. [Best Practices](#best-practices)
 
 ---
 
-## ⚙️ Configuración Básica
+## ⚙️ Basic Configuration
 
-### Exit Codes de APILeak
+### APILeak Exit Codes
 
-APILeak utiliza exit codes estándar para integración con CI/CD:
+APILeak uses standard exit codes for CI/CD integration:
 
-- **0**: Sin vulnerabilidades críticas/altas encontradas ✅
-- **1**: Vulnerabilidades altas encontradas ⚠️
-- **2**: Vulnerabilidades críticas encontradas ❌
+- **0**: No critical/high vulnerabilities found ✅
+- **1**: High severity vulnerabilities found ⚠️
+- **2**: Critical vulnerabilities found ❌
 
-### Script Básico de CI/CD
+### CI Gate Options (`scan`)
+
+The `scan` command drives the CI gate. The following are options of `scan`:
+
+- `--ci-mode`: Enable CI-friendly output and exit-code behavior.
+- `--fail-on <severity>`: Minimum severity that fails the pipeline. **The default is now `high` (previously `critical`).** This means a run now fails on high severity findings unless you override it. To keep the old behavior, pass `--fail-on critical` explicitly.
+- `--sarif`: Emit a SARIF report for code-scanning integrations.
+- `--baseline <file>`: Compare against a baseline to fail only on new findings.
+- `--safe-mode`: Run with reduced-risk, non-destructive checks.
+
+> **Note on the `--fail-on` default:** earlier versions defaulted to `critical`. The default is now `high`, so pipelines that relied on the old default will start failing on high severity findings. Set `--fail-on critical` if you intend to keep gating on critical only.
+
+> **Deprecation notice:** `full` and `main` are deprecated, hidden aliases of `scan`. They still work and forward to `scan` (emitting a one-line notice), but should not be used in new pipelines. Use `scan` for discovery plus all OWASP modules, and run a single module in isolation with `apileaks owasp <key>` (for example, `full --modules bola` becomes `apileaks owasp bola`).
+
+### Basic CI/CD Script
 
 ```bash
 #!/bin/bash
@@ -34,7 +48,7 @@ APILeak utiliza exit codes estándar para integración con CI/CD:
 
 set -e
 
-# Configuración
+# Configuration
 API_ENDPOINT="${API_ENDPOINT:-https://staging-api.example.com}"
 JWT_TOKEN="${JWT_TOKEN:-}"
 MODULES="${MODULES:-bola,auth,property,resource}"
@@ -45,8 +59,8 @@ echo "🔍 Starting APILeak security scan..."
 echo "Target: $API_ENDPOINT"
 echo "Modules: $MODULES"
 
-# Ejecutar APILeak
-python apileaks.py full \
+# Run APILeak
+python apileaks.py scan \
   --target "$API_ENDPOINT" \
   --jwt "$JWT_TOKEN" \
   --modules "$MODULES" \
@@ -54,10 +68,10 @@ python apileaks.py full \
   --output "$OUTPUT_DIR/scan-$(date +%Y%m%d-%H%M%S)" \
   --log-level ERROR
 
-# Capturar exit code
+# Capture exit code
 EXIT_CODE=$?
 
-# Interpretar resultados
+# Interpret results
 case $EXIT_CODE in
   0)
     echo "✅ No critical vulnerabilities found. Pipeline continues."
@@ -66,12 +80,12 @@ case $EXIT_CODE in
   1)
     echo "⚠️ High severity vulnerabilities found. Review required."
     echo "Pipeline continues but requires manual review."
-    exit 0  # No fallar pipeline por vulnerabilidades altas
+    exit 0  # Do not fail the pipeline for high severity vulnerabilities
     ;;
   2)
     echo "❌ Critical vulnerabilities found! Failing pipeline."
     echo "Fix critical issues before deployment."
-    exit 1  # Fallar pipeline por vulnerabilidades críticas
+    exit 1  # Fail the pipeline for critical vulnerabilities
     ;;
   *)
     echo "❌ Unexpected error occurred during scan."
@@ -84,7 +98,7 @@ esac
 
 ## 🐙 GitHub Actions
 
-### Workflow Básico
+### Basic Workflow
 
 ```yaml
 # .github/workflows/api-security.yml
@@ -121,7 +135,7 @@ jobs:
         API_ENDPOINT: ${{ secrets.STAGING_API_URL }}
         JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
       run: |
-        python apileaks.py full \
+        python apileaks.py scan \
           --target "$API_ENDPOINT" \
           --jwt "$JWT_TOKEN" \
           --modules bola,auth,property,resource \
@@ -176,7 +190,7 @@ jobs:
           }
 ```
 
-### Workflow Avanzado con Múltiples Entornos
+### Advanced Workflow with Multiple Environments
 
 ```yaml
 # .github/workflows/api-security-advanced.yml
@@ -232,7 +246,7 @@ jobs:
             echo "modules=" >> $GITHUB_OUTPUT
             ;;
           "full-owasp")
-            echo "command=full" >> $GITHUB_OUTPUT
+            echo "command=scan" >> $GITHUB_OUTPUT
             echo "modules=${{ github.event.inputs.modules }}" >> $GITHUB_OUTPUT
             ;;
         esac
@@ -262,7 +276,7 @@ jobs:
 
 ## 🦊 GitLab CI
 
-### Pipeline Básico
+### Basic Pipeline
 
 ```yaml
 # .gitlab-ci.yml
@@ -291,7 +305,7 @@ api-security-scan:
   
   script:
     - |
-      python apileaks.py full \
+      python apileaks.py scan \
         --target "$STAGING_API_URL" \
         --jwt "$API_JWT_TOKEN" \
         --modules bola,auth,property,resource \
@@ -305,14 +319,14 @@ api-security-scan:
       - reports/
     expire_in: 30 days
     reports:
-      junit: reports/security-scan-*.xml  # Si se genera reporte XML
+      junit: reports/security-scan-*.xml  # If an XML report is generated
   
   only:
     - main
     - develop
     - merge_requests
 
-# Pipeline para producción con restricciones
+# Pipeline for production with restrictions
 production-security-scan:
   stage: security-test
   image: python:$PYTHON_VERSION
@@ -324,8 +338,8 @@ production-security-scan:
   
   script:
     - |
-      # Rate limiting muy bajo para producción
-      python apileaks.py full \
+      # Very low rate limiting for production
+      python apileaks.py scan \
         --target "$PRODUCTION_API_URL" \
         --jwt "$PRODUCTION_JWT_TOKEN" \
         --modules bola,auth \
@@ -345,10 +359,10 @@ production-security-scan:
   when: manual
 ```
 
-### Pipeline con Docker
+### Pipeline with Docker
 
 ```yaml
-# .gitlab-ci.yml con Docker
+# .gitlab-ci.yml with Docker
 api-security-docker:
   stage: security-test
   image: docker:latest
@@ -365,7 +379,7 @@ api-security-docker:
         -e JWT_TOKEN="$API_JWT_TOKEN" \
         -v $(pwd)/reports:/app/reports \
         apileak \
-        python apileaks.py full \
+        python apileaks.py scan \
           --target "$API_ENDPOINT" \
           --jwt "$JWT_TOKEN" \
           --modules bola,auth,property \
@@ -381,7 +395,7 @@ api-security-docker:
 
 ## 🏗️ Jenkins
 
-### Pipeline Declarativo
+### Declarative Pipeline
 
 ```groovy
 // Jenkinsfile
@@ -433,7 +447,7 @@ pipeline {
                     
                     sh """
                         . venv/bin/activate
-                        python apileaks.py full \\
+                        python apileaks.py scan \\
                             --target "${apiUrl}" \\
                             --jwt "${jwtToken}" \\
                             --modules ${params.MODULES} \\
@@ -449,7 +463,7 @@ pipeline {
                     archiveArtifacts artifacts: 'reports/**/*', fingerprint: true
                     
                     script {
-                        // Leer resultados y enviar notificación
+                        // Read results and send notification
                         def reportFile = "reports/jenkins-scan-${BUILD_NUMBER}.json"
                         if (fileExists(reportFile)) {
                             def report = readJSON file: reportFile
@@ -472,7 +486,7 @@ pipeline {
                                      '✅ NO CRITICAL ISSUES'}
                             """
                             
-                            // Enviar a Slack, Teams, etc.
+                            // Send to Slack, Teams, etc.
                             slackSend(
                                 channel: '#security',
                                 color: summary.critical > 0 ? 'danger' : 
@@ -524,7 +538,7 @@ pipeline {
 
 ## 🐳 Docker Integration
 
-### Dockerfile para APILeak
+### Dockerfile for APILeak
 
 ```dockerfile
 # Dockerfile
@@ -532,29 +546,29 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar archivos de dependencias
+# Copy dependency files
 COPY requirements.txt .
 
-# Instalar dependencias de Python
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar código fuente
+# Copy source code
 COPY . .
 
-# Crear directorio de reportes
+# Create reports directory
 RUN mkdir -p reports
 
-# Punto de entrada
+# Entry point
 ENTRYPOINT ["python", "apileaks.py"]
 CMD ["--help"]
 ```
 
-### Docker Compose para Testing
+### Docker Compose for Testing
 
 ```yaml
 # docker-compose.test.yml
@@ -572,7 +586,7 @@ services:
       - ./reports:/app/reports
       - ./config:/app/config
     command: >
-      full
+      scan
       --target ${API_ENDPOINT}
       --jwt ${JWT_TOKEN}
       --modules ${MODULES:-bola,auth,property}
@@ -580,7 +594,7 @@ services:
       --output docker-scan-$(date +%Y%m%d-%H%M%S)
       --log-level INFO
 
-  # Servicio para generar reportes
+  # Service to serve reports
   report-server:
     image: nginx:alpine
     ports:
@@ -591,7 +605,7 @@ services:
       - apileak
 ```
 
-### Script de Docker para CI/CD
+### Docker Script for CI/CD
 
 ```bash
 #!/bin/bash
@@ -599,15 +613,15 @@ services:
 
 set -e
 
-# Configuración
+# Configuration
 IMAGE_NAME="apileak:latest"
 CONTAINER_NAME="apileak-scan-$(date +%s)"
 
-# Construir imagen
+# Build image
 echo "🏗️ Building APILeak Docker image..."
 docker build -t $IMAGE_NAME .
 
-# Ejecutar scan
+# Run scan
 echo "🔍 Running security scan..."
 docker run --rm \
   --name $CONTAINER_NAME \
@@ -615,7 +629,7 @@ docker run --rm \
   -e JWT_TOKEN="$JWT_TOKEN" \
   -v $(pwd)/reports:/app/reports \
   $IMAGE_NAME \
-  full \
+  scan \
   --target "$API_ENDPOINT" \
   --jwt "$JWT_TOKEN" \
   --modules bola,auth,property,resource \
@@ -623,7 +637,7 @@ docker run --rm \
   --output "docker-scan-$(date +%Y%m%d-%H%M%S)" \
   --log-level ERROR
 
-# Verificar exit code
+# Check exit code
 EXIT_CODE=$?
 
 echo "📊 Scan completed with exit code: $EXIT_CODE"
@@ -644,12 +658,12 @@ esac
 
 ---
 
-## 🔧 Variables de Entorno
+## 🔧 Environment Variables
 
-### Variables Estándar
+### Standard Variables
 
 ```bash
-# Configuración básica
+# Basic configuration
 export APILEAK_TARGET="https://api.example.com"
 export APILEAK_MODULES="bola,auth,property,resource"
 export APILEAK_RATE_LIMIT="5"
@@ -658,12 +672,12 @@ export APILEAK_OUTPUT_DIR="reports"
 export APILEAK_TIMEOUT="30"
 export APILEAK_VERIFY_SSL="true"
 
-# Configuración avanzada
+# Advanced configuration
 export APILEAK_MAX_DEPTH="3"
-export APILEAK_USER_AGENT="APILeak-CI/0.1.0"
+export APILEAK_USER_AGENT="APILeak-CI/0.2.0"
 ```
 
-### Variables por Entorno
+### Per-Environment Variables
 
 ```bash
 # Staging
@@ -681,16 +695,16 @@ export TEST_JWT_TOKEN="test_jwt_token_here"
 
 ---
 
-## 📋 Mejores Prácticas
+## 📋 Best Practices
 
-### 1. **Configuración por Entorno**
+### 1. **Per-Environment Configuration**
 
 ```bash
-# Diferentes configuraciones según el entorno
+# Different configurations depending on the environment
 case "$ENVIRONMENT" in
   "production")
     RATE_LIMIT=1
-    MODULES="bola,auth"  # Solo módulos críticos
+    MODULES="bola,auth"  # Critical modules only
     ;;
   "staging")
     RATE_LIMIT=5
@@ -703,17 +717,17 @@ case "$ENVIRONMENT" in
 esac
 ```
 
-### 2. **Manejo de Secretos**
+### 2. **Secret Management**
 
 ```yaml
-# GitHub Actions - usar secrets
+# GitHub Actions - use secrets
 env:
   JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
   API_KEY: ${{ secrets.API_KEY }}
 
-# GitLab CI - variables protegidas
+# GitLab CI - protected variables
 variables:
-  JWT_TOKEN: $API_JWT_TOKEN  # Variable protegida en GitLab
+  JWT_TOKEN: $API_JWT_TOKEN  # Protected variable in GitLab
 
 # Jenkins - credentials binding
 environment {
@@ -721,17 +735,17 @@ environment {
 }
 ```
 
-### 3. **Rate Limiting Inteligente**
+### 3. **Smart Rate Limiting**
 
 ```bash
-# Ajustar rate limiting según el entorno y hora
+# Adjust rate limiting based on environment and time of day
 HOUR=$(date +%H)
 if [ "$ENVIRONMENT" = "production" ]; then
   if [ $HOUR -ge 9 ] && [ $HOUR -le 17 ]; then
-    # Horario comercial - rate limiting muy bajo
+    # Business hours - very low rate limiting
     RATE_LIMIT=1
   else
-    # Fuera de horario - rate limiting moderado
+    # Off hours - moderate rate limiting
     RATE_LIMIT=3
   fi
 else
@@ -739,45 +753,45 @@ else
 fi
 ```
 
-### 4. **Notificaciones Inteligentes**
+### 4. **Smart Notifications**
 
 ```bash
-# Solo notificar en casos importantes
+# Only notify in important cases
 if [ $EXIT_CODE -eq 2 ]; then
-  # Vulnerabilidades críticas - notificar inmediatamente
+  # Critical vulnerabilities - notify immediately
   curl -X POST "$SLACK_WEBHOOK" -d "{\"text\":\"🚨 Critical API vulnerabilities found in $ENVIRONMENT!\"}"
 elif [ $EXIT_CODE -eq 1 ] && [ "$ENVIRONMENT" = "production" ]; then
-  # Vulnerabilidades altas en producción - notificar
+  # High severity vulnerabilities in production - notify
   curl -X POST "$SLACK_WEBHOOK" -d "{\"text\":\"⚠️ High severity API vulnerabilities found in production.\"}"
 fi
 ```
 
-### 5. **Archivado de Reportes**
+### 5. **Report Archiving**
 
 ```bash
-# Organizar reportes por fecha y entorno
+# Organize reports by date and environment
 REPORT_DIR="reports/$ENVIRONMENT/$(date +%Y/%m/%d)"
 mkdir -p "$REPORT_DIR"
 
-python apileaks.py full \
+python apileaks.py scan \
   --target "$API_ENDPOINT" \
   --output "$REPORT_DIR/scan-$(date +%H%M%S)" \
   --modules "$MODULES"
 ```
 
-### 6. **Timeouts y Reintentos**
+### 6. **Timeouts and Retries**
 
 ```bash
-# Implementar timeout y reintentos
-timeout 1800 python apileaks.py full \
+# Implement timeout and retries
+timeout 1800 python apileaks.py scan \
   --target "$API_ENDPOINT" \
   --modules "$MODULES" \
   --rate-limit "$RATE_LIMIT" || {
   
   echo "⏰ Scan timed out or failed. Retrying with reduced scope..."
   
-  # Retry con módulos críticos solamente
-  timeout 900 python apileaks.py full \
+  # Retry with critical modules only
+  timeout 900 python apileaks.py scan \
     --target "$API_ENDPOINT" \
     --modules "bola,auth" \
     --rate-limit 1
@@ -786,36 +800,36 @@ timeout 1800 python apileaks.py full \
 
 ---
 
-## 🔍 Troubleshooting CI/CD
+## 🔍 CI/CD Troubleshooting
 
-### Problemas Comunes
+### Common Issues
 
-#### 1. **Timeouts en CI/CD**
+#### 1. **Timeouts in CI/CD**
 ```bash
-# Solución: Reducir scope o aumentar timeout
-timeout 3600 python apileaks.py full --modules bola,auth --rate-limit 1
+# Solution: Reduce scope or increase timeout
+timeout 3600 python apileaks.py scan --modules bola,auth --rate-limit 1
 ```
 
-#### 2. **Rate Limiting del Servidor**
+#### 2. **Server Rate Limiting**
 ```bash
-# Solución: Rate limiting adaptativo
-python apileaks.py full --rate-limit 1 --modules bola
+# Solution: Adaptive rate limiting
+python apileaks.py scan --rate-limit 1 --modules bola
 ```
 
-#### 3. **Falsos Positivos**
+#### 3. **False Positives**
 ```bash
-# Solución: Configurar filtros específicos
-python apileaks.py full --response 200,201,404 --modules bola,auth
+# Solution: Configure specific filters
+python apileaks.py scan --response 200,201,404 --modules bola,auth
 ```
 
-#### 4. **Recursos Limitados en CI**
+#### 4. **Limited Resources in CI**
 ```bash
-# Solución: Ejecutar módulos por separado
+# Solution: Run modules separately
 for module in bola auth property; do
-  python apileaks.py full --modules $module --target "$API_ENDPOINT"
+  python apileaks.py scan --modules $module --target "$API_ENDPOINT"
 done
 ```
 
 ---
 
-Esta guía proporciona una base sólida para integrar APILeak en cualquier pipeline de CI/CD, asegurando que las APIs se mantengan seguras a lo largo del ciclo de desarrollo.
+This guide provides a solid foundation for integrating APILeak into any CI/CD pipeline, ensuring that APIs stay secure throughout the development lifecycle.

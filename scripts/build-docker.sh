@@ -6,7 +6,7 @@ set -e
 
 # Configuration
 IMAGE_NAME="apileak"
-VERSION="0.1.0"
+VERSION="0.2.0"
 PLATFORMS="linux/amd64,linux/arm64"
 REGISTRY="${DOCKER_REGISTRY:-}"
 PUSH="${PUSH:-false}"

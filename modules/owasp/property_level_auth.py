@@ -6,6 +6,7 @@ Implements OWASP API3 - Broken Object Property Level Authorization testing
 import asyncio
 import re
 import json
+import math
 import uuid
 import random
 from typing import List, Dict, Any, Optional, Set, Tuple, Union
@@ -15,6 +16,9 @@ from urllib.parse import urlparse, parse_qs, urljoin
 from .registry import OWASPModule
 from utils.findings import Finding, FindingsCollector
 from utils.http_client import HTTPRequestEngine, Request, Response
+from utils.safe_mode import SafeModeGuard, SAFE_METHODS
+from utils.authz_baseline import NegativeControlMixin
+from utils.typed_payload import build_typed_payload, apply_actor_profile
 from core.config import PropertyTestingConfig, AuthContext, AuthType, Severity
 from core.logging import get_logger
 
@@ -57,7 +61,7 @@ class PropertyTestResult:
     evidence: str
 
 
-class PropertyLevelAuthModule(OWASPModule):
+class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     """
     Property Level Authorization Testing Module for detecting Broken Object Property Level Authorization
     
@@ -108,13 +112,42 @@ class PropertyLevelAuthModule(OWASPModule):
     
     # Common HTTP methods for testing
     TEST_METHODS = ['POST', 'PUT', 'PATCH']
+
+    # Known credential token prefixes. A value carrying one of these prefixes is
+    # strong, self-sufficient evidence of an exposed credential (Requirement 12.2).
+    CREDENTIAL_PREFIXES = ('sk_', 'pk_', 'AKIA', 'ghp_', 'xoxb-')
+
+    # Minimum Shannon entropy (bits per character) required to treat an otherwise
+    # unremarkable long/base64-shaped string as a real secret. Random secrets
+    # (hex/base64) sit well above this; slugs, repeated text and predictable
+    # identifiers fall below it. Used as corroboration for the credential-shape
+    # patterns, which are necessary but not sufficient on their own (Req 12.2).
+    CREDENTIAL_ENTROPY_THRESHOLD = 3.5
     
+    # Unauthorized_Endpoint_Assertion classification for this module (Req 55.2,
+    # 56.2): the Property-Level module emits within API3.
+    UNAUTHORIZED_ASSERTION_CATEGORY = "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS"
+    UNAUTHORIZED_ASSERTION_OWASP = "API3"
+
     def __init__(self, config: PropertyTestingConfig, http_client: HTTPRequestEngine, 
-                 auth_contexts: List[AuthContext]):
+                 auth_contexts: List[AuthContext], spec_schema=None):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
         self.logger = get_logger(__name__).bind(module="property_level_auth")
+
+        # Optional merged Spec_Schema threaded from the ``full`` command's
+        # ``--openapi`` / ``--postman`` sources (Requirements 49.2, 49.5). It is
+        # additive and defaults to ``None``; every consumer guards on
+        # ``if self.spec_schema is not None`` so the no-spec path is unchanged
+        # (Requirements 49.3, 52.6, 55.5).
+        self.spec_schema = spec_schema
+        
+        # Read Safe_Mode flag (Requirement 21.1). When enabled, the module MUST
+        # NOT issue any State_Changing_Method request (POST/PUT/PATCH) and
+        # restricts its probes to Safe_Methods (GET/HEAD/OPTIONS); each skipped
+        # state-changing probe is logged by the guard (Requirements 11.1-11.4).
+        self._init_safe_mode(config)
         
         # Create auth context mapping
         self.auth_context_map = {ctx.name: ctx for ctx in auth_contexts}
@@ -159,6 +192,15 @@ class PropertyLevelAuthModule(OWASPModule):
         """
         self.logger.info("Starting property level authorization testing", endpoints_count=len(endpoints))
         
+        if self.safe_mode:
+            self.logger.info(
+                "Safe mode enabled: property-level testing restricts probes to "
+                "safe methods (GET/HEAD/OPTIONS); no state-changing "
+                "(POST/PUT/PATCH) mass-assignment or read-only modification "
+                "probes will be issued",
+                module="property_level_auth",
+            )
+        
         findings = []
         
         try:
@@ -181,7 +223,15 @@ class PropertyLevelAuthModule(OWASPModule):
             undocumented_findings = await self._test_undocumented_fields(endpoints)
             findings.extend(undocumented_findings)
             self.logger.debug("Undocumented fields testing completed", findings=len(undocumented_findings))
-            
+
+            # Step 5: Declarative Unauthorized_Endpoint_Assertions (Req 55). Only
+            # runs when an auth context carries operator-declared patterns;
+            # otherwise the module behaves exactly as before (Req 55.5).
+            assertion_findings = await self._run_unauthorized_assertions(endpoints)
+            findings.extend(assertion_findings)
+            self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
+                              findings=len(assertion_findings))
+
         except Exception as e:
             self.logger.error("Property level authorization testing failed during execution", error=str(e))
             raise
@@ -212,16 +262,38 @@ class PropertyLevelAuthModule(OWASPModule):
             for endpoint in endpoints:
                 endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
                 method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
-                
+                # Safe mode: sensitive-data exposure analysis is a read probe;
+                # never replay a state-changing method (Requirements 11.1, 21.2,
+                # 21.3).
+                method = self.safe_read_method(method, "sensitive_data_exposure")
+
                 try:
                     # Make request to endpoint
-                    response = await self.http_client.request(method, endpoint_url)
+                    params, _ = apply_actor_profile(auth_context, endpoint_url)
+                    request_kwargs = {'params': params} if params else {}
+                    response = await self.http_client.request(method, endpoint_url, **request_kwargs)
                     
                     if response.is_success and response.text:
                         # Analyze response for sensitive fields
                         sensitive_fields = self._detect_sensitive_fields(response, endpoint_url)
                         
                         for sensitive_field in sensitive_fields:
+                            # Personal data exposed only to a context authorized
+                            # to view it is NOT a finding (Req 12.3); it is only
+                            # reported when exposed to a context not authorized to
+                            # view it (Req 12.4). Credentials/financial/internal
+                            # data are always reported.
+                            if (sensitive_field.sensitivity_type == 'personal_data'
+                                    and self._is_authorized_to_view(sensitive_field, auth_context)):
+                                self.logger.debug(
+                                    "Personal data exposed only to an authorized "
+                                    "context; not reporting",
+                                    field=sensitive_field.field_name,
+                                    endpoint=endpoint_url,
+                                    auth_context=auth_context.name,
+                                )
+                                continue
+
                             # Determine severity based on sensitivity type and auth context
                             severity = self._classify_sensitive_data_severity(
                                 sensitive_field, auth_context
@@ -327,8 +399,10 @@ class PropertyLevelAuthModule(OWASPModule):
                     )
                     sensitive_fields.append(sensitive_field)
                 
-                # Check if field value contains sensitive data
-                if isinstance(value, str) and self._contains_sensitive_data(value):
+                # Check if field value contains sensitive data. The field name is
+                # threaded through so the credential-shape corroboration in
+                # _contains_sensitive_data can consider it (Requirement 12.2).
+                if isinstance(value, str) and self._contains_sensitive_data(value, field_name=key):
                     sensitivity_type = self._detect_value_sensitivity_type(value)
                     sensitive_field = SensitiveField(
                         field_name=key,
@@ -411,26 +485,84 @@ class PropertyLevelAuthModule(OWASPModule):
         
         return 'unknown'
     
-    def _contains_sensitive_data(self, value: str) -> bool:
-        """Check if value contains sensitive data patterns"""
+    def _contains_sensitive_data(self, value: str, field_name: Optional[str] = None) -> bool:
+        """
+        Check if a value contains sensitive data.
+
+        Specific patterns (SSN, credit card, email, ``sk_`` keys) and known
+        credential prefixes are sufficient on their own. A generic long
+        alphanumeric string (``[A-Za-z0-9]{32,}``) or base64-shaped blob is
+        treated as NECESSARY BUT NOT SUFFICIENT: it is only flagged when it is
+        corroborated by a sensitive field name, a known credential prefix, or a
+        high Shannon-entropy value. Arbitrary 32+ character strings are not
+        flagged on their own (Requirement 12.2).
+
+        Args:
+            value: The candidate value to inspect.
+            field_name: The name of the field the value came from, used as
+                corroborating evidence for the credential-shape patterns.
+
+        Returns:
+            True if the value is considered sensitive, False otherwise.
+        """
         if not isinstance(value, str) or len(value) < 4:
             return False
-        
-        # Check for common sensitive data patterns
-        sensitive_patterns = [
-            r'[A-Za-z0-9]{32,}',  # Long hex strings (API keys)
-            r'[A-Za-z0-9+/]{20,}={0,2}',  # Base64 encoded data
-            r'\d{3}-\d{2}-\d{4}',  # SSN pattern
-            r'\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}',  # Credit card pattern
-            r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}',  # Email pattern
-            r'sk_[a-zA-Z0-9]{20,}'  # Stripe-style API keys
+
+        # Patterns that are self-sufficient evidence of sensitive data.
+        sufficient_patterns = [
+            r'\d{3}-\d{2}-\d{4}',                               # SSN pattern
+            r'\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}',          # Credit card pattern
+            r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}', # Email pattern
+            r'sk_[a-zA-Z0-9]{20,}',                             # Stripe-style secret key
         ]
-        
-        for pattern in sensitive_patterns:
+        for pattern in sufficient_patterns:
             if re.search(pattern, value):
                 return True
-        
+
+        # A known credential prefix is strong, self-sufficient evidence.
+        if any(value.startswith(prefix) for prefix in self.CREDENTIAL_PREFIXES):
+            return True
+
+        # Credential-SHAPE patterns: necessary but not sufficient. A match here
+        # only counts when corroborated below (Requirement 12.2).
+        credential_shape_patterns = [
+            r'[A-Za-z0-9]{32,}',            # long alphanumeric (API-key shape)
+            r'[A-Za-z0-9+/]{20,}={0,2}',    # base64-encoded blob
+        ]
+        matches_credential_shape = any(
+            re.search(pattern, value) for pattern in credential_shape_patterns
+        )
+        if not matches_credential_shape:
+            return False
+
+        # Corroboration 1: the field name itself indicates a secret/credential.
+        if field_name and self._is_sensitive_field(field_name.lower()):
+            return True
+
+        # Corroboration 2: high Shannon entropy indicates a genuinely random
+        # secret rather than a long-but-predictable identifier or slug.
+        if self._shannon_entropy(value) >= self.CREDENTIAL_ENTROPY_THRESHOLD:
+            return True
+
         return False
+
+    @staticmethod
+    def _shannon_entropy(value: str) -> float:
+        """Compute the Shannon entropy (bits per character) of a string."""
+        if not value:
+            return 0.0
+
+        counts: Dict[str, int] = {}
+        for char in value:
+            counts[char] = counts.get(char, 0) + 1
+
+        length = len(value)
+        entropy = 0.0
+        for count in counts.values():
+            probability = count / length
+            entropy -= probability * math.log2(probability)
+
+        return entropy
     
     def _detect_value_sensitivity_type(self, value: str) -> str:
         """Detect sensitivity type based on value patterns"""
@@ -448,32 +580,108 @@ class PropertyLevelAuthModule(OWASPModule):
     def _classify_sensitive_data_severity(self, sensitive_field: SensitiveField, 
                                         auth_context: AuthContext) -> Severity:
         """
-        Classify severity of sensitive data exposure
-        
+        Classify severity of sensitive data exposure.
+
+        Severity is driven by the TYPE of exposed data and the PRIVILEGE LEVEL
+        of the requesting Auth_Context, never by the mere presence of a single
+        email (or any other lone) value (Requirement 12.1).
+
         Args:
             sensitive_field: Detected sensitive field
             auth_context: Authentication context used
-            
+
         Returns:
             Severity level
         """
-        # Critical: Passwords, API keys, financial data exposed
-        if sensitive_field.sensitivity_type in ['password', 'api_key', 'financial']:
+        sensitivity_type = sensitive_field.sensitivity_type
+        privilege_level = getattr(auth_context, 'privilege_level', 1)
+
+        # Critical: Passwords, API keys, financial data should never appear in a
+        # response body regardless of who requested it.
+        if sensitivity_type in ['password', 'api_key', 'financial']:
             return Severity.CRITICAL
-        
-        # High: Personal data exposed to low-privilege users
-        if sensitive_field.sensitivity_type == 'personal_data':
-            if auth_context.privilege_level < 2:  # Low privilege user
+
+        # Personal data: severity scales with how little the requesting context
+        # should be seeing personal data. A lone email does not by itself drive
+        # an escalation; only the data type and privilege level do.
+        if sensitivity_type == 'personal_data':
+            if privilege_level <= 0:      # anonymous / unauthenticated
                 return Severity.HIGH
-            else:
+            if privilege_level < 2:       # regular user
                 return Severity.MEDIUM
-        
+            return Severity.LOW           # high-privilege / administrative access
+
         # Medium: Internal/debug data exposed
-        if sensitive_field.sensitivity_type == 'internal':
+        if sensitivity_type == 'internal':
             return Severity.MEDIUM
-        
+
         # Default to medium for unknown sensitive data
         return Severity.MEDIUM
+
+    def _is_authorized_to_view(self, sensitive_field: SensitiveField,
+                               auth_context: AuthContext) -> bool:
+        """
+        Decide whether the requesting Auth_Context is authorized to view the
+        given personal-data field (Requirements 12.3, 12.4).
+
+        The authorization model is consistent with how the module represents
+        auth contexts (via ``privilege_level`` and identity):
+
+          * An anonymous / unauthenticated context (``privilege_level <= 0``) is
+            never authorized to view personal data.
+          * A high-privilege context (``privilege_level >= 2``, e.g. an
+            administrator) is authorized to view personal data as part of
+            legitimate administrative access.
+          * A regular user (``privilege_level == 1``) is authorized only for
+            personal data that belongs to that same context (its own record).
+
+        Args:
+            sensitive_field: The detected personal-data field.
+            auth_context: The auth context under which the data was observed.
+
+        Returns:
+            True if the context is authorized to view the data, False otherwise.
+        """
+        privilege_level = getattr(auth_context, 'privilege_level', 1)
+
+        # Anonymous / unauthenticated contexts are never authorized.
+        if privilege_level <= 0:
+            return False
+
+        # High-privilege (administrative) contexts legitimately view personal data.
+        if privilege_level >= 2:
+            return True
+
+        # Regular users are authorized only for data that belongs to them.
+        return self._data_belongs_to_context(sensitive_field, auth_context)
+
+    def _data_belongs_to_context(self, sensitive_field: SensitiveField,
+                                 auth_context: AuthContext) -> bool:
+        """
+        Heuristic ownership check: does the personal-data value identify the
+        requesting context itself (e.g. the context's own username/email)?
+
+        Without a server-side ownership model, identity is inferred from the
+        context's ``username``. When the exposed value contains that identity
+        marker, the data is treated as belonging to the requesting context.
+
+        Args:
+            sensitive_field: The detected personal-data field.
+            auth_context: The auth context under which the data was observed.
+
+        Returns:
+            True if the value appears to belong to the requesting context.
+        """
+        identity_markers = []
+        username = getattr(auth_context, 'username', None)
+        if username:
+            identity_markers.append(username.lower())
+
+        if not identity_markers:
+            return False
+
+        value = (sensitive_field.field_value or '').lower()
+        return any(marker and marker in value for marker in identity_markers)
     
     async def _test_mass_assignment(self, endpoints: List[Any]) -> List[Finding]:
         """
@@ -497,6 +705,11 @@ class PropertyLevelAuthModule(OWASPModule):
                 
                 # Test mass assignment with different HTTP methods
                 for method in self.TEST_METHODS:
+                    # Safe mode restricts probes to Safe_Methods (GET/HEAD/
+                    # OPTIONS); skip and log any state-changing probe
+                    # (Requirements 11.1, 11.3, 11.4, 21.2, 21.4).
+                    if self.skip_if_state_changing(method, "mass_assignment"):
+                        continue
                     try:
                         mass_assignment_findings = await self._test_endpoint_mass_assignment(
                             endpoint_url, method, auth_context
@@ -531,27 +744,63 @@ class PropertyLevelAuthModule(OWASPModule):
                             endpoint=endpoint_url,
                             error=str(e))
             return findings
-        
+
+        # When a merged Spec_Schema resolves an operation for this
+        # (endpoint, method), build the probe body from a schema-valid
+        # Typed_Payload so the injected mass-assignment field passes input
+        # validation and reaches the target logic (Requirements 52.1, 56.3).
+        # When no operation resolves (or no spec is threaded), the existing
+        # payload behavior is used unchanged (Requirement 52.6). The
+        # skip_if_state_changing gate in _test_mass_assignment still runs first,
+        # so Safe_Mode continues to skip this state-changing probe
+        # (Requirements 52.4, 11).
+        spec_operation = None
+        if self.spec_schema is not None:
+            spec_operation = self.spec_schema.operation_for(endpoint_url, method)
+
         # Test mass assignment with dangerous fields
         for dangerous_field in self.mass_assignment_fields:
             try:
-                # Create test payload with dangerous field
-                test_payload = {dangerous_field: self._generate_test_value(dangerous_field)}
+                dangerous_value = self._generate_test_value(dangerous_field)
+
+                if spec_operation is not None:
+                    # Start from a schema-valid body and inject the dangerous
+                    # field on top via overrides (Requirement 52.1).
+                    test_payload = build_typed_payload(
+                        spec_operation, overrides={dangerous_field: dangerous_value}
+                    )
+                else:
+                    # Existing behavior when no spec operation resolves
+                    # (Requirement 52.6).
+                    test_payload = {dangerous_field: dangerous_value}
+
+                    # Add some existing fields to make request more realistic
+                    if existing_fields:
+                        sample_fields = dict(list(existing_fields.items())[:3])  # Take first 3 fields
+                        test_payload.update(sample_fields)
                 
-                # Add some existing fields to make request more realistic
-                if existing_fields:
-                    sample_fields = dict(list(existing_fields.items())[:3])  # Take first 3 fields
-                    test_payload.update(sample_fields)
-                
+                # Merge any Actor_Profile per-endpoint query/body values for this
+                # Auth_Context on top of the typed base, with profile values
+                # taking precedence (Requirement 54.2). When no profile is
+                # supplied or it omits this endpoint, the base is used unchanged
+                # (Requirements 54.3, 54.4).
+                params, test_payload = apply_actor_profile(
+                    auth_context, endpoint_url, body=test_payload
+                )
+
                 # Make request with mass assignment payload
+                request_kwargs = {'json': test_payload}
+                if params:
+                    request_kwargs['params'] = params
                 test_response = await self.http_client.request(
-                    method, endpoint_url, json=test_payload
+                    method, endpoint_url, **request_kwargs
                 )
                 
-                # Check if mass assignment was successful
-                if self._is_mass_assignment_successful(
-                    baseline_response, test_response, dangerous_field, test_payload[dangerous_field]
-                ):
+                # Check if mass assignment was successful via persistence verification
+                persistence_evidence = await self._is_mass_assignment_successful(
+                    test_response, endpoint_url, dangerous_field, test_payload[dangerous_field]
+                )
+                if persistence_evidence:
                     severity = self._classify_mass_assignment_severity(dangerous_field, auth_context)
                     
                     finding = Finding(
@@ -566,9 +815,9 @@ class PropertyLevelAuthModule(OWASPModule):
                         response_size=len(test_response.content),
                         response_time=test_response.elapsed,
                         evidence=f"Mass assignment vulnerability detected. "
-                                f"Dangerous field '{dangerous_field}' with value '{test_payload[dangerous_field]}' "
-                                f"was accepted and may have been processed. "
-                                f"Response status: {test_response.status_code}",
+                                f"Injected field '{dangerous_field}' with value "
+                                f"'{test_payload[dangerous_field]}' was bound and persisted. "
+                                f"{persistence_evidence}",
                         recommendation="Implement input validation and use allow-lists for accepted fields. "
                                      "Reject requests containing unexpected or dangerous fields.",
                         payload=json.dumps(test_payload),
@@ -628,56 +877,126 @@ class PropertyLevelAuthModule(OWASPModule):
         else:
             return 'test_value'
     
-    def _is_mass_assignment_successful(self, baseline_response: Response, 
-                                     test_response: Response, field_name: str, 
-                                     test_value: Any) -> bool:
+    async def _is_mass_assignment_successful(self, test_response: Response,
+                                             endpoint: str, field_name: str,
+                                             test_value: Any) -> Optional[str]:
         """
-        Determine if mass assignment was successful
-        
+        Determine if mass assignment was successful via persistence verification.
+
+        Success requires the exact injected field value to be reflected in the write
+        response body OR in a subsequent safe re-read (GET) of the same object. Response
+        size deltas and response-time increases are NOT used as success signals
+        (Requirements 10.1, 10.2, 10.3).
+
         Args:
-            baseline_response: Original response without mass assignment
-            test_response: Response after mass assignment attempt
-            field_name: Name of the field being tested
-            test_value: Value that was sent
-            
+            test_response: Response returned by the mass-assignment write request
+            endpoint: Endpoint URL used to re-read the object
+            field_name: Name of the injected field being tested
+            test_value: Value that was injected for the field
+
         Returns:
-            True if mass assignment appears successful
+            A persistence-evidence string when the injected value is confirmed to have
+            persisted, otherwise None.
         """
-        # Success indicators:
-        # 1. Request was accepted (2xx status)
-        # 2. Response is different from baseline
-        # 3. Response contains the test value or field
-        
+        # The write must at least have been accepted.
         if not test_response.is_success:
+            return None
+
+        # 1. Exact field/value reflected directly in the write response body.
+        if self._reflects_injected_value(test_response, field_name, test_value):
+            return (f"Injected field '{field_name}' with value '{test_value}' was "
+                    f"reflected in the write response body "
+                    f"(status {test_response.status_code}).")
+
+        # 2. Exact field/value confirmed by a safe re-read of the same object.
+        reread_response = await self._reget_object(endpoint)
+        if reread_response is not None and self._reflects_injected_value(
+            reread_response, field_name, test_value
+        ):
+            return (f"Injected field '{field_name}' with value '{test_value}' persisted "
+                    f"and was confirmed by re-reading the object via GET "
+                    f"(status {reread_response.status_code}).")
+
+        # Neither the write response nor the re-read reflected the injected value.
+        return None
+
+    def _reflects_injected_value(self, response: Optional[Response], field: str,
+                                 value: Any) -> bool:
+        """
+        Check whether the exact injected field/value pair is reflected in a JSON response.
+
+        Parses the response body as JSON and searches (recursively) for a field whose
+        name matches ``field`` and whose value matches ``value`` (Requirement 10.1).
+
+        Args:
+            response: Response to inspect
+            field: Injected field name to look for
+            value: Injected value that must be reflected
+
+        Returns:
+            True if the field is present with the injected value, False otherwise.
+        """
+        if response is None or not getattr(response, 'text', None):
             return False
-        
-        # Check if response contains the test field or value
+
+        content_type = ''
+        if response.headers:
+            content_type = response.headers.get('content-type', '')
+        if 'application/json' not in content_type:
+            return False
+
         try:
-            if test_response.text and 'application/json' in test_response.headers.get('content-type', ''):
-                response_data = json.loads(test_response.text)
-                
-                # Check if field appears in response
-                if isinstance(response_data, dict):
-                    if field_name in response_data:
-                        return True
-                    
-                    # Check if test value appears in response
-                    response_str = json.dumps(response_data).lower()
-                    if str(test_value).lower() in response_str:
-                        return True
+            data = json.loads(response.text)
         except (json.JSONDecodeError, ValueError):
-            pass
-        
-        # Check if response size changed significantly (indicating processing)
-        size_diff = abs(len(test_response.content) - len(baseline_response.content))
-        if size_diff > 50:  # Significant change in response size
-            return True
-        
-        # Check if response time increased (indicating processing)
-        if test_response.elapsed > baseline_response.elapsed * 1.5:
-            return True
-        
+            return False
+
+        return self._json_field_reflects_value(data, field, value)
+
+    def _json_field_reflects_value(self, data: Any, field: str, value: Any) -> bool:
+        """Recursively search JSON data for a field/value match."""
+        if isinstance(data, dict):
+            for key, item in data.items():
+                if key == field and self._values_match(item, value):
+                    return True
+                if isinstance(item, (dict, list)) and self._json_field_reflects_value(
+                    item, field, value
+                ):
+                    return True
+        elif isinstance(data, list):
+            for element in data:
+                if isinstance(element, (dict, list)) and self._json_field_reflects_value(
+                    element, field, value
+                ):
+                    return True
         return False
+
+    def _values_match(self, actual: Any, expected: Any) -> bool:
+        """Compare a reflected value against the injected value (type-tolerant)."""
+        if actual == expected:
+            return True
+        # Fall back to a normalized string comparison to tolerate serialization
+        # differences (e.g. booleans rendered as strings, casing, surrounding space).
+        return str(actual).strip().lower() == str(expected).strip().lower()
+
+    async def _reget_object(self, endpoint: str) -> Optional[Response]:
+        """
+        Perform a safe GET re-read of the same object for persistence verification.
+
+        Args:
+            endpoint: Endpoint URL to re-read
+
+        Returns:
+            The successful re-read Response, or None when the re-read fails.
+        """
+        try:
+            response = await self.http_client.request('GET', endpoint)
+            if response.is_success:
+                return response
+        except Exception as e:
+            self.logger.debug("Re-read GET failed during mass assignment verification",
+                              endpoint=endpoint,
+                              error=str(e))
+        return None
     
     def _classify_mass_assignment_severity(self, field_name: str, 
                                          auth_context: AuthContext) -> Severity:
@@ -720,6 +1039,11 @@ class PropertyLevelAuthModule(OWASPModule):
                 
                 # Test with different HTTP methods
                 for method in self.TEST_METHODS:
+                    # Safe mode restricts probes to Safe_Methods (GET/HEAD/
+                    # OPTIONS); skip and log any state-changing probe
+                    # (Requirements 11.1, 11.3, 11.4, 21.2, 21.4).
+                    if self.skip_if_state_changing(method, "readonly_property_modification"):
+                        continue
                     try:
                         readonly_findings = await self._test_endpoint_readonly_modification(
                             endpoint_url, method, auth_context
@@ -764,10 +1088,20 @@ class PropertyLevelAuthModule(OWASPModule):
                     test_value = self._generate_readonly_test_value(readonly_field, original_value)
                     
                     test_payload = {readonly_field: test_value}
-                    
+
+                    # Merge Actor_Profile per-endpoint query/body values on top
+                    # of the base, profile values taking precedence
+                    # (Requirements 54.2-54.4).
+                    params, test_payload = apply_actor_profile(
+                        auth_context, endpoint_url, body=test_payload
+                    )
+
                     # Make request to modify read-only field
+                    request_kwargs = {'json': test_payload}
+                    if params:
+                        request_kwargs['params'] = params
                     test_response = await self.http_client.request(
-                        method, endpoint_url, json=test_payload
+                        method, endpoint_url, **request_kwargs
                     )
                     
                     # Check if read-only field was modified
@@ -851,8 +1185,12 @@ class PropertyLevelAuthModule(OWASPModule):
     
     async def _test_undocumented_fields(self, endpoints: List[Any]) -> List[Finding]:
         """
-        Test for undocumented fields in responses (Requirement 3.4)
-        
+        Test for undocumented fields in responses (Requirement 13).
+
+        Per-context response comparison requires two or more supplied
+        Auth_Contexts (Req 13.1). When fewer than two Auth_Contexts are supplied
+        the comparison is skipped and a log entry is recorded (Req 13.2).
+
         Args:
             endpoints: List of endpoints to test
             
@@ -860,6 +1198,23 @@ class PropertyLevelAuthModule(OWASPModule):
             List of findings for undocumented fields
         """
         findings = []
+
+        # Requirement 13 counts the operator-SUPPLIED Auth_Contexts, not the
+        # internal ``auth_context_map`` (which always contains an injected
+        # 'anonymous' context). The undocumented-field comparison iterates over
+        # ``self.auth_contexts`` and per-endpoint comparison in
+        # ``_analyze_field_variations`` needs >= 2 distinct contexts, so the
+        # gate is keyed on the number of supplied contexts.
+        supplied_context_count = len(self.auth_contexts)
+        if supplied_context_count < 2:
+            self.logger.info(
+                "Skipping undocumented-field comparison: fewer than two auth "
+                "contexts supplied",
+                module="property_level_auth",
+                supplied_auth_contexts=supplied_context_count,
+            )
+            return findings
+
         self.logger.info("Testing for undocumented fields", endpoints_count=len(endpoints))
         
         # Collect all fields from all endpoints and auth contexts
@@ -872,9 +1227,14 @@ class PropertyLevelAuthModule(OWASPModule):
             for endpoint in endpoints:
                 endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
                 method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
-                
+                # Safe mode: undocumented-field discovery is a read probe; never
+                # replay a state-changing method (Requirements 11.1, 21.2, 21.3).
+                method = self.safe_read_method(method, "undocumented_fields")
+
                 try:
-                    response = await self.http_client.request(method, endpoint_url)
+                    params, _ = apply_actor_profile(auth_context, endpoint_url)
+                    request_kwargs = {'params': params} if params else {}
+                    response = await self.http_client.request(method, endpoint_url, **request_kwargs)
                     
                     if response.is_success and response.text:
                         fields = self._extract_all_fields_from_response(response)

@@ -31,17 +31,22 @@ APILeak implements specialized modules for each category of the **OWASP API Secu
 
 | Module | OWASP Category | Description | Priority |
 |--------|----------------|-------------|----------|
-| `bola` | **API1** - Broken Object Level Authorization | Detects unauthorized object access | **P0** |
-| `auth` | **API2** - Broken Authentication | Identifies JWT authentication flaws | **P0** |
-| `property` | **API3** - Broken Object Property Level Authorization | Detects excessive data exposure | **P0** |
-| `resource` | **API4** - Unrestricted Resource Consumption | Identifies missing rate limiting and DoS | **P1** |
-| `function_auth` | **API5** - Broken Function Level Authorization | Detects privilege escalation | **P0** |
+| `bola` | **API1** - Broken Object Level Authorization | Broken Object Level Authorization (BOLA) detection | **P0** |
+| `auth` | **API2** - Broken Authentication | Broken Authentication detection | **P0** |
+| `property` | **API3** - Broken Object Property Level Authorization | Broken Object Property Level Authorization detection | **P0** |
+| `resource` | **API4** - Unrestricted Resource Consumption | Unrestricted Resource Consumption detection | **P1** |
+| `function_auth` | **API5** - Broken Function Level Authorization | Broken Function Level Authorization detection | **P0** |
+| `business_flow` | **API6** - Unrestricted Access to Sensitive Business Flows | Unrestricted Access to Sensitive Business Flows detection | **P1** |
+| `ssrf` | **API7** - Server-Side Request Forgery | Server-Side Request Forgery (SSRF) detection | **P1** |
+| `security_misconfig` | **API8** - Security Misconfiguration | Security Misconfiguration detection | **P1** |
+| `inventory` | **API9** - Improper Inventory Management | Improper Inventory Management detection | **P2** |
+| `unsafe_consumption` | **API10** - Unsafe Consumption of APIs | Unsafe Consumption of APIs detection | **P2** |
+
+Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
 
 ### Implementation Status
 
-✅ **Fully Implemented**: `bola`, `auth`, `property`, `resource`, `function_auth`  
-🚧 **In Development**: `ssrf` (API7), `business_flows` (API6)  
-📋 **Planned**: `security_misconfig` (API8), `inventory_mgmt` (API9), `unsafe_consumption` (API10)
+✅ **Fully Implemented & Registered**: all ten modules (`bola`, `auth`, `property`, `resource`, `function_auth`, `business_flow`, `ssrf`, `security_misconfig`, `inventory`, `unsafe_consumption`)
 
 ---
 
@@ -50,18 +55,23 @@ APILeak implements specialized modules for each category of the **OWASP API Secu
 ### Basic Command
 
 ```bash
-# Run ALL OWASP modules
-python apileaks.py full --target https://api.example.com
+# Run discovery + ALL registered OWASP modules (default)
+python apileaks.py scan --target https://api.example.com
 
-# Run specific modules
-python apileaks.py full --target https://api.example.com --modules bola,auth,resource
+# Restrict to specific modules
+python apileaks.py scan --target https://api.example.com --modules bola,auth,resource
+
+# Run a single module in isolation (recommended for focused red-team runs)
+python apileaks.py owasp bola --target https://api.example.com
 ```
+
+> **Note:** `scan` is the primary orchestrator and runs discovery plus every registered OWASP module by default; `--modules a,b` restricts the set. `full` and `main` are deprecated, hidden aliases of `scan` (they still work but emit a stderr notice). To run one module in isolation, prefer `apileaks owasp <key> --target URL` — for example `full --modules bola` becomes `apileaks owasp bola`.
 
 ### Default Modules
 
-By default, APILeak runs these modules in `full` mode:
+By default, `scan` runs discovery plus all registered OWASP modules. To restrict the run, pass `--modules`:
 ```bash
-bola,auth,property,resource,function_auth
+--modules bola,auth,property,resource,function_auth
 ```
 
 ### Module Syntax
@@ -71,11 +81,16 @@ bola,auth,property,resource,function_auth
 ```
 
 **Available modules:**
-- `bola` - BOLA Testing
-- `auth` - Authentication Testing  
-- `property` - Property Level Authorization
-- `resource` - Resource Consumption
-- `function_auth` - Function Level Authorization
+- `bola` - Broken Object Level Authorization (BOLA) detection (API1)
+- `auth` - Broken Authentication detection (API2)
+- `property` - Broken Object Property Level Authorization detection (API3)
+- `resource` - Unrestricted Resource Consumption detection (API4)
+- `function_auth` - Broken Function Level Authorization detection (API5)
+- `business_flow` - Unrestricted Access to Sensitive Business Flows detection (API6)
+- `ssrf` - Server-Side Request Forgery (SSRF) detection (API7)
+- `security_misconfig` - Security Misconfiguration detection (API8)
+- `inventory` - Improper Inventory Management detection (API9)
+- `unsafe_consumption` - Unsafe Consumption of APIs detection (API10)
 
 ---
 
@@ -152,7 +167,7 @@ export APILEAK_RATE_LIMIT="5"
 export APILEAK_JWT_TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 
 # Run with environment variables
-python apileaks.py full
+python apileaks.py scan
 ```
 
 ---
@@ -161,31 +176,14 @@ python apileaks.py full
 
 ### 1. 🔐 BOLA Testing (API1)
 
-**What does it detect?**
-- Unauthorized access to other users' objects
-- Sequential ID enumeration
-- Horizontal privilege escalation
+Detects unauthorized access to other users' objects, sequential ID enumeration, and horizontal privilege escalation.
 
 ```bash
-# Basic BOLA test
-python apileaks.py full --target https://api.example.com --modules bola
-
-# BOLA with multiple authentication contexts
-python apileaks.py full --target https://api.example.com --modules bola \
-  --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
-
-# BOLA with low rate limiting for sensitive APIs
-python apileaks.py full --target https://api.example.com --modules bola \
-  --rate-limit 2
+# Basic read-only BOLA test
+python apileaks.py owasp bola --target https://api.example.com
 ```
 
-**Example of detected vulnerability:**
-```
-🚨 CRITICAL: BOLA_ANONYMOUS_ACCESS
-Endpoint: https://api.example.com/users/123
-Evidence: Object 123 accessible without authentication. Status: 200, Size: 245 bytes
-Recommendation: Implement proper authentication checks for object access.
-```
+For the full command reference — including multi-user contexts (`--auth-context`), Safe Mode, and the advanced probes (`--allow-write-bola`, `--bola-composite`, `--bola-id-leakage`, `--bola-verb-tampering`, `--bola-parameter-pollution`, `--bola-dry-run`) — see **[BOLA Testing (API1)](owasp/bola-testing.md)**.
 
 ### 2. 🔑 Authentication Testing (API2)
 
@@ -197,14 +195,14 @@ Recommendation: Implement proper authentication checks for object access.
 
 ```bash
 # Complete authentication test
-python apileaks.py full --target https://api.example.com --modules auth
+python apileaks.py owasp auth --target https://api.example.com
 
 # Test with specific JWT token
-python apileaks.py full --target https://api.example.com --modules auth \
+python apileaks.py owasp auth --target https://api.example.com \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
 
 # Test with custom JWT secrets wordlist
-python apileaks.py full --config config/auth_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/auth_config.yaml --target https://api.example.com
 ```
 
 **Example configuration for auth testing:**
@@ -227,10 +225,10 @@ owasp_testing:
 
 ```bash
 # Property level authorization test
-python apileaks.py full --target https://api.example.com --modules property
+python apileaks.py owasp property --target https://api.example.com
 
 # With custom sensitive fields
-python apileaks.py full --config config/property_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/property_config.yaml --target https://api.example.com
 ```
 
 **Custom configuration:**
@@ -264,14 +262,14 @@ owasp_testing:
 
 ```bash
 # Basic resource consumption test
-python apileaks.py full --target https://api.example.com --modules resource
+python apileaks.py owasp resource --target https://api.example.com
 
 # Test with custom burst
-python apileaks.py full --target https://api.example.com --modules resource \
+python apileaks.py owasp resource --target https://api.example.com \
   --rate-limit 20
 
 # Test with advanced configuration
-python apileaks.py full --config config/resource_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/resource_config.yaml --target https://api.example.com
 ```
 
 **Advanced configuration:**
@@ -294,10 +292,10 @@ owasp_testing:
 
 ```bash
 # Function level authorization test
-python apileaks.py full --target https://api.example.com --modules function_auth
+python apileaks.py owasp function_auth --target https://api.example.com
 
 # With custom administrative endpoints
-python apileaks.py full --config config/function_auth_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/function_auth_config.yaml --target https://api.example.com
 ```
 
 **Custom configuration:**
@@ -322,7 +320,7 @@ owasp_testing:
 
 ```bash
 # Complete testing for e-commerce API
-python apileaks.py full --target https://api.shop.example.com \
+python apileaks.py scan --target https://api.shop.example.com \
   --modules bola,auth,property,resource \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9... \
   --rate-limit 5 \
@@ -333,7 +331,7 @@ python apileaks.py full --target https://api.shop.example.com \
 
 ```bash
 # Testing with very low rate limiting for critical APIs
-python apileaks.py full --target https://api.bank.example.com \
+python apileaks.py scan --target https://api.bank.example.com \
   --modules bola,auth,property,function_auth \
   --rate-limit 1 \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9... \
@@ -345,7 +343,7 @@ python apileaks.py full --target https://api.bank.example.com \
 
 ```bash
 # Testing focused on BOLA and property level auth
-python apileaks.py full --target https://api.social.example.com \
+python apileaks.py scan --target https://api.social.example.com \
   --modules bola,property,resource \
   --jwt eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9... \
   --rate-limit 10 \
@@ -364,7 +362,7 @@ export APILEAK_JWT_TOKEN="${CI_JWT_TOKEN}"
 export APILEAK_RATE_LIMIT="3"
 export APILEAK_OUTPUT_DIR="security_reports"
 
-python apileaks.py full --log-level ERROR
+python apileaks.py scan --log-level ERROR
 
 # Check for critical vulnerabilities
 if [ $? -eq 2 ]; then
@@ -473,10 +471,10 @@ Error: Too many requests (429)
 **Solution:**
 ```bash
 # Reduce rate limit
-python apileaks.py full --target https://api.example.com --rate-limit 1
+python apileaks.py scan --target https://api.example.com --rate-limit 1
 
 # Use adaptive mode (default)
-python apileaks.py full --target https://api.example.com --modules bola
+python apileaks.py owasp bola --target https://api.example.com
 ```
 
 #### 2. Connection Timeouts
@@ -512,15 +510,14 @@ Error: Wordlist file not found
 ls -la wordlists/
 
 # Use custom wordlists
-python apileaks.py full --config config/custom_wordlists.yaml --target https://api.example.com
+python apileaks.py scan --config config/custom_wordlists.yaml --target https://api.example.com
 ```
 
 ### Debug Logs
 
 ```bash
 # Enable detailed logging
-python apileaks.py full --target https://api.example.com \
-  --modules bola \
+python apileaks.py owasp bola --target https://api.example.com \
   --log-level DEBUG \
   --log-file debug.log
 ```
@@ -560,13 +557,17 @@ rate_limiting:
 ### 4. **CI/CD Integration**
 ```bash
 # Script for CI/CD
-python apileaks.py full \
+python apileaks.py scan \
   --target "${API_ENDPOINT}" \
   --jwt "${JWT_TOKEN}" \
   --modules bola,auth,property \
   --rate-limit 3 \
   --output "security-scan-${BUILD_NUMBER}" \
   --log-level ERROR
+
+# The CI gate is driven by scan: --ci-mode, --fail-on (default `high`), --sarif,
+# --baseline, and --safe-mode. The gate now fails on `high` findings by default
+# (previously `critical`).
 
 # Check exit codes
 # 0 = No critical/high findings
@@ -583,10 +584,14 @@ python apileaks.py full \
 
 ## 🚀 Next Steps
 
-### Modules in Development
-- **SSRF Testing** (API7) - Server Side Request Forgery
-- **Business Flows** (API6) - Unrestricted Access to Sensitive Business Flows
-- **Security Misconfiguration** (API8)
+### Modules Available
+
+All ten OWASP API Security Top 10 2023 modules are implemented and registered:
+- **SSRF Testing** (API7) - Server-Side Request Forgery (`ssrf`)
+- **Business Flows** (API6) - Unrestricted Access to Sensitive Business Flows (`business_flow`)
+- **Security Misconfiguration** (API8) - `security_misconfig`
+- **Inventory Management** (API9) - `inventory`
+- **Unsafe Consumption** (API10) - `unsafe_consumption`
 
 ### Future Features
 - **Machine Learning**: Intelligent pattern detection
@@ -618,4 +623,4 @@ python apileaks.py full \
 
 ---
 
-*This documentation covers APILeak version 0.1.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*
+*This documentation covers APILeak version 0.2.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*

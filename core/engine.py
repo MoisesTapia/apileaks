@@ -4,6 +4,7 @@ Main orchestrator for fuzzing and OWASP testing operations
 """
 
 import asyncio
+import os
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
@@ -14,6 +15,84 @@ from .config import APILeakConfig, ConfigurationManager
 from .logging import get_logger, APILeakLogger
 from utils.findings import FindingsCollector, Finding
 from utils.discovery_checkpoint import DiscoveryCheckpointError
+
+
+class ParameterFuzzingError(Exception):
+    """Raised when a parameter fuzzing run cannot proceed (Requirements 1.5, 1.6).
+
+    Signals a fatal, run-aborting condition surfaced by
+    :meth:`APILeakCore._execute_fuzzing_phase`:
+
+    * the fuzzing orchestrator / HTTP stack could not be constructed, so no
+      parameters were tested (Requirement 1.5); or
+    * the baseline request to the target returned no HTTP response, so the
+      target is unreachable and no parameters were tested (Requirement 1.6).
+
+    In both cases ``parameters_tested`` is 0. This mirrors how the discovery
+    phase surfaces :class:`DiscoveryCheckpointError` as a critical failure: the
+    orchestrator propagates it instead of swallowing it, so the ``par`` command
+    reports a descriptive error and terminates with a non-success exit status.
+    """
+
+
+def _select_parameter_findings(
+    findings: List[Finding],
+    matchers: List[Any],
+    filters: List[Any],
+) -> List[Finding]:
+    """Narrow parameter ``findings`` through the shared response-selector pipeline.
+
+    Routes parameter findings through the SAME matcher-before-filter selection
+    ``dir`` uses (Requirements 12.1-12.3): a finding is retained only when it
+    satisfies **every** matcher, and any finding satisfying **any** filter is
+    excluded. Matchers are applied before filters, identical to the ``dir``
+    selection pipeline.
+
+    Each :class:`~utils.findings.Finding` is adapted into the in-memory-only
+    :class:`~utils.response_selector.DiscoveryResultEx` view the selector
+    operates on, mapping the finding's response attributes onto the view's
+    selectable fields (``size``/``words``/``lines``/``time``/``regex`` body
+    ``text``). The selection reuses ``utils.response_selector.apply_selectors``
+    verbatim so the ``par`` selection is literally the same code path as ``dir``.
+
+    When both ``matchers`` and ``filters`` are empty the original list is
+    returned unchanged (order-preserving no-op), so runs without selectors and
+    other commands are unaffected.
+    """
+    if not matchers and not filters:
+        return findings
+
+    # Imported lazily so the engine module import stays lightweight and to keep
+    # this selection concern local to the parameter-finding path.
+    from utils.discovery_session import DiscoveryResult
+    from utils.response_selector import DiscoveryResultEx, apply_selectors
+
+    view_by_id: Dict[int, Finding] = {}
+    views: List[DiscoveryResultEx] = []
+    for finding in findings:
+        snippet = finding.response_snippet or ""
+        # ``endpoint_status`` is not carried on a Finding; the ``par`` selectors
+        # cover size/words/lines/regex/time (status matching stays on the
+        # existing --status-code flag), so a neutral placeholder is sufficient.
+        result = DiscoveryResult(
+            url=finding.endpoint,
+            method=finding.method,
+            status_code=finding.status_code,
+            endpoint_status="valid",
+        )
+        view = DiscoveryResultEx(
+            result=result,
+            size=finding.response_size,
+            words=len(snippet.split()),
+            lines=len(snippet.splitlines()),
+            elapsed=finding.response_time,
+            text=snippet,
+        )
+        view_by_id[id(view)] = finding
+        views.append(view)
+
+    selected_views = apply_selectors(views, matchers, filters)
+    return [view_by_id[id(view)] for view in selected_views]
 
 
 def _get_status_code_filter(config):
@@ -167,6 +246,12 @@ class APILeakCore:
         # Stash the optional Batch_Scan_Scope seed so the discovery phase (invoked
         # by the orchestrator without extra arguments) can consume it.
         self._scope_endpoints = scope_endpoints
+
+        # Record the target on the instance so phases invoked by the orchestrator
+        # without an explicit target argument (e.g. the traditional fuzzing
+        # phase) can reach it. The fuzzing phase uses this to lazily seed the
+        # synthetic parameter target for a parameter-only (``par``) run.
+        self.target = target
         
         self.is_running = True
         start_time = datetime.now()
@@ -285,6 +370,54 @@ class APILeakCore:
                             endpoints_seeded=len(self.discovered_endpoints))
             return
         
+        # Idempotently build the fuzzing orchestrator, and (when endpoint
+        # discovery is disabled but parameter fuzzing is enabled) seed the
+        # synthetic parameter target. Calling both here first keeps the
+        # discovery-enabled path byte-for-byte unchanged: the orchestrator is
+        # constructed exactly as before and _prepare_parameter_target() is a
+        # no-op whenever endpoints.enabled is True.
+        self._ensure_fuzzing_orchestrator()
+        self._prepare_parameter_target(target)
+        
+        # Check if we should do endpoint discovery or just use target for parameter fuzzing
+        if self.config.fuzzing.endpoints.enabled:
+            # Discover endpoints using fuzzing orchestrator
+            try:
+                discovered_endpoints = await self.fuzzing_orchestrator.discover_endpoints(target)
+                self.discovered_endpoints = discovered_endpoints
+                
+                self.logger.info("Endpoint discovery phase completed", 
+                                endpoints_found=len(self.discovered_endpoints),
+                                valid_endpoints=len([e for e in discovered_endpoints if e.status.value == "valid"]),
+                                auth_required=len([e for e in discovered_endpoints if e.auth_required]))
+                
+            except DiscoveryCheckpointError:
+                # A checkpoint write failure must surface to the dir command as a
+                # descriptive error (Requirement 37.6); never swallow it as an
+                # ordinary discovery failure.
+                raise
+            except Exception as e:
+                self.logger.error("Endpoint discovery failed", error=str(e))
+                self.discovered_endpoints = []
+        else:
+            # For parameter fuzzing mode the synthetic target was already
+            # seeded above by _prepare_parameter_target(). When parameter
+            # fuzzing is also disabled there are no endpoints to test.
+            if not self.config.fuzzing.parameters.enabled:
+                self.discovered_endpoints = []
+    
+    def _ensure_fuzzing_orchestrator(self) -> None:
+        """Idempotently build ``self.fuzzing_orchestrator`` and its HTTP stack.
+
+        Builds the ``FuzzingOrchestrator`` together with its
+        ``HTTPRequestEngine``/``RateLimiter``/``RetryConfig`` and configured
+        authentication contexts. The construction block was moved verbatim out
+        of ``_execute_discovery_phase`` and remains guarded by
+        ``if not hasattr(self, 'fuzzing_orchestrator')`` so it is a no-op when
+        the orchestrator has already been built (Design Decision 3 / Option C).
+        Discovery-enabled runs (``dir``/``scan``/``full``) build it here exactly
+        as before; parameter-only (``par``) runs build it lazily.
+        """
         # Initialize fuzzing orchestrator if not already done
         if not hasattr(self, 'fuzzing_orchestrator'):
             from modules.fuzzing.orchestrator import FuzzingOrchestrator
@@ -308,7 +441,7 @@ class APILeakCore:
                 user_agent_rotator = UserAgentRotator(mode="rotate", user_agent_list=headers_config.user_agent_list)
             elif headers_config.custom_headers.get('User-Agent'):
                 custom_ua = headers_config.custom_headers['User-Agent']
-                if custom_ua != 'APILeak/0.1.0':  # Only use custom if it's not the default
+                if custom_ua != 'APILeak/0.2.0':  # Only use custom if it's not the default
                     user_agent_rotator = UserAgentRotator(mode="custom", custom_user_agent=custom_ua)
             
             # Get status code filter for HTTP output
@@ -366,70 +499,92 @@ class APILeakCore:
                 self.fuzzing_orchestrator.endpoint_fuzzer.seed_from_checkpoint(
                     resume_checkpoint
                 )
-        
-        # Check if we should do endpoint discovery or just use target for parameter fuzzing
-        if self.config.fuzzing.endpoints.enabled:
-            # Discover endpoints using fuzzing orchestrator
-            try:
-                discovered_endpoints = await self.fuzzing_orchestrator.discover_endpoints(target)
-                self.discovered_endpoints = discovered_endpoints
-                
-                self.logger.info("Endpoint discovery phase completed", 
-                                endpoints_found=len(self.discovered_endpoints),
-                                valid_endpoints=len([e for e in discovered_endpoints if e.status.value == "valid"]),
-                                auth_required=len([e for e in discovered_endpoints if e.auth_required]))
-                
-            except DiscoveryCheckpointError:
-                # A checkpoint write failure must surface to the dir command as a
-                # descriptive error (Requirement 37.6); never swallow it as an
-                # ordinary discovery failure.
-                raise
-            except Exception as e:
-                self.logger.error("Endpoint discovery failed", error=str(e))
-                self.discovered_endpoints = []
-        else:
-            # For parameter fuzzing mode, use the target URL directly as an endpoint
-            if self.config.fuzzing.parameters.enabled:
-                from modules.fuzzing.orchestrator import Endpoint
-                
-                # Create a synthetic endpoint from the target URL
-                target_endpoint = Endpoint(
-                    url=target,
-                    method="GET",
-                    status_code=200,  # Assume it's valid for parameter testing
-                    response_size=0,
-                    response_time=0.0,
-                    discovered_via="target",
-                    endpoint_type="parameter_target"
-                )
-                
-                self.discovered_endpoints = [target_endpoint]
-                
-                self.logger.info("Using target URL for parameter fuzzing", 
-                                target=target,
-                                endpoints_found=1)
-            else:
-                self.discovered_endpoints = []
-    
+
+    def _prepare_parameter_target(self, target: str) -> None:
+        """Seed ``self.discovered_endpoints`` with a synthetic parameter target.
+
+        Moved verbatim out of ``_execute_discovery_phase``. Guarded so it only
+        seeds when endpoint discovery is disabled, parameter fuzzing is enabled,
+        and ``discovered_endpoints`` is still empty. This makes it idempotent and
+        safe to call from both the discovery and fuzzing phases.
+        """
+        if (
+            not self.config.fuzzing.endpoints.enabled
+            and self.config.fuzzing.parameters.enabled
+            and not self.discovered_endpoints
+        ):
+            from modules.fuzzing.orchestrator import Endpoint
+
+            # Create a synthetic endpoint from the target URL
+            target_endpoint = Endpoint(
+                url=target,
+                method="GET",
+                status_code=200,  # Assume it's valid for parameter testing
+                response_size=0,
+                response_time=0.0,
+                discovered_via="target",
+                endpoint_type="parameter_target"
+            )
+
+            self.discovered_endpoints = [target_endpoint]
+
+            self.logger.info("Using target URL for parameter fuzzing", 
+                            target=target,
+                            endpoints_found=1)
+
     async def _execute_fuzzing_phase(self) -> Any:
         """Execute traditional fuzzing phase"""
         self.logger.debug("Executing traditional fuzzing phase")
-        
-        # Get fuzzing orchestrator (should be initialized from discovery phase)
+
+        # Idempotently ensure the fuzzing orchestrator and (for a parameter-only
+        # run where endpoint discovery is disabled) the synthetic parameter
+        # target exist before fuzzing begins. For dir/scan/full these were built
+        # during the discovery phase, so both calls are no-ops (Design Decision
+        # 3 / Option C); a ``par`` run — which skips discovery — builds them
+        # lazily here so the fuzzing phase actually has something to test.
+        try:
+            self._ensure_fuzzing_orchestrator()
+            target = getattr(self, 'target', None)
+            if target is not None:
+                self._prepare_parameter_target(target)
+        except Exception as e:
+            # The orchestrator / HTTP stack could not be constructed. Parameter
+            # fuzzing cannot run: report a descriptive error, keep
+            # parameters_tested at 0, and propagate a non-success exit status
+            # (Requirement 1.5).
+            self.logger.error("Parameter fuzzing did not run", error=str(e))
+            raise ParameterFuzzingError(
+                "parameter fuzzing did not run: the fuzzing orchestrator could "
+                f"not be constructed ({e})"
+            ) from e
+
+        # If, after both idempotent setup calls, the orchestrator still could not
+        # be constructed, parameter fuzzing cannot run (Requirement 1.5).
         if not hasattr(self, 'fuzzing_orchestrator'):
-            self.logger.warning("Fuzzing orchestrator not initialized, skipping fuzzing phase")
-            return {
-                "endpoints_tested": 0,
-                "parameters_tested": 0,
-                "headers_tested": 0,
-                "findings": []
-            }
-        
+            self.logger.error(
+                "Parameter fuzzing did not run: fuzzing orchestrator unavailable"
+            )
+            raise ParameterFuzzingError(
+                "parameter fuzzing did not run: the fuzzing orchestrator could "
+                "not be constructed"
+            )
+
         try:
             # Execute parameter fuzzing
             parameter_findings = []
             if self.config.fuzzing.parameters.enabled:
                 parameter_findings = await self.fuzzing_orchestrator.fuzz_parameters(self.discovered_endpoints)
+                # Apply response matcher/filter selection to the parameter
+                # findings through the SAME pipeline `dir` uses: retain only
+                # findings satisfying every matcher, then exclude any finding
+                # satisfying any filter (Requirements 12.1-12.3). The selectors
+                # live on the shared FuzzingConfig; when none were supplied this
+                # is an order-preserving no-op, so dir/scan/full are unaffected.
+                parameter_findings = _select_parameter_findings(
+                    parameter_findings,
+                    getattr(self.config.fuzzing, 'matchers', []),
+                    getattr(self.config.fuzzing, 'filters', []),
+                )
             
             # Execute header fuzzing
             header_findings = []
@@ -460,8 +615,6 @@ class APILeakCore:
                             total_requests=stats.total_requests,
                             findings=len(fuzzing_results["findings"]))
             
-            return fuzzing_results
-            
         except Exception as e:
             self.logger.error("Fuzzing phase failed", error=str(e))
             return {
@@ -470,6 +623,86 @@ class APILeakCore:
                 "headers_tested": 0,
                 "findings": []
             }
+
+        # Parameter-only unreachable-target detection (Requirement 1.6). In
+        # parameter fuzzing mode the synthetic target endpoint is the only thing
+        # tested; when its baseline request returns no HTTP response the fuzzer
+        # tests nothing and parameters_tested stays 0 (the baseline failure is
+        # handled gracefully inside the fuzzer, not raised). Surface a
+        # descriptive "target unreachable" error, keep parameters_tested at 0,
+        # and propagate a non-success exit status. Scoped to parameter-only mode
+        # (endpoint discovery disabled) so dir/scan/full behavior is unchanged.
+        if (
+            self.config.fuzzing.parameters.enabled
+            and not self.config.fuzzing.endpoints.enabled
+            and self.discovered_endpoints
+            and fuzzing_results["parameters_tested"] == 0
+        ):
+            unreachable_target = getattr(self, 'target', None) or self.config.target.base_url
+            self.logger.error(
+                "Parameter fuzzing did not run: target unreachable",
+                target=unreachable_target,
+            )
+            raise ParameterFuzzingError(
+                f"target unreachable: the baseline request to '{unreachable_target}' "
+                "returned no response; parameters_tested=0"
+            )
+
+        # Write the machine-readable parameter-findings output (CSV/JSONL) when
+        # the ``par`` command threaded --output-format/--output-file onto the
+        # shared FuzzingConfig (Requirements 12.5, 12.6). Only the SELECTED
+        # parameter findings are written (header findings are excluded), through
+        # the same machine writer `dir` uses. This runs on the success path only
+        # (an unreachable target raises above, so no file is written) and is a
+        # no-op for dir/scan/full, which never thread these settings.
+        self._write_parameter_machine_output(parameter_findings)
+
+        return fuzzing_results
+
+    def _write_parameter_machine_output(self, parameter_findings: List[Any]) -> None:
+        """Write selected parameter findings to a machine-readable output file.
+
+        Gated on the ``--output-format``/``--output-file`` selections threaded
+        onto the shared :class:`~core.config.FuzzingConfig` by the ``par``
+        command (Requirements 12.5, 12.6). When neither is set this is a no-op,
+        so dir/scan/full — which never thread these settings — are unaffected.
+
+        The destination path is the operator-supplied ``--output-file`` when
+        present; otherwise a default ``reports/parameter_findings.<format>`` path
+        is used, mirroring how ``dir`` derives its default machine-output path.
+        The findings (including their detection-signal fields) are serialized
+        through :func:`utils.discovery_output.write_parameter_findings_output`,
+        the same CSV/JSON Lines machine writer used for discovery output. An
+        unsupported ``--output-file`` extension raises before any file is
+        written (Requirement 12.6); the error propagates to the CLI, which
+        surfaces it and exits nonzero.
+        """
+        output_format = getattr(self.config.fuzzing, 'output_format', None)
+        output_file = getattr(self.config.fuzzing, 'output_file', None)
+        if not output_format and not output_file:
+            return
+
+        # Imported lazily so the engine import stays lightweight and the
+        # machine-output concern stays local to the parameter-finding path.
+        from utils.discovery_output import write_parameter_findings_output
+
+        if output_file:
+            # Pass the user-supplied path through as-is and let the writer
+            # validate the extension (Requirement 12.6).
+            output_path = output_file
+        else:
+            output_dir = "reports"
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(
+                output_dir, f"parameter_findings.{output_format}"
+            )
+
+        write_parameter_findings_output(parameter_findings, output_path)
+        self.logger.info(
+            "Parameter findings output written",
+            path=output_path,
+            findings=len(parameter_findings),
+        )
     
     def _build_fuzzing_results(self, findings: Optional[List[Any]] = None,
                                parameter_details: Optional[List[Any]] = None) -> dict:
@@ -566,7 +799,31 @@ class APILeakCore:
         return owasp_results
     
     async def _initialize_owasp_modules(self) -> None:
-        """Initialize OWASP testing modules"""
+        """Initialize OWASP testing modules.
+
+        Module naming reconciliation (Requirement 23.2)
+        ------------------------------------------------
+        Three distinct identifiers exist for each module and intentionally do
+        not all match. They are reconciled here so engine keys, module names,
+        and config field names do not silently diverge:
+
+            engine registration key | get_module_name() value | config field name
+            ------------------------ | ----------------------- | -----------------
+            bola                     | bola_testing            | bola_testing
+            auth                     | auth_testing            | auth_testing
+            property                 | property_level_auth     | property_testing
+
+        The engine registration keys ``bola``, ``auth`` and ``property`` are
+        preserved exactly and MUST NOT be renamed (Requirements 23.1, 26.3).
+
+        Note on ``registry.OWASPModuleRegistry`` (Requirement 23.3)
+        -----------------------------------------------------------
+        ``registry.OWASPModuleRegistry`` is unused by the engine. The engine
+        registers modules directly via ``register_owasp_module`` (see the
+        ``register_owasp_module`` calls below); it does not consult the
+        registry. The registry is retained as a standalone helper and is not
+        part of this engine's module wiring.
+        """
         self.logger.debug("Initializing OWASP modules")
         
         try:
@@ -604,7 +861,7 @@ class APILeakCore:
                 user_agent_rotator = UserAgentRotator(mode="rotate", user_agent_list=headers_config.user_agent_list)
             elif headers_config.custom_headers.get('User-Agent'):
                 custom_ua = headers_config.custom_headers['User-Agent']
-                if custom_ua != 'APILeak/0.1.0':  # Only use custom if it's not the default
+                if custom_ua != 'APILeak/0.2.0':  # Only use custom if it's not the default
                     user_agent_rotator = UserAgentRotator(mode="custom", custom_user_agent=custom_ua)
             
             # Get status code filter for HTTP output
@@ -619,7 +876,10 @@ class APILeakCore:
             # Propagate the global Safe Mode flag onto each OWASP module's
             # configuration object so modules can honor it via self.config.
             # When enabled, modules skip state-changing probes and restrict to
-            # safe methods (Requirements 10.1, 10.2).
+            # safe methods (Requirements 10.1, 10.2). In particular, the BOLA,
+            # Auth, and Property modules (bola_testing, auth_testing,
+            # property_testing configs) read safe_mode from their config per
+            # Requirement 21.1.
             safe_mode = getattr(self.config, 'safe_mode', False)
             owasp_cfg = self.config.owasp_testing
             for module_cfg in (
@@ -636,17 +896,26 @@ class APILeakCore:
             ):
                 setattr(module_cfg, 'safe_mode', safe_mode)
             
+            # Optional merged Spec_Schema attached to owasp_testing by the
+            # ``full`` command (Task 43.1). Threaded as an additive keyword into
+            # the three hardened modules so they can test declared Spec_Operations
+            # in addition to discovered endpoints (Requirements 49.2, 49.5). It
+            # defaults to ``None`` and every consumer guards on
+            # ``if self.spec_schema is not None`` so the no-spec path is
+            # unchanged (Requirements 49.3, 52.6, 53.2, 54.3, 55.5).
+            spec_schema = getattr(self.config.owasp_testing, 'spec_schema', None)
+            
             # Initialize modules with their specific configurations
             if "bola" not in self.owasp_modules:
-                bola_module = BOLATestingModule(self.config.owasp_testing.bola_testing, http_client, auth_contexts)
+                bola_module = BOLATestingModule(self.config.owasp_testing.bola_testing, http_client, auth_contexts, spec_schema=spec_schema)
                 self.register_owasp_module("bola", bola_module)
             
             if "auth" not in self.owasp_modules:
-                auth_module = AuthenticationTestingModule(self.config.owasp_testing.auth_testing, http_client, auth_contexts)
+                auth_module = AuthenticationTestingModule(self.config.owasp_testing.auth_testing, http_client, auth_contexts, spec_schema=spec_schema)
                 self.register_owasp_module("auth", auth_module)
             
             if "property" not in self.owasp_modules:
-                property_module = PropertyLevelAuthModule(self.config.owasp_testing.property_testing, http_client, auth_contexts)
+                property_module = PropertyLevelAuthModule(self.config.owasp_testing.property_testing, http_client, auth_contexts, spec_schema=spec_schema)
                 self.register_owasp_module("property", property_module)
             
             if "function_auth" not in self.owasp_modules:
@@ -718,7 +987,7 @@ class APILeakCore:
                 user_agent_rotator = UserAgentRotator(mode="rotate", user_agent_list=headers_config.user_agent_list)
             elif headers_config.custom_headers.get('User-Agent'):
                 custom_ua = headers_config.custom_headers['User-Agent']
-                if custom_ua != 'APILeak/0.1.0':
+                if custom_ua != 'APILeak/0.2.0':
                     user_agent_rotator = UserAgentRotator(mode="custom", custom_user_agent=custom_ua)
             
             # Get status code filter for HTTP output

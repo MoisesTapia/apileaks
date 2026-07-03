@@ -125,6 +125,26 @@ class VulnerableMockHTTPClient:
     async def request(self, method, url, **kwargs):
         self.request_count += 1
 
+        # Represent a genuinely BOLA-vulnerable target: a clearly-invalid object
+        # id (the negative-control sentinel "0") returns not-found, so the
+        # endpoint is *discriminating*. Valid object ids return real data that is
+        # accessible without proper authorization. This keeps the target
+        # genuinely vulnerable under the hardened BOLA negative-control logic
+        # (Requirements 3, 25) rather than answering success for every input
+        # (which is correctly suppressed as non-discriminating).
+        last_segment = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if last_segment == "0":
+            not_found = json.dumps({"message": "object not found"})
+            return Response(
+                status_code=404,
+                headers={"content-type": "application/json"},
+                content=not_found.encode("utf-8"),
+                text=not_found,
+                url=url,
+                elapsed=0.01,
+                request_method=method.upper(),
+            )
+
         # Reflect any injected param/body values verbatim so reflection-based
         # detection (Unsafe Consumption, API10) observes the malformed payload.
         reflected_parts = []

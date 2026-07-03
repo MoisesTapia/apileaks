@@ -191,7 +191,7 @@ security-scan-full:
         -e APILEAK_MODULES="${OWASP_MODULES:-bola,auth,property,function_auth}" \
         -v $(pwd)/reports:/app/reports \
         -v $(pwd)/config:/app/config:ro \
-        $APILEAK_IMAGE full \
+        $APILEAK_IMAGE scan \
         --target $APILEAK_TARGET \
         --output apileak-full-$CI_PIPELINE_ID \
         --log-level $APILEAK_LOG_LEVEL \

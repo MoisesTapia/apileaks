@@ -26,7 +26,7 @@ fuzzing:
     enabled: true
     wordlist: "wordlists/headers.txt"
     custom_headers:
-      User-Agent: "APILeak-CI/0.1.0"
+      User-Agent: "APILeak-CI/0.2.0"
       Accept: "application/json"
       X-Forwarded-For: "127.0.0.1"
     random_user_agent: false

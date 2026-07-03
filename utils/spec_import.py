@@ -23,8 +23,8 @@ candidate set never contains a duplicate normalized path (Requirements 25.4,
 """
 
 import json
-from dataclasses import dataclass
-from typing import Iterable, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlsplit
 
 import yaml
@@ -354,3 +354,585 @@ def merge_candidates(
         add(seed.path)
 
     return merged
+
+
+# ===========================================================================
+# Rich Spec_Schema model + enriched extraction (Requirement 50)
+#
+# Everything below this line is STRICTLY ADDITIVE. The symbols above
+# (``SpecSeed``, ``import_openapi``, ``import_postman``, ``load_spec``,
+# ``_parse_document``, ``merge_candidates``, ``normalize_candidate_path``,
+# ``OPENAPI_OPERATION_KEYS``, ``DEFAULT_METHOD``, ``SpecImportError``) are
+# untouched so ``dir`` discovery seeding and every existing test keep working
+# (Requirement 50.6). ``import_schema`` / ``import_postman_schema`` are new and
+# populate ``SpecSchema.seeds`` by delegating to the unchanged importers, so the
+# ``(path, method)`` seed records are byte-for-byte identical to today's.
+# ===========================================================================
+
+# Parameter/body locations recognized in a Spec_Operation. Body parameters (v2
+# ``in: body``) and cookie parameters are handled separately / ignored here.
+PARAMETER_LOCATIONS = ("path", "query", "header")
+
+
+@dataclass(frozen=True)
+class SpecParameter:
+    """A single declared operation parameter (Spec_Parameter, Reqs 50.1, 50.3).
+
+    ``location`` is one of :data:`PARAMETER_LOCATIONS`; ``type`` is the declared
+    JSON Schema type (``schema.type`` for OpenAPI v3, the top-level ``type`` for
+    Swagger v2), defaulting to ``"string"`` when none is declared. ``enum``,
+    ``example``, and ``examples`` carry the declared values when present.
+    """
+
+    name: str
+    location: str
+    type: str = "string"
+    required: bool = False
+    enum: Optional[List[Any]] = None
+    example: Optional[Any] = None
+    examples: Optional[List[Any]] = None
+
+
+@dataclass(frozen=True)
+class SpecOperation:
+    """A single declared API operation (Spec_Operation, Reqs 50.1, 50.2).
+
+    ``path`` is the declared request path, ``method`` the upper-cased HTTP method
+    (normalized via :func:`_normalize_method`). ``parameters`` lists the declared
+    path/query/header parameters, ``request_body_schema`` is the raw JSON Schema
+    of the request body when the operation declares one (Req 50.2), and
+    ``security`` lists the names of the security schemes applied to the operation.
+    """
+
+    path: str
+    method: str
+    parameters: List[SpecParameter] = field(default_factory=list)
+    request_body_schema: Optional[Dict[str, Any]] = None
+    security: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SpecSecurityScheme:
+    """A declared security scheme (Req 50.4).
+
+    ``type`` is the scheme type (``http``, ``apiKey``, ``oauth2``,
+    ``openIdConnect``, ``basic`` ...). ``location`` records an ``apiKey`` scheme's
+    ``in`` value (``header``/``query``/``cookie``); ``scheme`` records an ``http``
+    scheme's mechanism (``bearer``/``basic``). Both are ``None`` when not declared.
+    """
+
+    name: str
+    type: str
+    location: Optional[str] = None
+    scheme: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SpecSchema:
+    """The structured model produced by Spec_Import for a Spec_Source (Req 50).
+
+    Carries the enriched operations AND the legacy ``(path, method)`` seeds so a
+    single object serves both discovery seeding and security testing. ``seeds``
+    is exactly what :func:`import_openapi` / :func:`import_postman` produce today
+    (Req 50.6).
+    """
+
+    operations: List[SpecOperation] = field(default_factory=list)
+    security_schemes: List[SpecSecurityScheme] = field(default_factory=list)
+    seeds: List[SpecSeed] = field(default_factory=list)
+
+    def operation_for(self, path: str, method: str) -> Optional[SpecOperation]:
+        """Look up an operation by ``(path, method)``; ``None`` when absent.
+
+        Methods are compared case-insensitively via :func:`_normalize_method`
+        so a lookup with ``"get"`` matches a stored ``"GET"`` operation
+        (Req 52.6).
+        """
+        wanted = _normalize_method(method)
+        for operation in self.operations:
+            if operation.path == path and operation.method == wanted:
+                return operation
+        return None
+
+    def path_parameters(self, path: str, method: str) -> List[SpecParameter]:
+        """Return the declared ``path`` parameters for one operation (Req 53.1).
+
+        Returns an empty list when the operation is unknown or declares no path
+        parameters.
+        """
+        operation = self.operation_for(path, method)
+        if operation is None:
+            return []
+        return [p for p in operation.parameters if p.location == "path"]
+
+
+def _is_swagger_v2(doc: dict) -> bool:
+    """True when the document is a Swagger v2 spec rather than OpenAPI v3.
+
+    OpenAPI v3 documents carry an ``openapi`` key; Swagger v2 documents carry a
+    ``swagger`` key. When only ``paths`` is present we default to v3-style
+    extraction (``schema.type`` for parameters, ``requestBody`` for bodies).
+    """
+    return "openapi" not in doc and "swagger" in doc
+
+
+def _normalize_examples(examples: Any) -> Optional[List[Any]]:
+    """Normalize a declared ``examples`` value into a flat list of values.
+
+    OpenAPI v3 declares ``examples`` as a mapping of name -> example object
+    (each with a ``value``); Swagger and ad-hoc specs may use a plain list.
+    Returns ``None`` when no examples are declared.
+    """
+    if examples is None:
+        return None
+    if isinstance(examples, dict):
+        values: List[Any] = []
+        for entry in examples.values():
+            if isinstance(entry, dict) and "value" in entry:
+                values.append(entry["value"])
+            else:
+                values.append(entry)
+        return values or None
+    if isinstance(examples, list):
+        return list(examples) or None
+    # Single scalar example under an 'examples' key: wrap it.
+    return [examples]
+
+
+def _extract_parameters(raw_params: Any, is_v2: bool) -> List[SpecParameter]:
+    """Map a list of declared parameter objects to :class:`SpecParameter` records.
+
+    Reads ``name``, ``in`` -> ``location``, the declared type (``schema.type`` for
+    v3, top-level ``type`` for v2), the ``required`` flag, and ``enum`` /
+    ``example`` / ``examples`` values (Reqs 50.1, 50.3). Only parameters whose
+    location is in :data:`PARAMETER_LOCATIONS` are kept; body/cookie parameters
+    are handled elsewhere or ignored.
+    """
+    parameters: List[SpecParameter] = []
+    if not isinstance(raw_params, list):
+        return parameters
+
+    for raw in raw_params:
+        if not isinstance(raw, dict):
+            continue
+        name = raw.get("name")
+        location = raw.get("in")
+        if not isinstance(name, str) or location not in PARAMETER_LOCATIONS:
+            continue
+
+        schema = raw.get("schema") if isinstance(raw.get("schema"), dict) else {}
+        if is_v2:
+            declared_type = raw.get("type")
+            enum = raw.get("enum")
+            example = raw.get("example")
+        else:
+            declared_type = schema.get("type", raw.get("type"))
+            enum = schema.get("enum", raw.get("enum"))
+            example = raw.get("example", schema.get("example"))
+
+        examples = _normalize_examples(raw.get("examples", schema.get("examples")))
+
+        parameters.append(
+            SpecParameter(
+                name=name,
+                location=location,
+                type=declared_type if isinstance(declared_type, str) else "string",
+                required=bool(raw.get("required", False)),
+                enum=list(enum) if isinstance(enum, list) else None,
+                example=example,
+                examples=examples,
+            )
+        )
+
+    return parameters
+
+
+def _extract_request_body(operation: dict, is_v2: bool) -> Optional[Dict[str, Any]]:
+    """Extract the request body schema for an operation, or ``None`` (Req 50.2).
+
+    For OpenAPI v3 the schema is read from ``requestBody.content[*].schema``
+    (preferring ``application/json`` when present). For Swagger v2 it is read
+    from the operation's ``parameters`` entry whose ``in`` is ``body``.
+    """
+    if is_v2:
+        params = operation.get("parameters")
+        if isinstance(params, list):
+            for raw in params:
+                if isinstance(raw, dict) and raw.get("in") == "body":
+                    schema = raw.get("schema")
+                    if isinstance(schema, dict):
+                        return schema
+        return None
+
+    request_body = operation.get("requestBody")
+    if not isinstance(request_body, dict):
+        return None
+    content = request_body.get("content")
+    if not isinstance(content, dict) or not content:
+        return None
+
+    # Prefer application/json, otherwise take the first declared media type.
+    preferred = content.get("application/json")
+    if isinstance(preferred, dict) and isinstance(preferred.get("schema"), dict):
+        return preferred["schema"]
+    for media in content.values():
+        if isinstance(media, dict) and isinstance(media.get("schema"), dict):
+            return media["schema"]
+    return None
+
+
+def _extract_security(operation: dict) -> List[str]:
+    """Return the security scheme names applied to an operation.
+
+    The ``security`` value is a list of requirement objects, each a mapping of
+    scheme name -> scope list. The scheme names are flattened, preserving order
+    and dropping duplicates.
+    """
+    security = operation.get("security")
+    if not isinstance(security, list):
+        return []
+    names: List[str] = []
+    for requirement in security:
+        if isinstance(requirement, dict):
+            for scheme_name in requirement:
+                if isinstance(scheme_name, str) and scheme_name not in names:
+                    names.append(scheme_name)
+    return names
+
+
+def _extract_security_schemes(doc: dict, is_v2: bool) -> List[SpecSecurityScheme]:
+    """Extract declared security schemes from a document (Req 50.4).
+
+    Reads ``components.securitySchemes`` for OpenAPI v3 and ``securityDefinitions``
+    for Swagger v2. Each declaration becomes a :class:`SpecSecurityScheme` record
+    carrying its ``type``, ``in`` -> ``location``, and http ``scheme``.
+    """
+    if is_v2:
+        definitions = doc.get("securityDefinitions")
+    else:
+        components = doc.get("components")
+        definitions = (
+            components.get("securitySchemes") if isinstance(components, dict) else None
+        )
+
+    schemes: List[SpecSecurityScheme] = []
+    if not isinstance(definitions, dict):
+        return schemes
+
+    for name, declaration in definitions.items():
+        if not isinstance(name, str) or not isinstance(declaration, dict):
+            continue
+        scheme_type = declaration.get("type")
+        schemes.append(
+            SpecSecurityScheme(
+                name=name,
+                type=scheme_type if isinstance(scheme_type, str) else "",
+                location=declaration.get("in"),
+                scheme=declaration.get("scheme"),
+            )
+        )
+    return schemes
+
+
+def _extract_operation(
+    path: str,
+    method: str,
+    operation: dict,
+    path_level_params: Any,
+    is_v2: bool,
+) -> SpecOperation:
+    """Build a :class:`SpecOperation` from one declared path-item operation.
+
+    Path-item-level parameters (shared by all operations on the path) are merged
+    ahead of the operation's own parameters, matching OpenAPI/Swagger semantics.
+    """
+    combined_params: List[Any] = []
+    if isinstance(path_level_params, list):
+        combined_params.extend(path_level_params)
+    op_params = operation.get("parameters")
+    if isinstance(op_params, list):
+        combined_params.extend(op_params)
+
+    return SpecOperation(
+        path=path,
+        method=_normalize_method(method),
+        parameters=_extract_parameters(combined_params, is_v2),
+        request_body_schema=_extract_request_body(operation, is_v2),
+        security=_extract_security(operation),
+    )
+
+
+def import_schema(doc: dict) -> SpecSchema:
+    """Extract a rich :class:`SpecSchema` from an OpenAPI v3 / Swagger v2 document.
+
+    Walks the SAME ``paths`` structure used by :func:`import_openapi` (v2 and v3
+    share it) and, for each declared operation, extracts its parameters, request
+    body schema, and applied security scheme names (Reqs 50.1-50.3, 50.5).
+    Top-level security schemes populate ``security_schemes`` (Req 50.4). It also
+    calls the unchanged :func:`import_openapi` to populate ``seeds``, guaranteeing
+    the ``(path, method)`` records are identical to today's extraction (Req 50.6).
+    """
+    # Delegate validation + seed extraction to the untouched importer. This
+    # raises SpecImportError for a non-dict doc or a doc without a 'paths' object.
+    seeds = import_openapi(doc)
+
+    is_v2 = _is_swagger_v2(doc)
+    paths = doc.get("paths")
+
+    operations: List[SpecOperation] = []
+    if isinstance(paths, dict):
+        for path, path_item in paths.items():
+            if not isinstance(path, str) or not path.strip():
+                continue
+            if not isinstance(path_item, dict):
+                continue
+            path_level_params = path_item.get("parameters")
+            for key, operation in path_item.items():
+                if (
+                    isinstance(key, str)
+                    and key.lower() in OPENAPI_OPERATION_KEYS
+                    and isinstance(operation, dict)
+                ):
+                    operations.append(
+                        _extract_operation(
+                            path, key, operation, path_level_params, is_v2
+                        )
+                    )
+
+    return SpecSchema(
+        operations=operations,
+        security_schemes=_extract_security_schemes(doc, is_v2),
+        seeds=seeds,
+    )
+
+
+def _postman_query_parameters(url) -> List[SpecParameter]:
+    """Best-effort query parameters from a structured Postman ``request.url``."""
+    parameters: List[SpecParameter] = []
+    if not isinstance(url, dict):
+        return parameters
+    query = url.get("query")
+    if isinstance(query, list):
+        for entry in query:
+            if isinstance(entry, dict):
+                key = entry.get("key")
+                if isinstance(key, str) and key:
+                    parameters.append(
+                        SpecParameter(name=key, location="query")
+                    )
+    variables = url.get("variable")
+    if isinstance(variables, list):
+        for entry in variables:
+            if isinstance(entry, dict):
+                key = entry.get("key")
+                if isinstance(key, str) and key:
+                    parameters.append(
+                        SpecParameter(name=key, location="path")
+                    )
+    return parameters
+
+
+def _postman_header_parameters(request: dict) -> List[SpecParameter]:
+    """Best-effort header parameters from a Postman ``request.header`` list."""
+    parameters: List[SpecParameter] = []
+    headers = request.get("header")
+    if isinstance(headers, list):
+        for entry in headers:
+            if isinstance(entry, dict):
+                key = entry.get("key")
+                if isinstance(key, str) and key:
+                    parameters.append(
+                        SpecParameter(name=key, location="header")
+                    )
+    return parameters
+
+
+def _postman_request_body(request: dict) -> Optional[Dict[str, Any]]:
+    """Best-effort request body from a Postman ``request.body`` (raw JSON)."""
+    body = request.get("body")
+    if not isinstance(body, dict):
+        return None
+    if body.get("mode") == "raw":
+        raw = body.get("raw")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+    return None
+
+
+def import_postman_schema(doc: dict) -> SpecSchema:
+    """Postman analogue of :func:`import_schema` (best-effort enrichment).
+
+    Operations carry best-effort query/header parameters and a raw JSON request
+    body derived from each request definition; enum/example values are not
+    declared by Postman. ``seeds`` reuses the unchanged :func:`import_postman`,
+    so the ``(path, method)`` records are identical to today's extraction
+    (Req 50.6).
+    """
+    seeds = import_postman(doc)
+
+    operations: List[SpecOperation] = []
+
+    def walk(node_list) -> None:
+        for node in node_list:
+            if not isinstance(node, dict):
+                continue
+            request = node.get("request")
+            if isinstance(request, dict):
+                method = request.get("method", DEFAULT_METHOD)
+                url = request.get("url")
+                path = _postman_request_path(url)
+                if path:
+                    parameters = _postman_query_parameters(url)
+                    parameters.extend(_postman_header_parameters(request))
+                    operations.append(
+                        SpecOperation(
+                            path=path,
+                            method=_normalize_method(method),
+                            parameters=parameters,
+                            request_body_schema=_postman_request_body(request),
+                            security=[],
+                        )
+                    )
+            elif isinstance(request, str):
+                path = _postman_request_path(request)
+                if path:
+                    operations.append(
+                        SpecOperation(path=path, method=DEFAULT_METHOD)
+                    )
+            children = node.get("item")
+            if isinstance(children, list):
+                walk(children)
+
+    items = doc.get("item") if isinstance(doc, dict) else None
+    if isinstance(items, list):
+        walk(items)
+
+    return SpecSchema(operations=operations, security_schemes=[], seeds=seeds)
+
+
+# ===========================================================================
+# Unified Spec_Source loading: local file OR remote URL (Requirement 51)
+#
+# STRICTLY ADDITIVE. ``load_schema`` is the single entry point that accepts
+# either a local path or an http(s) URL and returns a :class:`SpecSchema`.
+# Remote documents are fetched through the shared ``HTTPRequestEngine`` so an
+# operator's rate-limit/proxy/TLS controls apply to spec retrieval exactly as
+# they do to discovery traffic (Reqs 51.1, 51.5). URL and file sources share
+# ONE parsing/dispatch path via the existing OpenAPI/Postman sniffers so the two
+# origins produce identical schemas (Req 51.3). The legacy symbols above are
+# untouched.
+# ===========================================================================
+
+
+def _is_spec_url(source: str) -> bool:
+    """True when ``source`` is a remote Spec_Source_URL rather than a local path.
+
+    A source is treated as a URL when it begins with ``http://`` or ``https://``
+    (Req 51.1); anything else is a local filesystem path (Req 51.2).
+    """
+    return isinstance(source, str) and (
+        source.startswith("http://") or source.startswith("https://")
+    )
+
+
+def _parse_spec_text(text: str, source: str) -> dict:
+    """Parse a spec document body as JSON, falling back to YAML.
+
+    Mirrors :func:`_parse_document`'s JSON-then-YAML strategy but operates on an
+    already-retrieved body (e.g. a fetched URL response). Raises
+    :class:`SpecImportError` naming ``source`` when the body is neither valid
+    JSON nor valid YAML, or is empty (Req 51.4).
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise SpecImportError(
+            f"Spec source '{source}' is not valid JSON or YAML: {exc}"
+        ) from exc
+
+    if parsed is None:
+        raise SpecImportError(f"Spec source '{source}' is empty")
+    return parsed
+
+
+async def _fetch_spec_document(url: str, http_engine) -> dict:
+    """Fetch and parse a remote Spec_Source_URL into a parsed document.
+
+    The document is retrieved by issuing a request through the shared
+    :class:`~utils.http_client.HTTPRequestEngine` so the operator's
+    rate-limit/proxy/TLS controls apply to spec retrieval as well (Reqs 51.1,
+    51.5). The response body is parsed as JSON with a YAML fallback via
+    :func:`_parse_spec_text`. A failed fetch (status ``0`` / non-2xx) or an
+    unparseable body raises :class:`SpecImportError` naming the URL rather than
+    crashing (Req 51.4).
+    """
+    if http_engine is None:
+        raise SpecImportError(
+            f"Cannot fetch spec source '{url}': no HTTP engine was provided"
+        )
+
+    try:
+        response = await http_engine.request("GET", url)
+    except Exception as exc:  # network/transport failure surfaces as a clean error
+        raise SpecImportError(
+            f"Cannot fetch spec source '{url}': {exc}"
+        ) from exc
+
+    if response is None or not getattr(response, "is_success", False):
+        status = getattr(response, "status_code", 0)
+        raise SpecImportError(
+            f"Cannot fetch spec source '{url}': HTTP status {status}"
+        )
+
+    return _parse_spec_text(response.text or "", url)
+
+
+async def load_schema(source: str, http_engine=None) -> SpecSchema:
+    """Load a Spec_Source (local file OR remote URL) into a :class:`SpecSchema`.
+
+    Unified entry point for enriched Spec_Import. When ``source`` is a
+    Spec_Source_URL the document is fetched through ``http_engine`` (required for
+    URLs) via :func:`_fetch_spec_document` (Reqs 51.1, 51.5); otherwise it is
+    read from disk via the existing :func:`_parse_document` routine (Req 51.2).
+    The parsed document is dispatched to :func:`import_schema` /
+    :func:`import_postman_schema` using the existing
+    :func:`_looks_like_openapi` / :func:`_looks_like_postman` sniffers so URL and
+    file sources share ONE parsing path (Req 51.3). An unrecognized or
+    unparseable document raises :class:`SpecImportError` naming the offending
+    source (Reqs 51.4, 49.4).
+    """
+    if _is_spec_url(source):
+        if http_engine is None:
+            raise SpecImportError(
+                f"Spec source '{source}' is a URL but no HTTP engine was "
+                "provided to fetch it"
+            )
+        doc = await _fetch_spec_document(source, http_engine)
+    else:
+        doc = _parse_document(source)
+
+    if not isinstance(doc, dict):
+        raise SpecImportError(
+            f"Spec source '{source}' is not a recognized OpenAPI/Swagger or "
+            "Postman document"
+        )
+
+    if _looks_like_openapi(doc):
+        return import_schema(doc)
+    if _looks_like_postman(doc):
+        return import_postman_schema(doc)
+
+    raise SpecImportError(
+        f"Spec source '{source}' is not a recognized OpenAPI/Swagger or "
+        "Postman document"
+    )

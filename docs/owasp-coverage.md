@@ -21,6 +21,34 @@ APILeak implements and registers all ten OWASP API Security Top 10 2023 categori
 
 **Legend**: ✅ Complete
 
+### Running the modules
+
+Every module can be invoked two ways:
+
+```bash
+# Isolated single-module run (recommended for focused red-team runs)
+python apileaks.py owasp <key> --target https://api.example.com
+
+# Orchestrated run — all modules by default, or a subset with --modules
+python apileaks.py scan --target https://api.example.com
+python apileaks.py scan --target https://api.example.com --modules bola,auth
+```
+
+| Key | OWASP Category | Summary |
+|-----|----------------|---------|
+| `bola` | API1 | Broken Object Level Authorization (BOLA) detection |
+| `auth` | API2 | Broken Authentication detection |
+| `property` | API3 | Broken Object Property Level Authorization detection |
+| `resource` | API4 | Unrestricted Resource Consumption detection |
+| `function_auth` | API5 | Broken Function Level Authorization detection |
+| `business_flow` | API6 | Unrestricted Access to Sensitive Business Flows detection |
+| `ssrf` | API7 | Server-Side Request Forgery (SSRF) detection |
+| `security_misconfig` | API8 | Security Misconfiguration detection |
+| `inventory` | API9 | Improper Inventory Management detection |
+| `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+
+> `full` and `main` are deprecated, hidden aliases of `scan` and should not be used in new examples. Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
+
 ## Detailed Module Information
 
 ### API1: Broken Object Level Authorization (BOLA) ✅
@@ -39,8 +67,10 @@ BOLA vulnerabilities occur when APIs fail to properly validate that users can on
 
 **Example Usage**:
 ```bash
-python apileaks.py full --target https://api.example.com --modules bola
+python apileaks.py owasp bola --target https://api.example.com
 ```
+
+See the full command reference, advanced probes, configuration, and finding categories in **[BOLA Testing (API1)](owasp/bola-testing.md)**.
 
 ### API2: Broken Authentication ✅
 **Status**: Complete  
@@ -58,7 +88,7 @@ Authentication vulnerabilities allow attackers to compromise authentication toke
 
 **Example Usage**:
 ```bash
-python apileaks.py full --target https://api.example.com --modules auth --jwt "your-jwt-token"
+python apileaks.py owasp auth --target https://api.example.com --jwt "your-jwt-token"
 ```
 
 ### API3: Broken Object Property Level Authorization ✅
@@ -77,7 +107,7 @@ Property-level authorization vulnerabilities occur when APIs expose sensitive ob
 
 **Example Usage**:
 ```bash
-python apileaks.py full --target https://api.example.com --modules property
+python apileaks.py owasp property --target https://api.example.com
 ```
 
 ### API4: Unrestricted Resource Consumption ✅
@@ -176,18 +206,23 @@ Unsafe API consumption vulnerabilities occur when APIs blindly trust data from t
 
 ### Enabling OWASP Modules
 
-You can enable specific OWASP modules using the `--modules` flag:
+You can enable specific OWASP modules using the `--modules` flag on `scan`, or run one module in isolation with the `owasp` group:
 
 ```bash
-# Enable specific modules
-python apileaks.py full --target https://api.example.com --modules bola,auth,property
+# Enable specific modules (orchestrated scan)
+python apileaks.py scan --target https://api.example.com --modules bola,auth,property
 
-# Enable all available modules
-python apileaks.py full --target https://api.example.com --modules all
+# Run all available modules (all are enabled by default)
+python apileaks.py scan --target https://api.example.com
+
+# Run a single module in isolation
+python apileaks.py owasp bola --target https://api.example.com
 
 # Enable modules via configuration file
-python apileaks.py full --config config/owasp_config.yaml --target https://api.example.com
+python apileaks.py scan --config config/owasp_config.yaml --target https://api.example.com
 ```
+
+> **Note:** `full` and `main` are deprecated, hidden aliases of `scan` (still functional, but they emit a stderr notice). Prefer `scan` for orchestrated runs and `apileaks owasp <key>` for single-module runs — e.g. `full --modules bola` → `apileaks owasp bola`.
 
 ### Configuration File Example
 
@@ -219,7 +254,7 @@ OWASP modules automatically adapt their testing strategies based on detected API
 
 ```bash
 # Combine OWASP testing with framework detection
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --detect-framework \
@@ -231,7 +266,7 @@ OWASP modules integrate with WAF evasion techniques:
 
 ```bash
 # OWASP testing with WAF evasion
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules bola,auth,property \
   --user-agent-random \
@@ -250,17 +285,16 @@ OWASP findings are automatically categorized and included in all report formats:
 
 ### 1. Comprehensive Testing
 ```bash
-# Run all available OWASP modules
-python apileaks.py full \
+# Run all available OWASP modules (all enabled by default)
+python apileaks.py scan \
   --target https://api.example.com \
-  --modules all \
   --output comprehensive_owasp_scan
 ```
 
 ### 2. Targeted Testing
 ```bash
 # Focus on authentication vulnerabilities
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --modules auth,bola \
   --jwt "your-jwt-token" \
@@ -270,7 +304,7 @@ python apileaks.py full \
 ### 3. CI/CD Integration
 ```bash
 # OWASP testing in CI/CD pipelines
-python apileaks.py --no-banner full \
+python apileaks.py --no-banner scan \
   --target $API_TARGET \
   --modules bola,auth,property \
   --json-logs \

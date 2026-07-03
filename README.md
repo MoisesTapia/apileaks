@@ -1,10 +1,10 @@
-# APILeak v0.1.0 [Beta][DEVELOPMENT]
+# APILeak v0.2.0 [Beta][DEVELOPMENT]
 
 <div align="center">
-  <img src="images/logo_apileaks.png" alt="APILeak Logo" width="500"/>
+  <img src="images/apileaks_logo.png" alt="APILeak Logo" width="500"/>
 </div>
 
-## APILeak v0.1.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+## APILeak v0.2.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
 
 **Enterprise-grade API security testing tool with comprehensive OWASP API Security Top 10 2023 coverage.**
 
@@ -25,9 +25,23 @@ make setup-dev
 source venv/bin/activate  # Linux/macOS
 # venv\Scripts\activate   # Windows
 
-# Run your first scan
-python apileaks.py --config config/sample_config.yaml --target https://api.example.com
+# Run your first orchestrated scan (all OWASP modules)
+python apileaks.py scan --target https://api.example.com
 ```
+
+### Command overview
+
+APILeak's CLI is organized into four families:
+
+| Command | Purpose |
+|---------|---------|
+| `dir` | Directory/endpoint fuzzing and discovery (with triage) |
+| `par` | Parameter fuzzing — discover hidden parameters |
+| `owasp <module>` | Run **one** OWASP API Security Top 10 module in isolation |
+| `scan` | Orchestrated scan — runs discovery + all (or selected) OWASP modules and aggregates findings |
+| `jwt <subcommand>` | Manual JWT attack & utility toolkit (13 subcommands) |
+
+> **Deprecation:** the legacy `full` command (and the hidden `main`) still work but are deprecated aliases of `scan`. They emit a one-line notice to stderr and behave identically. Migrate scripts to `scan`. Selecting modules through `full --modules bola` is deprecated in favor of `apileaks owasp bola`.
 
 ### Basic Usage Examples
 
@@ -46,14 +60,21 @@ python apileaks.py dir --target https://api.example.com \
 # Parameter fuzzing
 python apileaks.py par --target https://api.example.com
 
-# Full security scan
-python apileaks.py full --target https://api.example.com
+# List every OWASP module (key, category, one-line summary)
+python apileaks.py owasp
+
+# Run a single OWASP module in isolation (red-team focus)
+python apileaks.py owasp bola --target https://api.example.com
+python apileaks.py owasp auth --target https://api.example.com
+
+# Full orchestrated scan across every registered OWASP module (blue-team / CI)
+python apileaks.py scan --target https://api.example.com
+
+# Restrict the orchestrated scan to selected modules
+python apileaks.py scan --target https://api.example.com --modules bola,auth,property
 
 # With WAF evasion
-python apileaks.py full --target https://api.example.com --user-agent-random
-
-# With OWASP modules
-python apileaks.py full --target https://api.example.com --modules bola,auth,property
+python apileaks.py scan --target https://api.example.com --user-agent-random
 ```
 
 For comprehensive usage examples, see the [Usage Examples](docs/usage-examples.md) documentation.
@@ -101,13 +122,13 @@ Comprehensive API version mapping and security analysis:
 
 ```bash
 # Enable framework detection
-python apileaks.py full --target https://api.example.com --detect-framework
+python apileaks.py scan --target https://api.example.com --detect-framework
 
 # Enable version fuzzing
-python apileaks.py full --target https://api.example.com --fuzz-versions
+python apileaks.py scan --target https://api.example.com --fuzz-versions
 
 # Combined advanced discovery
-python apileaks.py full --target https://api.example.com --df --fv --framework-confidence 0.8
+python apileaks.py scan --target https://api.example.com --df --fv --framework-confidence 0.8
 ```
 
 

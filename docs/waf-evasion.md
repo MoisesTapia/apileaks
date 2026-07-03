@@ -79,7 +79,7 @@ python apileaks.py par \
   --methods GET,POST
 
 # Random user agents with full scan
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --modules bola,auth,property
@@ -98,7 +98,7 @@ python apileaks.py par \
   --user-agent-custom "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 # Use a legitimate tool user agent
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-custom "curl/8.4.0" \
   --modules bola,auth
@@ -111,12 +111,11 @@ python apileaks.py dir \
   --target https://api.example.com \
   --user-agent-file wordlists/user_agents.txt
 
-# Advanced evasion with custom user agent list
-python apileaks.py full \
+# Advanced evasion with custom user agent list (all modules run by default)
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-file custom_agents.txt \
-  --rate-limit 5 \
-  --modules all
+  --rate-limit 5
 ```
 
 ## User Agent File Format
@@ -150,7 +149,7 @@ APILeak automatically varies request timing to avoid pattern detection:
 
 ```bash
 # Use adaptive rate limiting with user agent rotation
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --rate-limit 8 \
@@ -186,7 +185,7 @@ WAF evasion works seamlessly with framework detection:
 
 ```bash
 # Combine WAF evasion with framework detection
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --detect-framework \
@@ -210,7 +209,7 @@ Integrate WAF evasion with OWASP security testing:
 
 ```bash
 # OWASP testing with WAF evasion
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-file custom_agents.txt \
   --modules bola,auth,property \
@@ -247,7 +246,7 @@ docker run --rm \
 docker run --rm \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/reports:/app/reports \
-  apileak:latest full \
+  apileak:latest scan \
   --config config/api_config.yaml \
   --target https://api.example.com \
   --user-agent-random \
@@ -278,7 +277,7 @@ python apileaks.py --no-banner par \
   --output ci_param_waf_scan
 
 # Jenkins with user agent file rotation
-python apileaks.py --no-banner full \
+python apileaks.py --no-banner scan \
   --target $API_TARGET \
   --user-agent-file wordlists/user_agents.txt \
   --status-code 200,401,403,500 \
@@ -330,7 +329,7 @@ export APILEAK_RATE_LIMIT="10"
 ### 1. Respect Rate Limits
 ```bash
 # Always use appropriate rate limiting
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-random \
   --rate-limit 5 \
@@ -350,7 +349,7 @@ python apileaks.py dir \
 ### 3. Vary Testing Patterns
 ```bash
 # Combine different evasion techniques
-python apileaks.py full \
+python apileaks.py scan \
   --target https://api.example.com \
   --user-agent-file custom_agents.txt \
   --methods GET,POST \

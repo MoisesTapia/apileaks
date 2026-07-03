@@ -151,7 +151,7 @@ docker-run-full: ## Ejecutar escaneo completo en Docker
 		-v $(PWD)/config:/app/config \
 		-v $(PWD)/reports:/app/reports \
 		-v $(PWD)/wordlists:/app/wordlists \
-		apileak:latest full \
+		apileak:latest scan \
 		--target $(TARGET) \
 		--output docker-full-scan
 
@@ -166,4 +166,4 @@ docker-compose-scan: ## Ejecutar escaneo con docker-compose
 		echo "Error: Especifica TARGET=https://api.example.com"; \
 		exit 1; \
 	fi
-	APILEAK_TARGET=$(TARGET) docker-compose run --rm apileak full
+	APILEAK_TARGET=$(TARGET) docker-compose run --rm apileak scan

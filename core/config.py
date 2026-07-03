@@ -4,10 +4,11 @@ Handles YAML/JSON configuration with Pydantic validation
 """
 
 import os
+import re
 import yaml
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Set, Union, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pydantic import BaseModel, ValidationError, validator
 from enum import Enum
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     # ``path_scope``/``storage_status`` fields below default to ``None`` and are
     # populated later by the CLI (subtask 38.4), so no runtime import is needed.
     from utils.discovery_scope import PathScope, RecursionScope, StorageStatusSelection
+    from utils.spec_import import SpecSchema
 
 logger = get_logger(__name__)
 
@@ -98,6 +100,16 @@ class EndpointFuzzingConfig:
     # normalized candidate path. These extend the per-path method set for spec
     # seeds; brute-force entries keep ``methods`` (Requirement 25.3).
     seed_methods: Dict[str, List[str]] = field(default_factory=dict)
+    # Fuzz_Marker keyword substituted in the target for marker-mode discovery
+    # (Requirement 39.1). Defaults to "FUZZ"; the CLI validates/overrides it.
+    fuzz_keyword: str = "FUZZ"
+    # Marker combination strategy across multiple Fuzz_Markers (Requirement
+    # 43.1). "clusterbomb" (the default) takes the cartesian product of the
+    # per-marker wordlists; "pitchfork" iterates them in lock-step.
+    fuzz_mode: str = "clusterbomb"
+    # Per-marker wordlists in marker order (Requirement 39/43). ``None`` means no
+    # marker mode is configured, preserving the wordlist/candidate_set paths.
+    marker_wordlists: Optional[List[List[str]]] = None
 
 
 @dataclass
@@ -107,6 +119,34 @@ class ParameterFuzzingConfig:
     query_wordlist: str = "wordlists/parameters.txt"
     body_wordlist: str = "wordlists/parameters.txt"
     boundary_testing: bool = True
+    # HTTP methods that drive injection-point selection (Requirement 6.1). The
+    # fuzzer derives query fuzzing from query-carrying methods (GET/DELETE) and
+    # body fuzzing from body-carrying methods (POST/PUT/PATCH). Defaults to
+    # ["GET", "POST"] so both injection points run by default.
+    methods: List[str] = field(default_factory=lambda: ["GET", "POST"])
+    # Hit_Confirmation retest count (Requirement 5.1). None/0 => confirmation is
+    # disabled and candidates are reported immediately; >=1 => the candidate is
+    # re-tested N additional times (default 2 when enabled) and only reported if
+    # every retest reproduces the signal.
+    confirm_hits: Optional[int] = None
+    # Request_Budget upper bound (Requirement 11.1/11.5). None => unbounded; when
+    # set, the total number of HTTP requests issued by the run must never exceed
+    # this value.
+    max_requests: Optional[int] = None
+    # In-memory merged/deduped query candidate set (Requirement 10.1/10.2). When
+    # not None, it overrides the ``query_wordlist`` file for query fuzzing.
+    query_candidates: Optional[List[str]] = None
+    # In-memory merged/deduped body candidate set (Requirement 10.1/10.2). When
+    # not None, it overrides the ``body_wordlist`` file for body fuzzing.
+    body_candidates: Optional[List[str]] = None
+    # Marker_Mode fields (identical shape to EndpointFuzzingConfig, Requirements
+    # 1.1, 5.1, 7.1). All three are optional/defaulted so existing construction
+    # calls are unaffected. ``marker_wordlists is None`` is the
+    # Name_Discovery_Mode sentinel that keeps the existing query/body fuzzing
+    # path untouched (R2.1).
+    fuzz_keyword: str = "FUZZ"
+    fuzz_mode: str = "clusterbomb"
+    marker_wordlists: Optional[List[List[str]]] = None
 
 
 @dataclass
@@ -171,6 +211,29 @@ class FuzzingConfig:
     # candidates are re-requested ``count`` times and only recorded when the
     # responses are consistent (35.2-35.6).
     hit_confirmation: HitConfirmationConfig = field(default_factory=HitConfirmationConfig)
+    # Response matchers/filters (Requirement 12.1-12.3). Shared with the ``dir``
+    # selection pipeline: these are the SAME ``ResponseSelector`` objects
+    # produced by ``utils.response_selector.parse_selectors`` that ``dir`` builds
+    # from its ``--match-*``/``--filter-*`` flags. The ``par`` command threads
+    # its parsed selectors through ``config_dict['fuzzing']['matchers']`` /
+    # ``['filters']`` so parameter findings are narrowed by the identical
+    # matcher-before-filter code path (retain every matcher, then exclude any
+    # filter). Both default to empty lists so, when no selectors are supplied
+    # (and for dir/scan/full, which never thread them here), selection is a
+    # no-op and behavior is unchanged (Requirement 2 preservation).
+    matchers: List[Any] = field(default_factory=list)
+    filters: List[Any] = field(default_factory=list)
+    # Machine-readable output settings for ``par`` findings (Requirement 12.5,
+    # 12.6). Shared with the ``dir`` machine-output surface: ``par`` threads its
+    # ``--output-format``/``--output-file`` selections through
+    # ``config_dict['fuzzing']['output_format']`` / ``['output_file']`` so the
+    # engine writes parameter findings (including their detection-signal fields)
+    # through the same CSV/JSON Lines machine writer. Both default to None so,
+    # when no machine output is requested (and for dir/scan/full, which never
+    # thread them here), no file is written and behavior is unchanged
+    # (Requirement 2 preservation).
+    output_format: Optional[str] = None
+    output_file: Optional[str] = None
 
 
 @dataclass
@@ -179,6 +242,32 @@ class BOLAConfig:
     enabled: bool = True
     id_patterns: List[str] = field(default_factory=lambda: ["sequential", "guid", "uuid"])
     test_contexts: List[str] = field(default_factory=lambda: ["anonymous", "user", "admin"])
+    # Upper bound for ownership-aware id enumeration (Requirement 4.2). Bounds the
+    # sequential-id range probed by enumeration so it stays well-scoped; defaults
+    # to 25 to preserve a modest, safe enumeration window.
+    enumeration_bound: int = 25
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
+    # Advanced BOLA hardening options (Requirement 34). All default to the
+    # current read-only behavior so existing YAML configs that omit these fields
+    # load unchanged and resolve to safe defaults (Requirement 34.5).
+    #   allow_destructive: gate for issuing destructive verbs; off by default (34.2).
+    #   destructive_methods: verbs treated as destructive when allow_destructive
+    #     is enabled. DELETE is intentionally excluded from the default set (34.2).
+    #   enable_composite / enable_id_leakage: opt-in advanced probes, off by
+    #     default (34.2).
+    #   verb_tampering / parameter_pollution: opt-in tampering techniques, off by
+    #     default (34.2).
+    #   dry_run: when True, plan destructive actions without issuing them.
+    allow_destructive: bool = False
+    destructive_methods: Set[str] = field(default_factory=lambda: {"PATCH", "PUT"})
+    enable_composite: bool = False
+    enable_id_leakage: bool = False
+    verb_tampering: bool = False
+    parameter_pollution: bool = False
+    dry_run: bool = False
 
 
 @dataclass
@@ -188,6 +277,62 @@ class AuthTestingConfig:
     jwt_testing: bool = True
     weak_secrets_wordlist: str = "wordlists/jwt_secrets.txt"
     test_logout_invalidation: bool = True
+    # Operator-supplied public key material used for the JWT algorithm-confusion
+    # attack (Requirement 6.1). When provided, it is preferred over fetching a
+    # JWKS. Defaults to None so no placeholder key is ever used.
+    public_key_material: Optional[str] = None
+    # JWKS endpoint URL used to fetch RSA public key material for algorithm
+    # confusion when no key material is supplied directly (Requirement 6.2).
+    jwks_url: Optional[str] = None
+    # Known signing secret used to construct a validly-signed-but-expired token
+    # for expiration testing (Requirement 8.1). Defaults to None so the test is
+    # skipped (and logged) when no signing key is known.
+    signing_secret: Optional[str] = None
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False.
+    safe_mode: bool = False
+    # Advanced authentication hardening options (Requirements 46.1, 26.1, 26.3).
+    # Every default below preserves the current behavior: no aggressive or
+    # state-changing probes run, and no operator-input-driven probes are issued.
+    # Existing YAML configs that omit these fields load unchanged and resolve to
+    # these safe defaults.
+    #   allow_aggressive: opt-in gate for aggressive probes (e.g. rate-limit /
+    #     revocation-race testing); off by default (26.1).
+    #   allow_destructive: opt-in gate for state-changing probes; off by
+    #     default (26.1).
+    #   rate_limit_attempts: number of attempts used by rate-limit probes when
+    #     aggressive testing is enabled.
+    #   revocation_race_requests: number of concurrent requests used by
+    #     token-revocation race probes when aggressive testing is enabled.
+    #   benign_username: operator-supplied benign account username used by
+    #     input-driven probes; None means no such probe runs (26.3).
+    #   mfa_flow_inputs / oauth_flow_inputs: operator-supplied flow inputs for
+    #     MFA / OAuth probes; None means those probes are skipped (26.3).
+    #   reset_token_samples / reset_token_known_inputs: operator-supplied
+    #     password-reset token samples / known inputs; None means reset-token
+    #     analysis is skipped (26.3).
+    allow_aggressive: bool = False
+    allow_destructive: bool = False
+    rate_limit_attempts: int = 10
+    revocation_race_requests: int = 8
+    benign_username: Optional[str] = None
+    mfa_flow_inputs: Optional[dict] = None
+    oauth_flow_inputs: Optional[dict] = None
+    reset_token_samples: Optional[List[str]] = None
+    reset_token_known_inputs: Optional[List[str]] = None
+    # JWT-complement hardening options (Requirements 59.1, 62.1, 67.3, 26.3).
+    # All defaults preserve existing behavior so YAML configs that omit these
+    # fields load unchanged and resolve to these safe, opt-in defaults.
+    #   token_lifetime_threshold: upper bound (in seconds) above which a JWT
+    #     lifetime is treated as excessively long (Requirement 59.1). Defaults
+    #     to 3600 (one hour).
+    #   ecdsa_algorithms: ECDSA algorithms considered when analyzing ES-signed
+    #     tokens (Requirement 62.1). Defaults to the standard ES256/ES384/ES512.
+    #   canary_value: operator-supplied canary string used by input-driven
+    #     probes; None means no canary-based probe runs (Requirement 67.3, 26.3).
+    token_lifetime_threshold: int = 3600
+    ecdsa_algorithms: List[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
+    canary_value: Optional[str] = None
 
 
 @dataclass
@@ -200,6 +345,9 @@ class PropertyTestingConfig:
     mass_assignment_fields: List[str] = field(default_factory=lambda: [
         "is_admin", "role", "permissions", "user_id"
     ])
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False.
+    safe_mode: bool = False
 
 
 @dataclass
@@ -281,6 +429,259 @@ class OWASPConfig:
     security_misconfig_testing: SecurityMisconfigConfig = field(default_factory=SecurityMisconfigConfig)
     inventory_testing: InventoryConfig = field(default_factory=InventoryConfig)
     unsafe_consumption_testing: UnsafeConsumptionConfig = field(default_factory=UnsafeConsumptionConfig)
+    # Optional Spec_Schema merged from the repeatable ``--openapi`` / ``--postman``
+    # sources supplied to the ``full`` command (Requirement 49.2). Defaults to
+    # ``None`` and is NOT sourced from YAML by ``_build_owasp_config``, so
+    # existing configuration files load unchanged (Requirement 49.3). The CLI
+    # attaches the merged schema post-load so the OWASP modules can test the
+    # declared Spec_Operations in addition to discovered endpoints.
+    spec_schema: Optional["SpecSchema"] = None
+
+
+@dataclass
+class ActorProfile:
+    """Per-identity typed inputs keyed by endpoint (Requirement 54.1).
+
+    An Actor_Profile carries the realistic per-actor inputs a specific
+    :class:`AuthContext` should use when the OWASP modules issue requests under
+    that identity, in addition to the token carried by ``--auth-context``. Both
+    maps are keyed by endpoint (path) so a module can look up the values for the
+    endpoint it is about to request:
+
+    - ``query``: ``endpoint -> {param: value}`` query-string values.
+    - ``body``:  ``endpoint -> {field: value}`` request-body values.
+
+    Consumption (merging the values into requests) is handled by subtask 47.2;
+    this model and its loader only make the inputs available.
+    """
+    context_name: str                                                  # matches AuthContext.name
+    query: Dict[str, Dict[str, Any]] = field(default_factory=dict)      # endpoint -> {param: value}
+    body: Dict[str, Dict[str, Any]] = field(default_factory=dict)       # endpoint -> {field: value}
+
+
+def load_actor_profiles(source: str) -> Dict[str, ActorProfile]:
+    """Parse a JSON/YAML Actor_Profile source into ``{context_name: ActorProfile}``.
+
+    The source is a JSON or YAML document (dispatched on the file suffix, with a
+    JSON-then-YAML fallback for unrecognized suffixes) whose top level maps each
+    Auth_Context name to a profile object carrying optional ``query`` and
+    ``body`` maps (Requirement 54.1)::
+
+        {
+          "alice": {
+            "query": {"/api/orders": {"tenant": "acme"}},
+            "body":  {"/api/orders": {"owner": "alice"}}
+          },
+          "bob": {"body": {"/api/orders": {"owner": "bob"}}}
+        }
+
+    Returns a mapping keyed by ``context_name`` so the CLI can attach each
+    profile to the matching :class:`AuthContext`.
+
+    Raises a descriptive :class:`ValueError` that names the offending ``source``
+    whenever the file is missing, cannot be parsed, or is not shaped as
+    described, so the caller can abort BEFORE any request is issued
+    (Requirement 54.5).
+    """
+    profile_file = Path(source)
+    if not profile_file.exists():
+        raise ValueError(f"Actor profile source '{source}' does not exist")
+
+    try:
+        raw_text = profile_file.read_text(encoding='utf-8')
+    except OSError as exc:
+        raise ValueError(f"Actor profile source '{source}' cannot be read: {exc}") from exc
+
+    suffix = profile_file.suffix.lower()
+    try:
+        if suffix in ('.yaml', '.yml'):
+            data = yaml.safe_load(raw_text)
+        elif suffix == '.json':
+            data = json.loads(raw_text)
+        else:
+            # Unknown/absent suffix: try JSON first (a strict subset of YAML),
+            # then fall back to YAML so both formats are accepted.
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError:
+                data = yaml.safe_load(raw_text)
+    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Actor profile source '{source}' could not be parsed: {exc}") from exc
+
+    if data is None:
+        raise ValueError(
+            f"Actor profile source '{source}' is empty; expected a mapping of "
+            f"context name to a profile with optional 'query'/'body' maps"
+        )
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Actor profile source '{source}' must be a mapping of context name "
+            f"to a profile object (got {type(data).__name__})"
+        )
+
+    profiles: Dict[str, ActorProfile] = {}
+    for context_name, profile_data in data.items():
+        if not isinstance(context_name, str):
+            raise ValueError(
+                f"Actor profile source '{source}' has a non-string context name: "
+                f"{context_name!r}"
+            )
+        if not isinstance(profile_data, dict):
+            raise ValueError(
+                f"Actor profile source '{source}' entry for context "
+                f"'{context_name}' must be a mapping with optional 'query'/'body' "
+                f"maps (got {type(profile_data).__name__})"
+            )
+
+        query = profile_data.get('query', {}) or {}
+        body = profile_data.get('body', {}) or {}
+        for section_name, section in (('query', query), ('body', body)):
+            if not isinstance(section, dict):
+                raise ValueError(
+                    f"Actor profile source '{source}' '{section_name}' for context "
+                    f"'{context_name}' must map an endpoint to a {{name: value}} "
+                    f"object (got {type(section).__name__})"
+                )
+            for endpoint, values in section.items():
+                if not isinstance(values, dict):
+                    raise ValueError(
+                        f"Actor profile source '{source}' '{section_name}' for "
+                        f"context '{context_name}' endpoint '{endpoint}' must be a "
+                        f"{{name: value}} object (got {type(values).__name__})"
+                    )
+
+        profiles[context_name] = ActorProfile(
+            context_name=context_name,
+            query=query,
+            body=body,
+        )
+
+    return profiles
+
+
+@dataclass
+class UnauthorizedEndpointAssertion:
+    """Operator-declared expectation that a set of endpoints are forbidden for
+    an identity (Requirement 55.1).
+
+    An Unauthorized_Endpoint_Assertion is scoped to a specific
+    :class:`AuthContext` (by ``context_name``) and declares one or more endpoint
+    ``patterns`` (regular expressions) that SHOULD be forbidden for that
+    identity. The relevant OWASP module later calibrates whether the context is
+    actually granted access to a matching endpoint and, if so, reports a
+    broken-access-control finding (Requirement 55.2); evaluation is handled by a
+    later subtask, this model and its loader only make the assertions available.
+    """
+    context_name: str                       # matches AuthContext.name
+    patterns: List[str] = field(default_factory=list)  # endpoint regular expressions
+
+
+def load_unauthorized_assertions(source: str) -> Dict[str, List["re.Pattern"]]:
+    """Parse an Unauthorized_Endpoint_Assertion source into per-context patterns.
+
+    The source is a JSON or YAML document (dispatched on the file suffix, with a
+    JSON-then-YAML fallback for unrecognized suffixes) whose top level maps each
+    Auth_Context name to one or more endpoint-pattern regular expressions
+    (Requirement 55.1)::
+
+        {
+          "alice": ["^/admin", "/api/secret/.*"],
+          "bob":   ["^/internal/"]
+        }
+
+    A single string is accepted as shorthand for a one-element list. Returns a
+    mapping keyed by ``context_name`` to the list of COMPILED regex patterns so
+    the CLI can attach the assertions to the matching :class:`AuthContext` and
+    the OWASP modules can match endpoints directly.
+
+    Raises a descriptive :class:`ValueError` that names the offending ``source``
+    whenever the file is missing, cannot be parsed, is not shaped as described,
+    or contains a pattern that fails to compile, so the caller can abort BEFORE
+    any request is issued (consistent with Requirement 54.5 and Requirement
+    55.1).
+    """
+    assertion_file = Path(source)
+    if not assertion_file.exists():
+        raise ValueError(f"Unauthorized assertion source '{source}' does not exist")
+
+    try:
+        raw_text = assertion_file.read_text(encoding='utf-8')
+    except OSError as exc:
+        raise ValueError(
+            f"Unauthorized assertion source '{source}' cannot be read: {exc}"
+        ) from exc
+
+    suffix = assertion_file.suffix.lower()
+    try:
+        if suffix in ('.yaml', '.yml'):
+            data = yaml.safe_load(raw_text)
+        elif suffix == '.json':
+            data = json.loads(raw_text)
+        else:
+            # Unknown/absent suffix: try JSON first (a strict subset of YAML),
+            # then fall back to YAML so both formats are accepted.
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError:
+                data = yaml.safe_load(raw_text)
+    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Unauthorized assertion source '{source}' could not be parsed: {exc}"
+        ) from exc
+
+    if data is None:
+        raise ValueError(
+            f"Unauthorized assertion source '{source}' is empty; expected a "
+            f"mapping of context name to a list of endpoint pattern regular "
+            f"expressions"
+        )
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Unauthorized assertion source '{source}' must be a mapping of "
+            f"context name to endpoint pattern regular expressions "
+            f"(got {type(data).__name__})"
+        )
+
+    assertions: Dict[str, List["re.Pattern"]] = {}
+    for context_name, raw_patterns in data.items():
+        if not isinstance(context_name, str):
+            raise ValueError(
+                f"Unauthorized assertion source '{source}' has a non-string "
+                f"context name: {context_name!r}"
+            )
+
+        # A single string is shorthand for a one-element pattern list.
+        if isinstance(raw_patterns, str):
+            pattern_list = [raw_patterns]
+        elif isinstance(raw_patterns, list):
+            pattern_list = raw_patterns
+        else:
+            raise ValueError(
+                f"Unauthorized assertion source '{source}' entry for context "
+                f"'{context_name}' must be a string or a list of endpoint "
+                f"pattern regular expressions (got {type(raw_patterns).__name__})"
+            )
+
+        compiled: List["re.Pattern"] = []
+        for pattern in pattern_list:
+            if not isinstance(pattern, str):
+                raise ValueError(
+                    f"Unauthorized assertion source '{source}' pattern for "
+                    f"context '{context_name}' must be a string (got "
+                    f"{type(pattern).__name__})"
+                )
+            try:
+                compiled.append(re.compile(pattern))
+            except re.error as exc:
+                raise ValueError(
+                    f"Unauthorized assertion source '{source}' has an invalid "
+                    f"regular expression for context '{context_name}': "
+                    f"{pattern!r} ({exc})"
+                ) from exc
+
+        assertions[context_name] = compiled
+
+    return assertions
 
 
 @dataclass
@@ -293,6 +694,8 @@ class AuthContext:
     password: Optional[str] = None
     headers: Dict[str, str] = field(default_factory=dict)
     privilege_level: int = 1
+    actor_profile: Optional["ActorProfile"] = None
+    unauthorized_patterns: Optional[List["re.Pattern"]] = None
 
 
 @dataclass
@@ -605,6 +1008,19 @@ class ConfigurationManager:
         endpoints_data = data.get('endpoints', {})
         endpoints = EndpointFuzzingConfig(**endpoints_data)
         
+        # Map ``fuzzing.parameters.*`` into the extended ParameterFuzzingConfig
+        # (Requirements 11.4, 12.4; design §4). The dataclass was extended in
+        # task 4.1 with defaulted fields ``methods``, ``confirm_hits``,
+        # ``max_requests``, ``query_candidates`` and ``body_candidates`` in
+        # addition to the original ``enabled``/``query_wordlist``/
+        # ``body_wordlist``/``boundary_testing`` fields. The ``**params_data``
+        # unpacking maps every key the CLI threads under this path
+        # (apileaks.py::par writes methods/confirm_hits/max_requests/
+        # query_candidates/body_candidates) onto the matching dataclass field;
+        # any key the CLI omits falls back to the field's default. This is the
+        # single mapping site, so ``validate_configuration()`` (invoked by the
+        # CLI immediately after ``load_config_from_dict`` and before any request)
+        # always runs against the fully-populated config.
         params_data = data.get('parameters', {})
         parameters = ParameterFuzzingConfig(**params_data)
         
@@ -645,7 +1061,20 @@ class ConfigurationManager:
             # when absent so recursion uses its default eligibility (Req 34.3, 34.4).
             recursion_scope=data.get('recursion_scope'),
             # Hit_Confirmation built above; defaults to disabled (Req 35.1, 35.6).
-            hit_confirmation=hit_confirmation
+            hit_confirmation=hit_confirmation,
+            # Response matchers/filters threaded in by the ``par`` CLI
+            # (Requirements 12.1-12.3). These are the parsed ``ResponseSelector``
+            # objects from ``parse_selectors``; both default to empty lists when
+            # absent so parameter-finding selection is a no-op unless selectors
+            # were supplied, and dir/scan/full are unaffected.
+            matchers=data.get('matchers', []),
+            filters=data.get('filters', []),
+            # Machine-readable output settings threaded in by the ``par`` CLI
+            # (Requirements 12.5, 12.6). Both default to None when absent so no
+            # machine output is written unless the operator requested it, and
+            # dir/scan/full are unaffected.
+            output_format=data.get('output_format'),
+            output_file=data.get('output_file'),
         )
     
     def _build_secret_scan_config(self, data: Dict[str, Any]) -> SecretScanConfig:

@@ -4,13 +4,24 @@ Aggregates and manages security findings from all modules
 """
 
 from typing import List, Dict, Any, Optional, Set, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
 import hashlib
 
 from core.logging import get_logger
 from core.config import Severity
+
+
+class FindingClassificationError(ValueError):
+    """
+    Raised when a Finding_Category emitted by one of the hardened
+    capabilities (BOLA / Auth / JWT / Property-Level) fails to resolve to a
+    defined Severity or an in-scope OWASP_Category.
+
+    This makes a classification gap a detectable/asserted condition rather
+    than a silent default (Req 22.1, 22.2, 22.3, 22.4, 26.1).
+    """
 
 
 @dataclass
@@ -30,8 +41,23 @@ class Finding:
     recommendation: str
     payload: Optional[str] = None
     response_snippet: Optional[str] = None
+    # Advanced BOLA findings (Reqs 27, 29-32) attach a structured Evidence_Chain
+    # and a Confidence_Score (Req 33.1, 33.2). Typed as Any to avoid a circular
+    # import of the EvidenceChain dataclass (defined in the BOLA module); the
+    # attached object is an ``EvidenceChain`` whose response snippet is always
+    # passed through ``redact_secrets`` before storage (Req 33.3).
+    evidence_chain: Optional[Any] = None
+    confidence: Optional[str] = None
     headers: Dict[str, str] = None
     timestamp: datetime = None
+    # Parameter-fuzzing detection-signal fields (R3.5/R4.2/R5). All defaulted
+    # so existing Finding construction sites and other commands are unaffected
+    # (behavior preservation, R2).
+    detection_signal: Optional[str] = None            # R3.5/R4.2: e.g. "reflection", "new_json_field", "status_code"
+    detection_signals: List[str] = field(default_factory=list)  # all signals that fired
+    reflection_location: Optional[str] = None         # R3.5: "body" | "header"
+    new_json_fields: Optional[List[str]] = None        # R4.2: absent-in-baseline keys detected
+    confirmation_status: Optional[str] = None          # R5: "confirmed" | "excluded_failed_retest" | None
     
     def __post_init__(self):
         if self.headers is None:
@@ -99,7 +125,104 @@ class FindingsCollector:
         # Info - informational findings
         "ENDPOINT_DISCOVERED": Severity.INFO,
         "FRAMEWORK_DETECTED": Severity.INFO,
-        "API_VERSION_FOUND": Severity.INFO
+        "API_VERSION_FOUND": Severity.INFO,
+
+        # ------------------------------------------------------------------
+        # Hardened-capability categories (Req 22.1, 22.3) - BOLA / Auth /
+        # JWT / Property-Level. Every category emitted by these four
+        # capabilities resolves to a concrete severity (strict resolution).
+        # ------------------------------------------------------------------
+        # API1 - BOLA (Broken Object Level Authorization)
+        # NOTE: "BOLA_ANONYMOUS_ACCESS" is defined above as CRITICAL.
+        "BOLA_HORIZONTAL_ESCALATION": Severity.CRITICAL,
+        "BOLA_OBJECT_ACCESS": Severity.HIGH,
+        "BOLA_ID_ENUMERATION": Severity.HIGH,
+        "BOLA_GUID_ENUMERATION": Severity.MEDIUM,
+        # API1 - Advanced BOLA categories (Reqs 27-32; strict resolution per
+        # Req 35.1, 35.3). Object-level / object-relationship authorization
+        # issues. Severities calibrated against the existing BOLA_* rules.
+        "BOLA_ACCOUNT_TAKEOVER": Severity.CRITICAL,
+        "BOLA_WRITE_ESCALATION": Severity.HIGH,
+        "BOLA_CROSS_TENANT": Severity.HIGH,
+        "BOLA_BROKEN_OBJECT_RELATIONSHIP": Severity.HIGH,
+        "BOLA_STATE_MANIPULATION": Severity.HIGH,
+        "BOLA_ID_LEAKAGE": Severity.MEDIUM,
+        "BOLA_PREDICTABLE_IDENTIFIER": Severity.MEDIUM,
+
+        # Spec-driven Unauthorized_Endpoint_Assertion categories (Req 55, 56.1).
+        # One per hardened module, each within that module's in-scope OWASP
+        # category. All HIGH: a context reaching an endpoint an operator
+        # explicitly declared forbidden is a broken-access-control finding.
+        "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS": Severity.HIGH,
+        "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS": Severity.HIGH,
+        "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS": Severity.HIGH,
+
+        # API2 - Broken Authentication / JWT subsystem
+        "AUTH_ANONYMOUS_ACCESS": Severity.HIGH,
+        "JWT_NONE_ALGORITHM": Severity.CRITICAL,
+        "JWT_NONE_ALGORITHM_ACCEPTED": Severity.CRITICAL,
+        "JWT_NULL_SIGNATURE": Severity.CRITICAL,
+        "JWT_WEAK_SECRET": Severity.HIGH,
+        "JWT_ALGORITHM_CONFUSION": Severity.CRITICAL,
+        "JWT_EXPIRED_TOKEN_ACCEPTED": Severity.HIGH,
+        "JWT_NO_EXPIRATION": Severity.HIGH,
+        "JWT_WEAK_EXPIRATION_VALIDATION": Severity.MEDIUM,
+        "JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT": Severity.HIGH,
+        "JWT_KID_INJECTION": Severity.HIGH,
+        "JWT_JWKS_SPOOF": Severity.HIGH,
+        "JWT_INLINE_JWKS": Severity.HIGH,
+        "JWT_PRIVILEGE_ESCALATION": Severity.CRITICAL,
+        "JWT_USER_IMPERSONATION": Severity.CRITICAL,
+        "JWT_EXPIRATION_BYPASS": Severity.HIGH,
+        "JWT_SCAN_COMPLETED_NO_FINDINGS": Severity.INFO,
+
+        # API2 - Advanced Broken-Authentication / JWT categories
+        # (Reqs 37-45; strict resolution per Req 47.1, 47.2, 47.3). All map
+        # to API2. Severities calibrated against comparable existing rules:
+        # rate-limiting/CSRF-style issues MEDIUM, credential leakage /
+        # audience / OAuth-redirect / reset-token / revocation-race issues
+        # HIGH, and MFA bypass CRITICAL (a form of authentication bypass,
+        # consistent with AUTH_BYPASS above).
+        "AUTH_NO_RATE_LIMITING": Severity.MEDIUM,
+        "AUTH_CREDENTIAL_STUFFING_EXPOSURE": Severity.HIGH,
+        "AUTH_SECRET_IN_URL": Severity.HIGH,
+        "AUTH_MFA_BYPASS": Severity.CRITICAL,
+        "AUTH_PREDICTABLE_RESET_TOKEN": Severity.HIGH,
+        "AUTH_OAUTH_REDIRECT_URI": Severity.HIGH,
+        "AUTH_TOKEN_AUDIENCE_CONFUSION": Severity.HIGH,
+        "AUTH_OAUTH_MISSING_STATE": Severity.MEDIUM,
+        "AUTH_TOKEN_REVOCATION_RACE": Severity.HIGH,
+        "JWT_SENSITIVE_DATA_IN_PAYLOAD": Severity.MEDIUM,
+        # NOTE: "JWT_KID_INJECTION" (HIGH) is defined above.
+        "JWT_JKU_SSRF": Severity.HIGH,
+
+        # API2 - New JWT attack categories (Reqs 58-64; strict resolution).
+        # Severities per design.md: blank-secret / psychic signature are
+        # CRITICAL (signature verification is effectively defeated); claim
+        # fuzzing / timestamp tampering are HIGH.
+        "JWT_BLANK_SECRET_ACCEPTED": Severity.CRITICAL,
+        "JWT_PSYCHIC_SIGNATURE": Severity.CRITICAL,
+        "JWT_CLAIM_FUZZING_ACCEPTED": Severity.HIGH,
+        "JWT_TIMESTAMP_TAMPERING_ACCEPTED": Severity.HIGH,
+
+        # API2 - New JWT lifetime / missing-claim categories (Req 68; strict
+        # resolution). Per design.md: excessive lifetime and missing exp/aud
+        # claims are MEDIUM (weakened token hygiene / audience scoping), while
+        # missing iss/jti claims are LOW (defense-in-depth / replay hardening).
+        "JWT_EXCESSIVE_TOKEN_LIFETIME": Severity.MEDIUM,
+        "JWT_MISSING_EXP_CLAIM": Severity.MEDIUM,
+        "JWT_MISSING_AUD_CLAIM": Severity.MEDIUM,
+        "JWT_MISSING_ISS_CLAIM": Severity.LOW,
+        "JWT_MISSING_JTI_CLAIM": Severity.LOW,
+
+        # API3 - Broken Object Property Level Authorization
+        # NOTE: "SENSITIVE_DATA_EXPOSURE" (CRITICAL) and "MASS_ASSIGNMENT"
+        # (HIGH) are defined above.
+        "MASS_ASSIGNMENT_PRIVILEGE": Severity.CRITICAL,
+        "READONLY_PROPERTY_MODIFICATION": Severity.HIGH,
+        # NOTE: "UNDOCUMENTED_FIELD" maps to MEDIUM below via default in the
+        # legacy rules; it is added explicitly here for strict resolution.
+        "UNDOCUMENTED_FIELD": Severity.MEDIUM
     }
     
     # Category to OWASP mapping
@@ -129,8 +252,168 @@ class FindingsCollector:
         "FRAMEWORK_DETECTED": "API9",
         "DEPRECATED_API_VERSION": "API9",
         "UNDOCUMENTED_API_VERSION": "API9",
-        "UNSAFE_UPSTREAM_DATA": "API10"
+        "UNSAFE_UPSTREAM_DATA": "API10",
+
+        # ------------------------------------------------------------------
+        # Hardened-capability categories (Req 22.2, 22.4, 26.1). OWASP
+        # categories restricted to {API1, API2, API3}.
+        # ------------------------------------------------------------------
+        # API1 - BOLA (BOLA_ANONYMOUS_ACCESS / BOLA_HORIZONTAL_ESCALATION /
+        # BOLA_OBJECT_ACCESS mapped above)
+        "BOLA_ID_ENUMERATION": "API1",
+        "BOLA_GUID_ENUMERATION": "API1",
+        # API1 - Advanced BOLA categories (Reqs 27-32). OWASP categories for
+        # these are restricted to {API1, API3}; all seven are object-level /
+        # object-relationship authorization issues and map to API1
+        # (Req 35.2, 26.1).
+        "BOLA_ACCOUNT_TAKEOVER": "API1",
+        "BOLA_WRITE_ESCALATION": "API1",
+        "BOLA_CROSS_TENANT": "API1",
+        "BOLA_BROKEN_OBJECT_RELATIONSHIP": "API1",
+        "BOLA_STATE_MANIPULATION": "API1",
+        "BOLA_ID_LEAKAGE": "API1",
+        "BOLA_PREDICTABLE_IDENTIFIER": "API1",
+
+        # Spec-driven Unauthorized_Endpoint_Assertion categories (Req 55, 56.2):
+        # each resolves within its own module's in-scope OWASP category.
+        "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS": "API1",
+        "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS": "API2",
+        "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS": "API3",
+
+        # API2 - Broken Authentication / JWT subsystem
+        "AUTH_ANONYMOUS_ACCESS": "API2",
+        "JWT_NONE_ALGORITHM": "API2",
+        "JWT_NONE_ALGORITHM_ACCEPTED": "API2",
+        "JWT_NULL_SIGNATURE": "API2",
+        "JWT_WEAK_SECRET": "API2",
+        "JWT_ALGORITHM_CONFUSION": "API2",
+        "JWT_EXPIRED_TOKEN_ACCEPTED": "API2",
+        "JWT_NO_EXPIRATION": "API2",
+        "JWT_WEAK_EXPIRATION_VALIDATION": "API2",
+        "JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT": "API2",
+        "JWT_KID_INJECTION": "API2",
+        "JWT_JWKS_SPOOF": "API2",
+        "JWT_INLINE_JWKS": "API2",
+        "JWT_PRIVILEGE_ESCALATION": "API2",
+        "JWT_USER_IMPERSONATION": "API2",
+        "JWT_EXPIRATION_BYPASS": "API2",
+        "JWT_SCAN_COMPLETED_NO_FINDINGS": "API2",
+
+        # API2 - Advanced Broken-Authentication / JWT categories
+        # (Reqs 37-45; Req 47.2 mandates OWASP_Category API2 for all twelve).
+        "AUTH_NO_RATE_LIMITING": "API2",
+        "AUTH_CREDENTIAL_STUFFING_EXPOSURE": "API2",
+        "AUTH_SECRET_IN_URL": "API2",
+        "AUTH_MFA_BYPASS": "API2",
+        "AUTH_PREDICTABLE_RESET_TOKEN": "API2",
+        "AUTH_OAUTH_REDIRECT_URI": "API2",
+        "AUTH_TOKEN_AUDIENCE_CONFUSION": "API2",
+        "AUTH_OAUTH_MISSING_STATE": "API2",
+        "AUTH_TOKEN_REVOCATION_RACE": "API2",
+        "JWT_SENSITIVE_DATA_IN_PAYLOAD": "API2",
+        # NOTE: "JWT_KID_INJECTION" -> API2 is defined above.
+        "JWT_JKU_SSRF": "API2",
+
+        # API2 - New JWT attack categories (Reqs 58-64; all map to API2).
+        "JWT_BLANK_SECRET_ACCEPTED": "API2",
+        "JWT_PSYCHIC_SIGNATURE": "API2",
+        "JWT_CLAIM_FUZZING_ACCEPTED": "API2",
+        "JWT_TIMESTAMP_TAMPERING_ACCEPTED": "API2",
+
+        # API2 - New JWT lifetime / missing-claim categories (Req 68; all map
+        # to API2).
+        "JWT_EXCESSIVE_TOKEN_LIFETIME": "API2",
+        "JWT_MISSING_EXP_CLAIM": "API2",
+        "JWT_MISSING_AUD_CLAIM": "API2",
+        "JWT_MISSING_ISS_CLAIM": "API2",
+        "JWT_MISSING_JTI_CLAIM": "API2",
+
+        # API3 - Property-Level (SENSITIVE_DATA_EXPOSURE / MASS_ASSIGNMENT /
+        # UNDOCUMENTED_FIELD mapped above)
+        "MASS_ASSIGNMENT_PRIVILEGE": "API3",
+        "READONLY_PROPERTY_MODIFICATION": "API3"
     }
+
+    # OWASP categories that the four hardened capabilities are restricted to
+    # (Req 22.2, 26.1). Any emitted category resolving outside this set is a
+    # detectable error.
+    IN_SCOPE_OWASP_CATEGORIES = frozenset({"API1", "API2", "API3"})
+
+    # Canonical list of every Finding_Category emitted by the four hardened
+    # capabilities (BOLA_Module, Auth_Module, Property_Module, and the
+    # JWT_Attack_Engine). Resolution is STRICT for these categories: each MUST
+    # resolve to a defined Severity (in SEVERITY_RULES) and an in-scope
+    # OWASP_Category (in CATEGORY_TO_OWASP). This list is the single source of
+    # truth used by the classification-completeness property test (Req 24.6).
+    EMITTED_CATEGORIES = frozenset({
+        # API1 - BOLA
+        "BOLA_ANONYMOUS_ACCESS",
+        "BOLA_HORIZONTAL_ESCALATION",
+        "BOLA_OBJECT_ACCESS",
+        "BOLA_ID_ENUMERATION",
+        "BOLA_GUID_ENUMERATION",
+        # API1 - Advanced BOLA (Reqs 27-32)
+        "BOLA_ACCOUNT_TAKEOVER",
+        "BOLA_WRITE_ESCALATION",
+        "BOLA_CROSS_TENANT",
+        "BOLA_BROKEN_OBJECT_RELATIONSHIP",
+        "BOLA_STATE_MANIPULATION",
+        "BOLA_ID_LEAKAGE",
+        "BOLA_PREDICTABLE_IDENTIFIER",
+        # API1 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
+        "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS",
+        # API2 - Auth / JWT
+        "AUTH_ANONYMOUS_ACCESS",
+        "JWT_NONE_ALGORITHM",
+        "JWT_NONE_ALGORITHM_ACCEPTED",
+        "JWT_NULL_SIGNATURE",
+        "JWT_WEAK_SECRET",
+        "JWT_ALGORITHM_CONFUSION",
+        "JWT_EXPIRED_TOKEN_ACCEPTED",
+        "JWT_NO_EXPIRATION",
+        "JWT_WEAK_EXPIRATION_VALIDATION",
+        "JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT",
+        "JWT_KID_INJECTION",
+        "JWT_JWKS_SPOOF",
+        "JWT_INLINE_JWKS",
+        "JWT_PRIVILEGE_ESCALATION",
+        "JWT_USER_IMPERSONATION",
+        "JWT_EXPIRATION_BYPASS",
+        "JWT_SCAN_COMPLETED_NO_FINDINGS",
+        # API2 - Advanced Broken-Authentication / JWT (Reqs 37-45)
+        "AUTH_NO_RATE_LIMITING",
+        "AUTH_CREDENTIAL_STUFFING_EXPOSURE",
+        "AUTH_SECRET_IN_URL",
+        "AUTH_MFA_BYPASS",
+        "AUTH_PREDICTABLE_RESET_TOKEN",
+        "AUTH_OAUTH_REDIRECT_URI",
+        "AUTH_TOKEN_AUDIENCE_CONFUSION",
+        "AUTH_OAUTH_MISSING_STATE",
+        "AUTH_TOKEN_REVOCATION_RACE",
+        "JWT_SENSITIVE_DATA_IN_PAYLOAD",
+        "JWT_JKU_SSRF",
+        # API2 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
+        "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS",
+        # API2 - New JWT attack categories (Reqs 58-64)
+        "JWT_BLANK_SECRET_ACCEPTED",
+        "JWT_PSYCHIC_SIGNATURE",
+        "JWT_CLAIM_FUZZING_ACCEPTED",
+        "JWT_TIMESTAMP_TAMPERING_ACCEPTED",
+        # API2 - New JWT lifetime / missing-claim categories (Req 68)
+        "JWT_EXCESSIVE_TOKEN_LIFETIME",
+        "JWT_MISSING_EXP_CLAIM",
+        "JWT_MISSING_AUD_CLAIM",
+        "JWT_MISSING_ISS_CLAIM",
+        "JWT_MISSING_JTI_CLAIM",
+        # API3 - Property-Level
+        "SENSITIVE_DATA_EXPOSURE",
+        "MASS_ASSIGNMENT",
+        "MASS_ASSIGNMENT_PRIVILEGE",
+        "READONLY_PROPERTY_MODIFICATION",
+        # API3 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
+        "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS",
+        "UNDOCUMENTED_FIELD",
+    })
     
     def __init__(self, scan_id: str):
         """
@@ -249,26 +532,70 @@ class FindingsCollector:
     def _classify_severity(self, category: str) -> Severity:
         """
         Automatically classify finding severity based on category
-        
+
+        Resolution is strict for categories emitted by the four hardened
+        capabilities (see EMITTED_CATEGORIES): a missing severity rule for
+        such a category raises FindingClassificationError rather than
+        silently defaulting (Req 22.1, 22.3). Other categories preserve the
+        legacy MEDIUM default.
+
         Args:
             category: Finding category
-            
+
         Returns:
             Classified severity level
+
+        Raises:
+            FindingClassificationError: If a hardened-capability category has
+                no defined severity rule.
         """
-        return self.SEVERITY_RULES.get(category, Severity.MEDIUM)
-    
+        severity = self.SEVERITY_RULES.get(category)
+        if severity is None:
+            if category in self.EMITTED_CATEGORIES:
+                raise FindingClassificationError(
+                    f"No severity rule defined for emitted category "
+                    f"'{category}' (strict resolution required)"
+                )
+            return Severity.MEDIUM
+        return severity
+
     def _get_owasp_category(self, category: str) -> Optional[str]:
         """
         Get OWASP API Security Top 10 category for finding
-        
+
+        Resolution is strict for categories emitted by the four hardened
+        capabilities (see EMITTED_CATEGORIES): such a category MUST resolve to
+        an in-scope OWASP_Category in {API1, API2, API3}. A missing or
+        out-of-scope mapping raises FindingClassificationError rather than
+        returning None (Req 22.2, 22.4, 26.1). Other categories preserve the
+        legacy behavior of returning None when unmapped.
+
         Args:
             category: Finding category
-            
+
         Returns:
             OWASP category (API1-API10) or None
+
+        Raises:
+            FindingClassificationError: If a hardened-capability category has
+                no mapping or maps outside {API1, API2, API3}.
         """
-        return self.CATEGORY_TO_OWASP.get(category)
+        owasp_category = self.CATEGORY_TO_OWASP.get(category)
+
+        if category in self.EMITTED_CATEGORIES:
+            if owasp_category is None:
+                raise FindingClassificationError(
+                    f"No OWASP category mapping for emitted category "
+                    f"'{category}' (strict resolution required)"
+                )
+            if owasp_category not in self.IN_SCOPE_OWASP_CATEGORIES:
+                raise FindingClassificationError(
+                    f"Emitted category '{category}' maps to out-of-scope "
+                    f"OWASP category '{owasp_category}'; must be one of "
+                    f"{sorted(self.IN_SCOPE_OWASP_CATEGORIES)}"
+                )
+
+        return owasp_category
     
     def _is_duplicate(self, finding: Finding) -> bool:
         """
@@ -280,10 +607,12 @@ class FindingsCollector:
         Returns:
             True if duplicate, False otherwise
         """
-        # Create deduplication key based on endpoint, method, category, and evidence hash
-        evidence_hash = hashlib.md5(finding.evidence.encode()).hexdigest()[:8]
+        # Create deduplication key based on endpoint, method, category, and evidence hash.
+        # usedforsecurity=False: this hash is used only for deduplication, not for any
+        # cryptographic or security purpose, so a non-collision-resistant hash is acceptable.
+        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
-        
+
         return dedup_key in self._deduplication_cache
     
     def _add_to_deduplication_cache(self, finding: Finding) -> None:
@@ -293,7 +622,7 @@ class FindingsCollector:
         Args:
             finding: Finding to add to cache
         """
-        evidence_hash = hashlib.md5(finding.evidence.encode()).hexdigest()[:8]
+        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
         self._deduplication_cache.add(dedup_key)
     

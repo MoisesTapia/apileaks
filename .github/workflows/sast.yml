@@ -1,0 +1,35 @@
+name: SAST — Bandit
+
+on:
+  push:
+    branches: [main, develop, v0.2.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bandit:
+    name: Bandit Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit
+        run: |
+          bandit -r . \
+            --exclude ./venv,./tests,./ci-cd \
+            --severity-level medium \
+            --confidence-level medium \
+            --format txt
