@@ -1,4 +1,4 @@
-name: Escaneo de Librerías
+name: Dependency Scanning
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Escaneo diario a las 06:00 UTC para detectar CVEs nuevos
+    # Daily scan at 06:00 UTC to catch new CVEs
     - cron: "0 6 * * *"
   workflow_dispatch:
 
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Instalar pip-audit
+      - name: Install pip-audit
         run: pip install pip-audit
 
       - name: Run pip-audit
@@ -54,7 +54,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Instalar Safety
+      - name: Install Safety
         run: pip install safety
 
       - name: Run Safety

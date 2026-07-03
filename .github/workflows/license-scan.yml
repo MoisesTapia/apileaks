@@ -1,4 +1,4 @@
-name: Escaneo de Licencias
+name: License Scanning
 
 on:
   push:
@@ -31,22 +31,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Instalar dependencias del proyecto
+      - name: Install project dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Instalar pip-licenses
+      - name: Install pip-licenses
         run: pip install pip-licenses
 
-      - name: Listar licencias
+      - name: List licenses
         run: |
           pip-licenses \
             --format=columns \
             --with-authors \
             --with-urls
 
-      - name: Validar licencias permitidas
+      - name: Validate allowed licenses
         run: |
           pip-licenses \
             --allow-only="MIT License;Apache Software License;BSD License;ISC License (ISCL);Python Software Foundation License;Mozilla Public License 2.0 (MPL 2.0);The Unlicense (Unlicense);Public Domain"

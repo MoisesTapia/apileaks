@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Instalar Bandit
+      - name: Install Bandit
         run: pip install bandit
 
       - name: Run Bandit

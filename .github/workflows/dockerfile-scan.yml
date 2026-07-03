@@ -1,4 +1,4 @@
-name: Escaneo de Dockerfile
+name: Dockerfile Scanning
 
 on:
   push:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   hadolint:
-    name: Hadolint — Lint del Dockerfile
+    name: Hadolint — Dockerfile Lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar Hadolint
+      - name: Install Hadolint
         run: |
           curl -sSfL https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 \
             -o /usr/local/bin/hadolint && chmod +x /usr/local/bin/hadolint
@@ -40,7 +40,7 @@ jobs:
             --failure-threshold error
 
   trivy:
-    name: Trivy — CVEs en imagen construida
+    name: Trivy — Docker Image CVEs
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,7 +52,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build imagen local
+      - name: Build local image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -62,7 +62,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Instalar Trivy
+      - name: Install Trivy
         run: |
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
