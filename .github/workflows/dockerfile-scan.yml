@@ -3,15 +3,8 @@ name: Dockerfile Scanning
 on:
   push:
     branches: [main, develop, v0.2.0]
-    paths:
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - ".dockerignore"
   pull_request:
     branches: [main]
-    paths:
-      - "Dockerfile"
-      - "docker-compose.yml"
   workflow_dispatch:
 
 env:
@@ -32,6 +25,7 @@ jobs:
         run: |
           curl -sSfL https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 \
             -o /usr/local/bin/hadolint && chmod +x /usr/local/bin/hadolint
+          hadolint --version
 
       - name: Run Hadolint
         run: |
@@ -66,6 +60,7 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
+          trivy --version
 
       - name: Run Trivy
         run: |

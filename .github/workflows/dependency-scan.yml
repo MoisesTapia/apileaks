@@ -3,10 +3,6 @@ name: Dependency Scanning
 on:
   push:
     branches: [main, develop, v0.2.0]
-    paths:
-      - "requirements.txt"
-      - "setup.py"
-      - "pyproject.toml"
   pull_request:
     branches: [main]
   schedule:

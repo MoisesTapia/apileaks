@@ -3,16 +3,8 @@ name: License Scanning
 on:
   push:
     branches: [main, develop, v0.2.0]
-    paths:
-      - "requirements.txt"
-      - "setup.py"
-      - "pyproject.toml"
   pull_request:
     branches: [main]
-    paths:
-      - "requirements.txt"
-      - "setup.py"
-      - "pyproject.toml"
   workflow_dispatch:
 
 jobs:
