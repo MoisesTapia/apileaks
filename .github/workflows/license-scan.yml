@@ -34,7 +34,7 @@ jobs:
       - name: List licenses
         run: |
           pip-licenses \
-            --format=columns \
+            --format=plain \
             --with-authors \
             --with-urls
 

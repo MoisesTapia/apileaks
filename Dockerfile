@@ -2,7 +2,7 @@
 # Enterprise-grade API fuzzing and OWASP testing tool
 # Optimized for size (<200MB) and security (non-root execution)
 
-FROM python:3.11-slim-alpine AS builder
+FROM python:3.11-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --user -r /tmp/requirements.txt
 
 # Production stage
-FROM python:3.11-slim-alpine
+FROM python:3.11-alpine
 
 # Metadata
 LABEL maintainer="FortGenix Team <team@apileak.com>" \
