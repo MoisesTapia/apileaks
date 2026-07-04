@@ -24,8 +24,11 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 ### OWASP Modules Documentation
 - **[OWASP Coverage](owasp-coverage.md)** - OWASP API Security Top 10 coverage analysis
 - **[OWASP Modules Guide](owasp-modules-guide.md)** - Complete OWASP testing modules guide
+- **[Scan Guide](scan-guide.md)** - Complete `scan` command reference (all options, CI/CD gate, module selection)
+- **[OWASP Command Reference](owasp-command.md)** - Complete `owasp <module>` reference (isolated single-module runs)
+- **[dir vs scan vs inventory](dir-vs-scan-vs-inventory.md)** - Analysis of overlaps between `dir`, `scan --fuzz-versions`, and the `inventory` API9 module — includes the double `VersionFuzzer` execution issue
 - **[BOLA Testing (API1)](owasp/bola-testing.md)** - Broken Object Level Authorization testing
-- **[Property Level Auth](owasp/property-level-auth.md)** - Property Level Authorization testing
+- **[Property Level Auth (API3)](owasp/property-level-auth.md)** - Property Level Authorization testing
 
 ### Advanced Topics
 - **[Advanced Discovery](advanced-discovery.md)** - Advanced endpoint discovery techniques
@@ -42,7 +45,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **Getting Started**: [Installation Guide](installation.md) → [User Guide](user-guide.md) → [Usage Examples](usage-examples.md)
 - **JWT Security Testing**: [JWT Attack Testing](jwt-attacks.md) → [Usage Examples](usage-examples.md)
 - **For Developers**: [Developer Guide](developer-guide.md) → [Architecture](architecture.md) → [Testing Guide](testing.md)
-- **For Security Testers**: [OWASP Modules Guide](owasp-modules-guide.md) → [JWT Attack Testing](jwt-attacks.md) → [WAF Evasion Guide](waf-evasion.md)
+- **For Security Testers**: [OWASP Modules Guide](owasp-modules-guide.md) → [Scan Guide](scan-guide.md) → [OWASP Command Reference](owasp-command.md) → [JWT Attack Testing](jwt-attacks.md) → [WAF Evasion Guide](waf-evasion.md)
 - **Advanced Features**: [Advanced Discovery](advanced-discovery.md) → [Framework Detection](framework-detection-version-fuzzing.md) → [CI/CD Integration](ci-cd-integration.md)
 
 ## 📖 Documentation Standards

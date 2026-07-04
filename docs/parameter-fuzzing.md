@@ -70,29 +70,26 @@ The injection point is determined by `--methods`:
 - **GET, DELETE** → inject into query string (`?param=sentinel`)
 - **POST, PUT, PATCH** → inject into request body (JSON, form-encoded, or XML)
 
-### `par` vs `dir`: name discovery vs positional value fuzzing
+### `par` vs `dir`: parameter name discovery vs positional value fuzzing
 
-These two commands solve different problems, and it is important not to confuse them:
+These two commands solve different problems:
 
-| | `par` (parameter fuzzing) | `dir` (positional markers) |
+| | `par` (parameter fuzzing) | `dir` (directory/endpoint fuzzing) |
 |---|---|---|
-| **Goal** | Discover **unknown parameter names** | Sweep a **known position** with values |
-| **Target URL** | Plain base URL, no markers: `https://api.example.com/api/v1/users` | Contains literal markers: `https://api.example.com/api/v1/?id=FUZZ` |
-| **What the wordlist supplies** | Candidate parameter **names** (each injected as `?name=<sentinel>`) | Candidate **values** placed at each marker |
-| **Marker support** | ❌ No `--fuzz-keyword` / `--fuzz-mode` | ✅ `--fuzz-keyword` (default `FUZZ`), `--fuzz-mode` (clusterbomb/pitchfork) |
-| **Multi-position** | ❌ Not supported | ✅ Multiple markers, e.g. `?a=FUZZ&b=FUZZ` |
+| **Primary goal** | Discover **unknown parameter names** | Discover hidden **paths/endpoints** |
+| **Default target URL** | Plain base URL: `https://api.example.com/api/v1/users` | Plain base URL or marker URL: `https://api.example.com/FUZZ` |
+| **What the wordlist supplies** | Candidate parameter **names** (each injected as `?name=<sentinel>` or in the request body) | Candidate **path segments** appended to the base URL, or **values** at each marker position |
+| **Marker mode** | ✅ Supported — `--fuzz-keyword` (default `FUZZ`), `--fuzz-mode` (clusterbomb/pitchfork). In marker mode, markers in the URL are swept with wordlist values rather than parameter names being probed | ✅ Full support — same `--fuzz-keyword` / `--fuzz-mode` options |
+| **Baseline comparison** | ✅ Compares each response against a no-parameter baseline to detect behavioral changes | ❌ No baseline comparison — discovery relies on status codes and response classification |
+| **Detection signals** | Reflection, new JSON fields, status/size/time/content-type changes | Status code, response size, endpoint classification |
 
-> **Positional markers (`?FUZZ`, `?LEAK=something`, multi-marker `?a=FUZZ&b=FUZZ`) are a `dir` feature, not a `par` feature.** `par` intentionally uses a base URL with no markers and discovers hidden parameter names from a wordlist. Extending positional markers to `par` was deferred in the spec (Requirement 12, Open Decision). If you want to fuzz **values** at a specific position, use `dir` marker mode:
+**In marker mode**, `par` sweeps the marker positions in the URL with candidate values from `--wordlist` — this is the same positional-fuzzing behavior as `dir`. **In name-discovery mode** (no markers in the URL), `par` injects each wordlist entry as a parameter name and compares responses against a no-parameter baseline.
+
+> If you want to fuzz **values** at a specific URL position without baseline comparison and using directory-discovery classification, use `dir` marker mode:
 >
 > ```bash
-> # Sweep a known parameter's VALUE with dir marker mode
+> # Sweep a known parameter VALUE with dir marker mode
 > python apileaks.py dir --target "https://api.example.com/api/v1/?id=FUZZ" --wordlist ids.txt
->
-> # Custom keyword and multiple positions (clusterbomb = every combination)
-> python apileaks.py dir \
->   --target "https://api.example.com/api/v1/?a=FUZZ&b=FUZZ" \
->   --wordlist a_values.txt \
->   --wordlist b_values.txt
 > ```
 >
 > See [Positional Fuzz Markers](usage-examples.md#positional-fuzz-markers) for the full `dir` marker workflow.
@@ -329,6 +326,40 @@ python apileaks.py par \
   --output-file reports/confirmed_params.jsonl
 ```
 
+### Marker Mode (positional value fuzzing)
+
+When the target URL contains the `--fuzz-keyword` token, `par` switches to Marker_Mode and sweeps each marked position with values from `--wordlist` (instead of probing candidate parameter names).
+
+```bash
+# Single marker: sweep a path segment with version values
+python apileaks.py par \
+  --target "https://api.example.com/FUZZ/users" \
+  --wordlist versions.txt
+
+# Two markers, cartesian product (clusterbomb — every combination)
+python apileaks.py par \
+  --target "https://api.example.com/FUZZ/users/FUZZ" \
+  --fuzz-mode clusterbomb \
+  --wordlist versions.txt \
+  --wordlist user_ids.txt
+
+# Two markers paired position-by-position (pitchfork)
+python apileaks.py par \
+  --target "https://api.example.com/__MARKER__/items/__MARKER__" \
+  --fuzz-keyword __MARKER__ \
+  --fuzz-mode pitchfork \
+  --wordlist prefixes.txt \
+  --wordlist suffixes.txt
+```
+
+**Per-marker wordlist association.** In Marker_Mode the repeatable `--wordlist` values are associated with markers left-to-right (first `--wordlist` → first marker). If fewer wordlists than markers are supplied, the last wordlist fills the remaining markers. More wordlists than markers is rejected with an error.
+
+**Validation.** These configurations are rejected before any request:
+- Empty or whitespace-only `--fuzz-keyword`
+- `--fuzz-keyword` or `--fuzz-mode` supplied explicitly but the URL contains no occurrence of the keyword
+- More `--wordlist` sources than markers
+- `--fuzz-mode pitchfork` with an empty associated wordlist
+
 ### WAF Evasion
 
 ```bash
@@ -479,6 +510,8 @@ A single finding can carry multiple detection signals when several indicators fi
 |--------|-------------|---------|
 | `--target`, `-t` | Target URL (required) | — |
 | `--wordlist`, `-w` | Wordlist file (repeatable, merged/deduped) | `wordlists/parameters.txt` |
+| `--fuzz-keyword` | Literal token marking positions to fuzz in the URL. When present, activates Marker_Mode | `FUZZ` |
+| `--fuzz-mode` | Combination strategy for multiple markers: `clusterbomb` (cartesian product) or `pitchfork` (index-wise zip) | `clusterbomb` |
 | `--methods` | HTTP methods to test (comma-separated) | `GET,POST` |
 | `--confirm-hits` | Retest count for hit confirmation (≥1) | Off |
 | `--max-requests` | Request budget (≥1) | Unbounded |
