@@ -4294,21 +4294,22 @@ def jwt(ctx):
     • JWKS spoofing and inline injection
     • Comprehensive attack testing against live endpoints
     • Blank password signature acceptance
-    
+    • Login to an auth endpoint and capture the returned JWT
+
     \b
     Basic Examples:
       python apileaks.py jwt decode TOKEN
       python apileaks.py jwt encode '{"sub":"user"}' --secret key
       python apileaks.py jwt test-alg-none TOKEN
       python apileaks.py jwt brute-secret TOKEN --wordlist secrets.txt
-    
+
     \b
-    Comprehensive Attack Testing:
-      python apileaks.py jwt attack-test TOKEN --url https://api.example.com/protected
-      python apileaks.py jwt attack-test TOKEN -u URL -H "X-API-Key: key123"
-      python apileaks.py jwt attack-test TOKEN -u URL -d '{"action":"read"}'
-    
-    \b
+    Fetch a token from a login endpoint:
+      python apileaks.py jwt login --url http://HOST/api/v1/login \\
+          --body '{"username":"user","password":"pass"}'
+      python apileaks.py jwt login --url http://HOST/api/v1/login \\
+          --body '{"username":"user","password":"pass"}' --save token.jwt
+
     Available Commands:
       decode              Decode and analyze JWT tokens
       encode              Create JWT tokens with custom payloads
@@ -4696,6 +4697,101 @@ def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
         custom_headers = _parse_custom_headers(header)
 
         # Decode original token for display
+        decoded = decode_jwt(token)
+        click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
+        click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
+        click.echo("")
+
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). A custom payload is merged onto
+        # the base token before running the vector.
+        base_token = token
+        if payload:
+            try:
+                custom_payload = json.loads(payload)
+            except json.JSONDecodeError:
+                click.echo(f"❌ Invalid JSON payload: {payload}")
+                return
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.NULL_SIGNATURE, url, custom_headers,
+                        data, timeout)
+
+        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("• Implement proper signature validation - never accept empty signatures")
+        click.echo("• Validate signature length and format before verification")
+        click.echo("• Use established JWT libraries with proper validation")
+        click.echo("• Implement signature presence checks before cryptographic verification")
+
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+def _load_public_key_material_cli(material):
+    """Resolve operator-supplied public-key material for the CLI.
+
+    ``material`` may be a filesystem path to a PEM/DER file or inline PEM
+    text. Returns raw bytes when a readable file is found (so binary DER works),
+    otherwise the original string (inline PEM). Mirrors the auth module's
+    path-or-inline resolution so both entry points behave identically.
+    """
+    try:
+        path = Path(material)
+        if path.exists() and path.is_file():
+            return path.read_bytes()
+    except (OSError, ValueError):
+        pass
+    return material
+
+
+@jwt.command('test-alg-confusion')
+@click.argument('token')
+@click.option('--public-key', 'public_key', required=True, metavar='PATH_OR_PEM',
+              help='Target RSA/EC public key (PEM/DER file path or inline PEM) used as the HMAC secret')
+@click.option('--payload', help='Custom payload to inject (JSON format)')
+@click.option('--url', '-u', help='Target URL to test the confusion attack against (optional)')
+@click.option('--header', '-H', multiple=True, help='Custom headers for endpoint testing (format: "Name: Value")')
+@click.option('--data', '-d', help='POST data for endpoint testing')
+@click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
+@click.pass_context
+def jwt_test_alg_confusion(ctx, token, public_key, payload, url, header, data, timeout):
+    """Test algorithm/key confusion attack (RS256/ES256 -> HS256 substitution)
+
+    \b
+    🧪 CRITICAL SEVERITY ATTACK
+    Algorithm confusion (aka Substitution Attack) forges a token that a server
+    validates with the SAME public key it uses for RS*/ES* verification, but
+    treated as an HS256 HMAC secret:
+
+    1️⃣ Switch the header alg from RS256/ES256 to HS256\b
+    2️⃣ HMAC-sign header.payload using the server's PUBLIC KEY bytes as the secret\b
+    3️⃣ Every public-key representation is tried (PEM ±newline, DER, x5c cert)\b
+    4️⃣ A server that accepts the forged token confuses the key's role
+
+    \b
+    Examples:
+      # Generate confusion tokens for manual testing
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+      # Inject an admin payload and test against a live endpoint
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key key.pem \\
+          --payload '{"role":"admin"}' --url https://api.example.com/admin
+    """
+    try:
+        click.echo("🔍 Algorithm/Key Confusion Attack (RS256/ES256 -> HS256)")
+        click.echo("="*55)
+        click.echo("🔥 SEVERITY: CRITICAL - Signature forged with the public key")
+        click.echo("")
+
+        custom_headers = _parse_custom_headers(header)
+
+        # Decode original token for display
+        public_key_material = _load_public_key_material_cli(public_key)
+
+        # Decode original token for display.
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
@@ -5591,7 +5687,172 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
         sys.exit(1)
 
 
-# Legacy main command for backward compatibility
+@jwt.command('login')
+@click.option('--url', '-u', required=True,
+              help='Login endpoint URL (e.g. http://HOST/api/v1.0/login)')
+@click.option('--body', '-d', default='{}',
+              help='JSON body with credentials (default: {}). '
+                   'Example: \'{"username":"user","password":"pass"}\'')
+@click.option('--method', '-X', default='POST',
+              type=click.Choice(['POST', 'GET', 'PUT'], case_sensitive=False),
+              help='HTTP method (default: POST)')
+@click.option('--header', '-H', multiple=True,
+              help='Extra headers (format: "Name: Value"). Repeatable.')
+@click.option('--token-field', default=None,
+              help='JSON field name that contains the token in the response. '
+                   'If omitted, the command searches common field names '
+                   '(token, access_token, jwt, id_token, accessToken).')
+@click.option('--save', type=click.Path(), default=None,
+              help='Save the captured token to this file path. '
+                   'Example: --save /tmp/token.jwt')
+@click.option('--no-ssl-verify', is_flag=True,
+              help='Disable SSL certificate verification.')
+@click.option('--timeout', default=30, show_default=True,
+              help='Request timeout in seconds.')
+@click.pass_context
+def jwt_login(ctx, url, body, method, header, token_field, save, no_ssl_verify, timeout):
+    """POST credentials to a login endpoint and capture the returned JWT.
+
+    The captured token is printed to stdout so it can be piped directly into
+    other jwt subcommands, and optionally saved to a file with --save.
+
+    \b
+    Examples:
+      # Basic login, token printed to terminal
+      python apileaks.py jwt login \\
+          --url http://MACHINEIP/api/v1.0/example2 \\
+          --body '{"username":"user","password":"password2"}'
+
+      # Save token to file, then use it for attack testing
+      python apileaks.py jwt login \\
+          --url http://HOST/api/v1.0/login \\
+          --body '{"username":"admin","password":"admin123"}' \\
+          --save /tmp/captured.jwt
+
+      python apileaks.py jwt attack-test $(cat /tmp/captured.jwt) \\
+          --url http://HOST/api/v1.0/protected
+
+      # Custom token field name
+      python apileaks.py jwt login \\
+          --url http://HOST/auth \\
+          --body '{"user":"bob","pass":"secret"}' \\
+          --token-field auth_token
+    """
+    import httpx
+
+    # Parse body
+    try:
+        body_dict = json.loads(body)
+    except json.JSONDecodeError as exc:
+        click.echo(f"❌ --body is not valid JSON: {exc}", err=True)
+        sys.exit(1)
+
+    # Parse headers
+    request_headers = {'Content-Type': 'application/json'}
+    for h in header:
+        if ':' not in h:
+            click.echo(f"❌ Invalid header format: {h!r}. Use 'Name: Value'.", err=True)
+            sys.exit(1)
+        name, value = h.split(':', 1)
+        request_headers[name.strip()] = value.strip()
+
+    # Common field names to search when --token-field is not specified
+    _COMMON_FIELDS = ['token', 'access_token', 'jwt', 'id_token', 'accessToken',
+                      'auth_token', 'bearer', 'Authorization']
+
+    click.echo(f"🔐 Sending {method.upper()} to {url} ...")
+
+    try:
+        with httpx.Client(verify=not no_ssl_verify, timeout=timeout) as client:
+            response = client.request(
+                method.upper(),
+                url,
+                json=body_dict,
+                headers=request_headers,
+            )
+
+        click.echo(f"   Status: {response.status_code}")
+
+        # Try to parse JSON response
+        try:
+            data = response.json()
+        except Exception:
+            click.echo("❌ Response is not JSON. Raw body:", err=True)
+            click.echo(response.text, err=True)
+            sys.exit(1)
+
+        # Locate the token
+        captured_token = None
+        found_field = None
+
+        if token_field:
+            # Explicit field name
+            if token_field in data:
+                captured_token = data[token_field]
+                found_field = token_field
+            else:
+                click.echo(
+                    f"❌ Field '{token_field}' not found in response. "
+                    f"Available keys: {list(data.keys())}", err=True)
+                sys.exit(1)
+        else:
+            # Auto-detect
+            for field in _COMMON_FIELDS:
+                if field in data and isinstance(data[field], str) and data[field].strip():
+                    captured_token = data[field].strip()
+                    found_field = field
+                    break
+
+        if not captured_token:
+            click.echo(
+                "❌ Could not locate a JWT in the response. "
+                "Use --token-field to specify the field name.\n"
+                f"Response keys: {list(data.keys())}", err=True)
+            sys.exit(1)
+
+        # Strip "Bearer " prefix if present
+        if captured_token.lower().startswith('bearer '):
+            captured_token = captured_token[7:].strip()
+
+        click.echo(f"\n✅ Token captured from field: '{found_field}'")
+        click.echo("─" * 60)
+        click.echo(captured_token)
+        click.echo("─" * 60)
+
+        # Decode and display summary
+        try:
+            decoded = decode_jwt(captured_token)
+            alg = decoded['header'].get('alg', '?')
+            sub = decoded['payload'].get('sub') or decoded['payload'].get('user') or '—'
+            exp = decoded['payload'].get('exp')
+            exp_str = ''
+            if exp:
+                import datetime
+                exp_str = f"  exp: {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d %H:%M:%S')}"
+            click.echo(f"   alg={alg}  sub={sub}{exp_str}")
+        except Exception:
+            pass  # Non-critical — still output the raw token
+
+        # Save to file if requested
+        if save:
+            save_path = Path(save)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(captured_token, encoding='utf-8')
+            click.echo(f"\n💾 Token saved to: {save_path}")
+            click.echo(f"   Use with: python apileaks.py jwt decode $(cat {save_path})")
+
+    except httpx.ConnectError as exc:
+        click.echo(f"❌ Connection failed: {exc}", err=True)
+        sys.exit(1)
+    except httpx.TimeoutException:
+        click.echo(f"❌ Request timed out after {timeout}s.", err=True)
+        sys.exit(1)
+    except Exception as exc:
+        click.echo(f"❌ Unexpected error: {exc}", err=True)
+        sys.exit(1)
+
+
+
 @cli.command(hidden=True)
 @click.option('--config', '-c', type=click.Path(exists=True), 
               help='Configuration file path (YAML or JSON) - optional')
