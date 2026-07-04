@@ -98,8 +98,12 @@ def encode_jwt(header: Dict[str, Any], payload: Dict[str, Any], secret: str = "s
         # Encode header and payload
         header_encoded = base64url_encode(json.dumps(header, separators=(',', ':')).encode('utf-8'))
         payload_encoded = base64url_encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
-        
-        # Create signature
+
+        # alg:none — no signature, trailing dot only (RFC 7519 §6)
+        if header.get('alg', '').lower() == 'none':
+            return f"{header_encoded}.{payload_encoded}."
+
+        # Create HMAC signature
         message = f"{header_encoded}.{payload_encoded}"
         signature = hmac.new(
             secret.encode('utf-8'),

@@ -4388,19 +4388,29 @@ def jwt_encode_cmd(ctx, payload, header, secret):
         
         # Encode JWT
         token = encode_jwt(header_dict, payload_dict, secret)
-        
+
         click.echo("\n" + "="*60)
         click.echo("JWT Token Generated")
         click.echo("="*60)
-        click.echo(f"\n🔑 Secret Used: {secret}")
+
+        is_none_alg = header_dict.get('alg', '').lower() == 'none'
+        if is_none_alg:
+            click.echo(click.style("\n⚠️  alg:none — no signature generated (trailing dot only)", fg='yellow'))
+        else:
+            click.echo(f"\n🔑 Secret Used: {secret}")
+
         click.echo("📋 Header: " + click.style(json.dumps(header_dict), fg=JWT_HEADER_COLOR))
         click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
-        click.echo(f"\n🎫 Generated Token (colour-coded by section):")
+        click.echo(f"\n🎫 Generated Token:")
         click.echo("-" * 20)
-        click.echo(colorize_jwt(decode_jwt(token)))
-        click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
-                   + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
-                   + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
+        if is_none_alg:
+            # Print raw token — colorize_jwt would fail on empty signature
+            click.echo(token)
+        else:
+            click.echo(colorize_jwt(decode_jwt(token)))
+            click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
+                       + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
+                       + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
         click.echo("\n" + "="*60)
         
     except ValueError as e:
