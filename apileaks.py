@@ -4294,34 +4294,22 @@ def jwt(ctx):
     • JWKS spoofing and inline injection
     • Comprehensive attack testing against live endpoints
     • Blank password signature acceptance
-    
+    • Login to an auth endpoint and capture the returned JWT
+
     \b
     Basic Examples:
       python apileaks.py jwt decode TOKEN
       python apileaks.py jwt encode '{"sub":"user"}' --secret key
       python apileaks.py jwt test-alg-none TOKEN
       python apileaks.py jwt brute-secret TOKEN --wordlist secrets.txt
-    
+
     \b
-    Comprehensive Attack Testing:
-      python apileaks.py jwt attack-test TOKEN --url https://api.example.com/protected
-      python apileaks.py jwt attack-test TOKEN -u URL -H "X-API-Key: key123"
-      python apileaks.py jwt attack-test TOKEN -u URL -d '{"action":"read"}'
-    
-    \b
-    Available Commands:
-      decode              Decode and analyze JWT tokens
-      encode              Create JWT tokens with custom payloads
-      verify              Verify a token signature against key material (no network)
-      test-alg-none       Test algorithm confusion (alg:none) attacks
-      test-null-signature Test null signature bypass attacks
-      test-alg-confusion  Test RS256/ES256 -> HS256 key confusion (substitution)
-      brute-secret        Brute-force weak HMAC secrets
-      test-kid-injection  Test Key ID (kid) injection vulnerabilities
-      test-jwks-spoof     Test JWKS URL spoofing attacks
-      test-inline-jwks    Test inline JWKS injection attacks
-      attack-test         Comprehensive automated attack testing (NEW)
-    
+    Fetch a token from a login endpoint:
+      python apileaks.py jwt login --url http://HOST/api/v1/login \\
+          --body '{"username":"user","password":"pass"}'
+      python apileaks.py jwt login --url http://HOST/api/v1/login \\
+          --body '{"username":"user","password":"pass"}' --save token.jwt
+
     Use 'python apileaks.py jwt COMMAND --help' for detailed help on any command.
     """
     pass
@@ -5591,7 +5579,172 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
         sys.exit(1)
 
 
-# Legacy main command for backward compatibility
+@jwt.command('login')
+@click.option('--url', '-u', required=True,
+              help='Login endpoint URL (e.g. http://HOST/api/v1.0/login)')
+@click.option('--body', '-d', default='{}',
+              help='JSON body with credentials (default: {}). '
+                   'Example: \'{"username":"user","password":"pass"}\'')
+@click.option('--method', '-X', default='POST',
+              type=click.Choice(['POST', 'GET', 'PUT'], case_sensitive=False),
+              help='HTTP method (default: POST)')
+@click.option('--header', '-H', multiple=True,
+              help='Extra headers (format: "Name: Value"). Repeatable.')
+@click.option('--token-field', default=None,
+              help='JSON field name that contains the token in the response. '
+                   'If omitted, the command searches common field names '
+                   '(token, access_token, jwt, id_token, accessToken).')
+@click.option('--save', type=click.Path(), default=None,
+              help='Save the captured token to this file path. '
+                   'Example: --save /tmp/token.jwt')
+@click.option('--no-ssl-verify', is_flag=True,
+              help='Disable SSL certificate verification.')
+@click.option('--timeout', default=30, show_default=True,
+              help='Request timeout in seconds.')
+@click.pass_context
+def jwt_login(ctx, url, body, method, header, token_field, save, no_ssl_verify, timeout):
+    """POST credentials to a login endpoint and capture the returned JWT.
+
+    The captured token is printed to stdout so it can be piped directly into
+    other jwt subcommands, and optionally saved to a file with --save.
+
+    \b
+    Examples:
+      # Basic login, token printed to terminal
+      python apileaks.py jwt login \\
+          --url http://MACHINEIP/api/v1.0/example2 \\
+          --body '{"username":"user","password":"password2"}'
+
+      # Save token to file, then use it for attack testing
+      python apileaks.py jwt login \\
+          --url http://HOST/api/v1.0/login \\
+          --body '{"username":"admin","password":"admin123"}' \\
+          --save /tmp/captured.jwt
+
+      python apileaks.py jwt attack-test $(cat /tmp/captured.jwt) \\
+          --url http://HOST/api/v1.0/protected
+
+      # Custom token field name
+      python apileaks.py jwt login \\
+          --url http://HOST/auth \\
+          --body '{"user":"bob","pass":"secret"}' \\
+          --token-field auth_token
+    """
+    import httpx
+
+    # Parse body
+    try:
+        body_dict = json.loads(body)
+    except json.JSONDecodeError as exc:
+        click.echo(f"❌ --body is not valid JSON: {exc}", err=True)
+        sys.exit(1)
+
+    # Parse headers
+    request_headers = {'Content-Type': 'application/json'}
+    for h in header:
+        if ':' not in h:
+            click.echo(f"❌ Invalid header format: {h!r}. Use 'Name: Value'.", err=True)
+            sys.exit(1)
+        name, value = h.split(':', 1)
+        request_headers[name.strip()] = value.strip()
+
+    # Common field names to search when --token-field is not specified
+    _COMMON_FIELDS = ['token', 'access_token', 'jwt', 'id_token', 'accessToken',
+                      'auth_token', 'bearer', 'Authorization']
+
+    click.echo(f"🔐 Sending {method.upper()} to {url} ...")
+
+    try:
+        with httpx.Client(verify=not no_ssl_verify, timeout=timeout) as client:
+            response = client.request(
+                method.upper(),
+                url,
+                json=body_dict,
+                headers=request_headers,
+            )
+
+        click.echo(f"   Status: {response.status_code}")
+
+        # Try to parse JSON response
+        try:
+            data = response.json()
+        except Exception:
+            click.echo("❌ Response is not JSON. Raw body:", err=True)
+            click.echo(response.text, err=True)
+            sys.exit(1)
+
+        # Locate the token
+        captured_token = None
+        found_field = None
+
+        if token_field:
+            # Explicit field name
+            if token_field in data:
+                captured_token = data[token_field]
+                found_field = token_field
+            else:
+                click.echo(
+                    f"❌ Field '{token_field}' not found in response. "
+                    f"Available keys: {list(data.keys())}", err=True)
+                sys.exit(1)
+        else:
+            # Auto-detect
+            for field in _COMMON_FIELDS:
+                if field in data and isinstance(data[field], str) and data[field].strip():
+                    captured_token = data[field].strip()
+                    found_field = field
+                    break
+
+        if not captured_token:
+            click.echo(
+                "❌ Could not locate a JWT in the response. "
+                "Use --token-field to specify the field name.\n"
+                f"Response keys: {list(data.keys())}", err=True)
+            sys.exit(1)
+
+        # Strip "Bearer " prefix if present
+        if captured_token.lower().startswith('bearer '):
+            captured_token = captured_token[7:].strip()
+
+        click.echo(f"\n✅ Token captured from field: '{found_field}'")
+        click.echo("─" * 60)
+        click.echo(captured_token)
+        click.echo("─" * 60)
+
+        # Decode and display summary
+        try:
+            decoded = decode_jwt(captured_token)
+            alg = decoded['header'].get('alg', '?')
+            sub = decoded['payload'].get('sub') or decoded['payload'].get('user') or '—'
+            exp = decoded['payload'].get('exp')
+            exp_str = ''
+            if exp:
+                import datetime
+                exp_str = f"  exp: {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d %H:%M:%S')}"
+            click.echo(f"   alg={alg}  sub={sub}{exp_str}")
+        except Exception:
+            pass  # Non-critical — still output the raw token
+
+        # Save to file if requested
+        if save:
+            save_path = Path(save)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(captured_token, encoding='utf-8')
+            click.echo(f"\n💾 Token saved to: {save_path}")
+            click.echo(f"   Use with: python apileaks.py jwt decode $(cat {save_path})")
+
+    except httpx.ConnectError as exc:
+        click.echo(f"❌ Connection failed: {exc}", err=True)
+        sys.exit(1)
+    except httpx.TimeoutException:
+        click.echo(f"❌ Request timed out after {timeout}s.", err=True)
+        sys.exit(1)
+    except Exception as exc:
+        click.echo(f"❌ Unexpected error: {exc}", err=True)
+        sys.exit(1)
+
+
+
 @cli.command(hidden=True)
 @click.option('--config', '-c', type=click.Path(exists=True), 
               help='Configuration file path (YAML or JSON) - optional')
