@@ -4310,6 +4310,19 @@ def jwt(ctx):
       python apileaks.py jwt login --url http://HOST/api/v1/login \\
           --body '{"username":"user","password":"pass"}' --save token.jwt
 
+    Available Commands:
+      decode              Decode and analyze JWT tokens
+      encode              Create JWT tokens with custom payloads
+      verify              Verify a token signature against key material (no network)
+      test-alg-none       Test algorithm confusion (alg:none) attacks
+      test-null-signature Test null signature bypass attacks
+      test-alg-confusion  Test RS256/ES256 -> HS256 key confusion (substitution)
+      brute-secret        Brute-force weak HMAC secrets
+      test-kid-injection  Test Key ID (kid) injection vulnerabilities
+      test-jwks-spoof     Test JWKS URL spoofing attacks
+      test-inline-jwks    Test inline JWKS injection attacks
+      attack-test         Comprehensive automated attack testing (NEW)
+    
     Use 'python apileaks.py jwt COMMAND --help' for detailed help on any command.
     """
     pass
@@ -4411,6 +4424,9 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         else:
             token = encode_jwt(header_dict, payload_dict, secret)
             secret_label = secret
+        
+        # Encode JWT
+        token = encode_jwt(header_dict, payload_dict, secret)
 
         click.echo("\n" + "="*60)
         click.echo("JWT Token Generated")
@@ -4422,10 +4438,15 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
             click.echo(click.style(f"\n🔑 Key confusion: signed with DER bytes of {public_key_file}", fg='yellow'))
         else:
             click.echo(f"\n🔑 Secret Used: {secret_label}")
+        is_none_alg = header_dict.get('alg', '').lower() == 'none'
+        if is_none_alg:
+            click.echo(click.style("\n⚠️  alg:none — no signature generated (trailing dot only)", fg='yellow'))
+        else:
+            click.echo(f"\n🔑 Secret Used: {secret}")
 
         click.echo("📋 Header: " + click.style(json.dumps(header_dict), fg=JWT_HEADER_COLOR))
         click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
-        click.echo(f"\n🎫 Generated Token (colour-coded by section):")
+        click.echo(f"\n🎫 Generated Token:")
         click.echo("-" * 20)
         click.echo(colorize_jwt(decode_jwt(token)))
         if is_none_alg:
@@ -4433,6 +4454,11 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
                        + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
                        + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
         else:
+        if is_none_alg:
+            # Print raw token — colorize_jwt would fail on empty signature
+            click.echo(token)
+        else:
+            click.echo(colorize_jwt(decode_jwt(token)))
             click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
                        + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
                        + "  " + click.style("■ signature", fg=JWT_SIGNATURE_COLOR, bold=True))
