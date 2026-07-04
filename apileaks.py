@@ -4310,19 +4310,6 @@ def jwt(ctx):
       python apileaks.py jwt login --url http://HOST/api/v1/login \\
           --body '{"username":"user","password":"pass"}' --save token.jwt
 
-    Available Commands:
-      decode              Decode and analyze JWT tokens
-      encode              Create JWT tokens with custom payloads
-      verify              Verify a token signature against key material (no network)
-      test-alg-none       Test algorithm confusion (alg:none) attacks
-      test-null-signature Test null signature bypass attacks
-      test-alg-confusion  Test RS256/ES256 -> HS256 key confusion (substitution)
-      brute-secret        Brute-force weak HMAC secrets
-      test-kid-injection  Test Key ID (kid) injection vulnerabilities
-      test-jwks-spoof     Test JWKS URL spoofing attacks
-      test-inline-jwks    Test inline JWKS injection attacks
-      attack-test         Comprehensive automated attack testing (NEW)
-    
     Use 'python apileaks.py jwt COMMAND --help' for detailed help on any command.
     """
     pass

