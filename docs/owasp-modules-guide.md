@@ -360,19 +360,26 @@ export APILEAK_TARGET="https://staging-api.example.com"
 export APILEAK_MODULES="bola,auth,property"
 export APILEAK_JWT_TOKEN="${CI_JWT_TOKEN}"
 export APILEAK_RATE_LIMIT="3"
-export APILEAK_OUTPUT_DIR="security_reports"
 
-python apileaks.py scan --log-level ERROR
+python apileaks.py scan \
+  --jwt "${APILEAK_JWT_TOKEN}" \
+  --ci-mode \
+  --fail-on high \
+  --no-banner
 
-# Check for critical vulnerabilities
-if [ $? -eq 2 ]; then
+# scan exits with:
+#   0 = no findings at or above --fail-on threshold
+#   1 = high severity findings found
+#   2 = critical findings found
+EXIT=$?
+if [ $EXIT -eq 2 ]; then
     echo "❌ Critical vulnerabilities found! Failing CI/CD pipeline."
     exit 1
-elif [ $? -eq 1 ]; then
+elif [ $EXIT -eq 1 ]; then
     echo "⚠️ High severity vulnerabilities found. Review required."
-    exit 0
+    exit 1
 else
-    echo "✅ No critical vulnerabilities found."
+    echo "✅ No findings above threshold."
     exit 0
 fi
 ```
@@ -563,16 +570,14 @@ python apileaks.py scan \
   --modules bola,auth,property \
   --rate-limit 3 \
   --output "security-scan-${BUILD_NUMBER}" \
-  --log-level ERROR
+  --ci-mode \
+  --fail-on high \
+  --no-banner
 
-# The CI gate is driven by scan: --ci-mode, --fail-on (default `high`), --sarif,
-# --baseline, and --safe-mode. The gate now fails on `high` findings by default
-# (previously `critical`).
-
-# Check exit codes
-# 0 = No critical/high findings
-# 1 = High severity findings found  
-# 2 = Critical findings found (fail pipeline)
+# Exit codes:
+# 0 = no findings at or above --fail-on threshold
+# 1 = high severity findings found (default gate)
+# 2 = critical findings found
 ```
 
 ### 5. **Reporting**
@@ -582,16 +587,9 @@ python apileaks.py scan \
 
 ---
 
-## 🚀 Next Steps
+## 🚀 All Modules Available
 
-### Modules Available
-
-All ten OWASP API Security Top 10 2023 modules are implemented and registered:
-- **SSRF Testing** (API7) - Server-Side Request Forgery (`ssrf`)
-- **Business Flows** (API6) - Unrestricted Access to Sensitive Business Flows (`business_flow`)
-- **Security Misconfiguration** (API8) - `security_misconfig`
-- **Inventory Management** (API9) - `inventory`
-- **Unsafe Consumption** (API10) - `unsafe_consumption`
+All ten OWASP API Security Top 10 2023 modules are fully implemented and registered. See the [OWASP Coverage](owasp/README.md) for a detailed breakdown of what each module detects.
 
 ### Future Features
 - **Machine Learning**: Intelligent pattern detection
@@ -605,6 +603,8 @@ All ten OWASP API Security Top 10 2023 modules are implemented and registered:
 
 ### Additional Documentation
 - **[Quick Reference](quick-reference.md)** - Basic commands and examples
+- **[Scan Guide](scan-guide.md)** - Complete `scan` command reference
+- **[OWASP Command Reference](owasp-command.md)** - Complete `owasp <module>` reference
 - **[CI/CD Integration](ci-cd-integration.md)** - Configuration for automated pipelines
 - **[Troubleshooting Guide](troubleshooting-guide.md)** - Common problem solutions
 - **[Example Configurations](../config/examples/README.md)** - Ready-to-use examples

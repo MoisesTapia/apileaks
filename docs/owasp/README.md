@@ -7,17 +7,17 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 | Rank | Category | Module key | Status | Priority | Summary |
 |------|----------|-----------|--------|----------|---------|
 | **API1** | [Broken Object Level Authorization](bola-testing.md) | `bola` | ✅ Complete | P0 | Broken Object Level Authorization (BOLA) detection |
-| **API2** | [Broken Authentication](auth-testing.md) | `auth` | ✅ Complete | P0 | Broken Authentication detection |
+| **API2** | Broken Authentication | `auth` | ✅ Complete | P0 | Broken Authentication detection |
 | **API3** | [Broken Object Property Level Authorization](property-level-auth.md) | `property` | ✅ Complete | P0 | Broken Object Property Level Authorization detection |
-| **API4** | [Unrestricted Resource Consumption](resource-consumption.md) | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
-| **API5** | [Broken Function Level Authorization](function-level-auth.md) | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
+| **API4** | Unrestricted Resource Consumption | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
+| **API5** | Broken Function Level Authorization | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
 | **API6** | Unrestricted Access to Sensitive Business Flows | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
-| **API7** | [Server-Side Request Forgery](ssrf-testing.md) | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
+| **API7** | Server-Side Request Forgery | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
 | **API8** | Security Misconfiguration | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
 | **API9** | Improper Inventory Management | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
 | **API10** | Unsafe Consumption of APIs | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
 
-**Legend**: ✅ Complete | 🔄 In Progress | 📋 Planned
+**Legend**: ✅ Complete
 
 ### Running the modules
 
@@ -30,31 +30,27 @@ python apileaks.py scan --target https://api.example.com
 python apileaks.py scan --target https://api.example.com --modules bola,auth
 ```
 
-> `scan` is the primary orchestrator (discovery + all registered modules by default). `full` and `main` are deprecated, hidden aliases of `scan` (still functional, but they emit a stderr notice). Prefer `apileaks owasp <key>` for a single module — e.g. `full --modules bola` → `apileaks owasp bola`. Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
+> `scan` is the primary orchestrator (discovery + all registered modules by default). `full` and `main` are deprecated, hidden aliases of `scan` (still functional, but they emit a stderr notice). Prefer `apileaks owasp <key>` for a single module — e.g. `full --modules bola` → `apileaks owasp bola`. Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only. See the [OWASP Command Reference](../owasp-command.md) for the complete `owasp` CLI documentation.
 
-## 🎯 Implementation Strategy
+## 🎯 Module Status
 
-### Phase 1: P0 Modules (Critical - Weeks 1-10)
-Focus on the most critical vulnerabilities that pose immediate security risks:
+All ten OWASP API Security Top 10 2023 modules are fully implemented and registered:
 
-- ✅ **API1 - BOLA Testing**: Complete with comprehensive ID enumeration and privilege escalation detection
-- ✅ **API2 - Authentication Testing**: Complete with JWT analysis, weak secrets, and token lifecycle testing  
-- ✅ **API3 - Property Level Authorization**: Complete with mass assignment and sensitive data exposure detection
-- 🔄 **API5 - Function Level Authorization**: In development - admin access and privilege escalation testing
+### P0 Modules (Critical)
+- ✅ **API1 — `bola`**: Comprehensive ID enumeration, horizontal privilege escalation, anonymous object access, cross-user leakage. Supports composite-key, verb-tampering, parameter-pollution, and id-leakage probes with opt-in destructive mode.
+- ✅ **API2 — `auth`**: JWT algorithm confusion, expired-token acceptance, weak HMAC secrets, missing authentication, MFA bypass, OAuth flow abuse, predictable reset tokens. Opt-in aggressive probes (rate-limit burst, revocation race).
+- ✅ **API3 — `property`**: Mass assignment, sensitive field exposure (passwords, API keys, SSNs), undocumented response fields, read-only property bypass.
+- ✅ **API5 — `function_auth`**: Unauthorized admin access, HTTP method bypass, parameter/header bypass, vertical privilege escalation.
 
-### Phase 2: P1 Modules (High Priority - Weeks 11-16)
-Important vulnerabilities that significantly impact security:
+### P1 Modules (High Priority)
+- ✅ **API4 — `resource`**: Missing rate limiting, oversized payload acceptance, deeply nested JSON, ReDoS-susceptible patterns, complex query processing without guards.
+- ✅ **API6 — `business_flow`**: Business logic bypass, sensitive workflow manipulation, excessive-use detection.
+- ✅ **API7 — `ssrf`**: Internal network access, cloud metadata endpoint access (`169.254.169.254`), file-protocol abuse, SSRF via redirect chains.
+- ✅ **API8 — `security_misconfig`**: Misconfigured CORS, missing or weak security headers, insecure framework defaults, verbose error responses.
 
-- 🔄 **API4 - Resource Consumption**: DoS testing, rate limiting validation, payload size limits
-- 🔄 **API7 - SSRF Testing**: Internal network access, cloud metadata exposure, file protocol abuse
-- 📋 **API6 - Business Flows**: Business logic bypass, workflow manipulation
-- 📋 **API8 - Security Misconfiguration**: CORS, security headers, framework detection
-
-### Phase 3: P2 Modules (Medium Priority - Weeks 17-20)
-Operational and inventory management vulnerabilities:
-
-- 📋 **API9 - Inventory Management**: API versioning, deprecated endpoints, documentation gaps
-- 📋 **API10 - Unsafe Consumption**: Third-party API risks, data validation, trust boundaries
+### P2 Modules (Medium Priority)
+- ✅ **API9 — `inventory`**: Deprecated/undocumented API versions, shadow endpoints not in official specs, documentation gaps.
+- ✅ **API10 — `unsafe_consumption`**: Insufficient validation of external API data, insecure trust boundaries with third-party services.
 
 ## 🛡️ Module Architecture
 
@@ -244,12 +240,12 @@ Integrate OWASP testing into CI/CD pipelines:
 
 ### Detailed Module Guides
 
-- **[BOLA Testing](bola-testing.md)** - Comprehensive guide to Broken Object Level Authorization testing
-- **[Authentication Testing](auth-testing.md)** - JWT vulnerabilities, token lifecycle, and weak authentication
-- **[Property Level Authorization](property-level-auth.md)** - Mass assignment, data exposure, and property-level access control
-- **[Resource Consumption](resource-consumption.md)** - DoS testing and resource exhaustion detection
-- **[Function Level Authorization](function-level-auth.md)** - Admin access and function-level privilege testing
-- **[SSRF Testing](ssrf-testing.md)** - Server-Side Request Forgery detection and exploitation
+- **[BOLA Testing (API1)](bola-testing.md)** - Comprehensive guide to Broken Object Level Authorization testing
+- **[Property Level Authorization (API3)](property-level-auth.md)** - Mass assignment, data exposure, and property-level access control
+- **[OWASP Command Reference](../owasp-command.md)** - Full `owasp` CLI reference for all ten modules and module-specific options
+- **[Scan Guide](../scan-guide.md)** - Orchestrated multi-module scan with full `scan` option reference
+
+For the `auth` (API2) module JWT attack vectors and manual utilities, see the **[JWT Attacks Guide](../jwt-attacks.md)**.
 
 ### Quick Reference
 
