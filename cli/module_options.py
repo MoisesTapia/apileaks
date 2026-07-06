@@ -244,3 +244,157 @@ def apply_auth_options(auth_cfg, opts: dict) -> None:
         auth_cfg.reset_token_samples = list(opts['reset_token_sample'])
     if opts.get('reset_token_known_input'):
         auth_cfg.reset_token_known_inputs = list(opts['reset_token_known_input'])
+
+
+# ---------------------------------------------------------------------------
+# SSRF Module_Specific_Options (Requirement 9.1). Declares all six CLI options
+# for the ``owasp ssrf`` subcommand. Do NOT import SSRFConfig here — the
+# applier mutates via attribute assignment only to avoid circular imports.
+# ---------------------------------------------------------------------------
+
+SSRF_OPTIONS = [
+    click.option('--ssrf-callback-url', 'ssrf_callback_url', metavar='URL', default=None,
+                 help='OOB callback URL for blind SSRF detection. '
+                      'Inject this URL as a payload and check your listener '
+                      '(e.g. Burp Collaborator, Interactsh) for incoming requests.'),
+    click.option('--ssrf-internal-targets', 'ssrf_internal_targets',
+                 multiple=True, metavar='HOST',
+                 help='Additional internal host/IP to probe (repeatable). '
+                      'Merged with the built-in cloud metadata target list, no duplicates.'),
+    click.option('--ssrf-schemes', 'ssrf_schemes',
+                 multiple=True, metavar='SCHEME',
+                 help='Additional URL scheme to test (repeatable), e.g. gopher://. '
+                      'Replaces the built-in scheme list when provided.'),
+    click.option('--ssrf-scan-ports', 'ssrf_scan_ports', metavar='PORTS', default=None,
+                 help='Comma-separated list of ports to probe via internal SSRF '
+                      '(e.g. 22,80,443,8080). Requires --allow-aggressive-ssrf.'),
+    click.option('--ssrf-body-injection', 'ssrf_body_injection', is_flag=True, default=False,
+                 help='Enable SSRF payload injection into JSON request body fields on '
+                      'POST/PUT/PATCH endpoints (off by default).'),
+    click.option('--ssrf-body-methods', 'ssrf_body_methods', metavar='METHODS', default=None,
+                 help='Comma-separated HTTP methods to use for body injection probes '
+                      '(e.g. POST,PUT,PATCH). When set, body injection is attempted '
+                      'with each method regardless of what the discovery engine recorded '
+                      'for the endpoint. Requires --ssrf-body-injection.'),
+    click.option('--ssrf-body-field', 'ssrf_body_field', multiple=True, metavar='FIELD',
+                 help='Explicit JSON body field name to always inject SSRF payloads into '
+                      '(repeatable, e.g. --ssrf-body-field imageUrl --ssrf-body-field callback). '
+                      'Merged with auto-detected fields; does not replace them.'),
+    click.option('--burp-xml', 'burp_xml', metavar='PATH', default=None,
+                 help='Path to a Burp Suite XML Proxy-History export file. '
+                      'Requests are replayed in Full_Replay_Mode: original headers and '
+                      'cookies are preserved; only URL-like body field values are replaced '
+                      'by SSRF payloads.'),
+    click.option('--har', 'har', metavar='PATH', default=None,
+                 help='Path to a HAR (HTTP Archive) JSON file exported from Burp Suite, '
+                      'Caido, Hetty, Chrome DevTools, or Firefox. '
+                      'Requests are replayed in Full_Replay_Mode.'),
+    click.option('--allow-aggressive-ssrf', 'allow_aggressive_ssrf', is_flag=True, default=False,
+                 help='Aggressive_Opt_In: authorize the SSRF module to issue high-impact '
+                      'probes (internal port scanning, redirect-chain testing). '
+                      'Off by default; when omitted these probes are skipped.'),
+]
+
+
+def ssrf_options(func):
+    """Attach the SSRF Module_Specific_Options to ``func`` (Requirement 9.1).
+
+    Applies ``SSRF_OPTIONS`` in REVERSE order so that, once Click stacks the
+    decorators, the options appear in declaration order on the resulting command.
+    """
+    for option in reversed(SSRF_OPTIONS):
+        func = option(func)
+    return func
+
+
+def apply_ssrf_options(ssrf_cfg, opts: dict) -> None:
+    """Mutate a ``SSRFConfig`` from collected option values (Requirement 9.2).
+
+    Maps each SSRF CLI option to the corresponding ``SSRFConfig`` field via
+    attribute assignment only — SSRFConfig is NOT imported here to avoid
+    circular imports. When none of the options are provided the function is a
+    no-op and all ``SSRFConfig`` defaults are preserved (Requirement 9.9).
+
+    Emits a non-terminating stderr warning when ``--ssrf-scan-ports`` is
+    given without ``--allow-aggressive-ssrf`` (Requirement 9.10).
+
+    Args:
+        ssrf_cfg: The ``SSRFConfig`` instance to mutate in place.
+        opts: The collected Click option values (keyed by option dest name).
+    """
+    # --ssrf-callback-url → ssrf_cfg.callback_url (Requirement 9.3)
+    if opts.get('ssrf_callback_url'):
+        ssrf_cfg.callback_url = opts['ssrf_callback_url']
+
+    # --ssrf-internal-targets (multiple=True, yields tuple) → merge into
+    # ssrf_cfg.additional_internal_targets with no duplicates (Requirement 9.4)
+    if opts.get('ssrf_internal_targets'):
+        incoming = list(opts['ssrf_internal_targets'])
+        existing = list(ssrf_cfg.additional_internal_targets)
+        seen = set(existing)
+        for host in incoming:
+            if host not in seen:
+                existing.append(host)
+                seen.add(host)
+        ssrf_cfg.additional_internal_targets = existing
+
+    # --ssrf-schemes (multiple=True, yields tuple) → set additional_schemes
+    # (Requirement 9.5)
+    if opts.get('ssrf_schemes'):
+        ssrf_cfg.additional_schemes = list(opts['ssrf_schemes'])
+
+    # --ssrf-scan-ports → parse comma-separated integers, set scan_ports
+    # (Requirement 9.6)
+    if opts.get('ssrf_scan_ports'):
+        ssrf_cfg.scan_ports = [
+            int(p.strip())
+            for p in opts['ssrf_scan_ports'].split(',')
+            if p.strip()
+        ]
+
+    # --ssrf-body-injection flag → enable body injection (Requirement 9.7)
+    if opts.get('ssrf_body_injection'):
+        ssrf_cfg.body_injection = True
+
+    # --ssrf-body-methods → parse comma-separated methods, set body_injection_methods.
+    # Implicitly enables body_injection so the operator doesn't have to pass both flags.
+    if opts.get('ssrf_body_methods'):
+        methods = [
+            m.strip().upper()
+            for m in opts['ssrf_body_methods'].split(',')
+            if m.strip()
+        ]
+        ssrf_cfg.body_injection_methods = methods
+        ssrf_cfg.body_injection = True  # --ssrf-body-methods implies body injection
+        if not opts.get('ssrf_body_injection'):
+            click.echo(
+                "Info: --ssrf-body-methods implies --ssrf-body-injection; "
+                "body injection enabled automatically.",
+                err=True,
+            )
+
+    # --ssrf-body-field (multiple=True) → merge into extra_body_fields
+    if opts.get('ssrf_body_field'):
+        ssrf_cfg.extra_body_fields = list(opts['ssrf_body_field'])
+
+    # --burp-xml PATH → burp_xml_path
+    if opts.get('burp_xml'):
+        ssrf_cfg.burp_xml_path = opts['burp_xml']
+        ssrf_cfg.body_injection = True  # import sources imply body injection
+
+    # --har PATH → har_path
+    if opts.get('har'):
+        ssrf_cfg.har_path = opts['har']
+        ssrf_cfg.body_injection = True  # import sources imply body injection
+
+    # --allow-aggressive-ssrf flag → enable port scanning gate (Requirement 9.8)
+    if opts.get('allow_aggressive_ssrf'):
+        ssrf_cfg.allow_port_scan = True
+
+    # Req 9.10: warn when --ssrf-scan-ports is supplied without
+    # --allow-aggressive-ssrf so the operator knows the ports list has no effect.
+    if opts.get('ssrf_scan_ports') and not opts.get('allow_aggressive_ssrf'):
+        click.echo(
+            "Warning: --ssrf-scan-ports has no effect without --allow-aggressive-ssrf.",
+            err=True,
+        )

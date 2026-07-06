@@ -26,8 +26,10 @@ from core.config import OWASPConfig
 from cli.module_options import (
     apply_auth_options,
     apply_bola_options,
+    apply_ssrf_options,
     auth_options,
     bola_options,
+    ssrf_options,
 )
 
 
@@ -107,6 +109,8 @@ OWASP_MODULE_DESCRIPTORS: List[OwaspModuleDescriptor] = [
         owasp_category="API7",
         summary="Server-Side Request Forgery (SSRF) detection",
         config_field="ssrf_testing",
+        specific_options=ssrf_options,
+        apply_options=apply_ssrf_options,
     ),
     OwaspModuleDescriptor(
         key="security_misconfig",

@@ -378,6 +378,41 @@ class SSRFConfig:
     ])
     file_protocols: List[str] = field(default_factory=lambda: ["file://", "ftp://"])
 
+    # Expanded fields (Requirement 1.1–1.7)
+    # Authoritative safe-mode flag — replaces getattr fallbacks (Req 1.1, 10.6).
+    safe_mode: bool = False
+    # OOB callback listener URL for blind SSRF detection (Req 1.2).
+    callback_url: Optional[str] = None
+    # Extra internal hosts/IPs to probe in addition to internal_targets (Req 1.3).
+    additional_internal_targets: List[str] = field(default_factory=list)
+    # Extra URL schemes to test in addition to file_protocols (Req 1.4).
+    additional_schemes: List[str] = field(default_factory=list)
+    # Gate for internal port-scanning probes (Req 1.5).
+    allow_port_scan: bool = False
+    # Ports to probe when allow_port_scan is True (Req 1.6).
+    scan_ports: List[int] = field(default_factory=lambda: [
+        22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
+    ])
+    # When True, IP-encoding bypass payloads (decimal, octal, hex, IPv6) are
+    # generated and injected alongside the plain internal targets (Req 1.7).
+    bypass_encodings: bool = True
+    # When True, SSRF payloads are injected into JSON request body fields on
+    # POST/PUT/PATCH endpoints (Req 1.4, 3.1–3.5).
+    body_injection: bool = False
+    # HTTP methods to use for body injection probes. When non-empty, body
+    # injection is attempted with each of these methods regardless of the
+    # method the discovery engine recorded for the endpoint. This lets the
+    # operator force POST/PUT/PATCH body probes even when the endpoint was
+    # discovered via GET. Defaults to empty list (use the endpoint's own method).
+    body_injection_methods: List[str] = field(default_factory=list)
+    # --- Import source fields (--burp-xml / --har / --ssrf-body-field) ----
+    # Path to a Burp Suite XML Proxy-History export file.
+    burp_xml_path: Optional[str] = None
+    # Path to a HAR (HTTP Archive) JSON file.
+    har_path: Optional[str] = None
+    # Explicit body field names to always probe (merged with auto-detection).
+    extra_body_fields: List[str] = field(default_factory=list)
+
 
 @dataclass
 class BusinessFlowConfig:
@@ -1103,13 +1138,35 @@ class ConfigurationManager:
             property_testing=PropertyTestingConfig(**data.get('property_testing', {})),
             resource_testing=ResourceTestingConfig(**data.get('resource_testing', {})),
             function_auth_testing=FunctionAuthConfig(**data.get('function_auth_testing', {})),
-            ssrf_testing=SSRFConfig(**data.get('ssrf_testing', {})),
+            ssrf_testing=self._build_ssrf_config(data.get('ssrf_testing', {})),
             business_flow_testing=BusinessFlowConfig(**data.get('business_flow_testing', {})),
             security_misconfig_testing=SecurityMisconfigConfig(**data.get('security_misconfig_testing', {})),
             inventory_testing=InventoryConfig(**data.get('inventory_testing', {})),
             unsafe_consumption_testing=UnsafeConsumptionConfig(**data.get('unsafe_consumption_testing', {}))
         )
     
+    def _build_ssrf_config(self, data: Dict[str, Any]) -> SSRFConfig:
+        """Build SSRFConfig from a YAML/JSON config dict, mapping all known
+        fields explicitly so new fields are always populated correctly even when
+        the caller passes a partial or empty dict."""
+        return SSRFConfig(
+            enabled=data.get('enabled', True),
+            internal_targets=data.get('internal_targets', [
+                "127.0.0.1", "localhost", "169.254.169.254", "metadata.google.internal"
+            ]),
+            file_protocols=data.get('file_protocols', ["file://", "ftp://"]),
+            # New fields (Requirement 1.1–1.7)
+            safe_mode=data.get('safe_mode', False),
+            callback_url=data.get('callback_url', None),
+            additional_internal_targets=data.get('additional_internal_targets', []),
+            additional_schemes=data.get('additional_schemes', []),
+            allow_port_scan=data.get('allow_port_scan', False),
+            scan_ports=data.get('scan_ports', [
+                22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
+            ]),
+            bypass_encodings=data.get('bypass_encodings', True),
+        )
+
     def _build_auth_config(self, data: Dict[str, Any]) -> AuthConfig:
         """Build authentication configuration from dict"""
         contexts_data = data.get('contexts', [])

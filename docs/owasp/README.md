@@ -12,7 +12,7 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 | **API4** | Unrestricted Resource Consumption | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
 | **API5** | Broken Function Level Authorization | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
 | **API6** | Unrestricted Access to Sensitive Business Flows | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
-| **API7** | Server-Side Request Forgery | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
+| **API7** | [Server-Side Request Forgery](ssrf-testing.md) | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
 | **API8** | Security Misconfiguration | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
 | **API9** | Improper Inventory Management | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
 | **API10** | Unsafe Consumption of APIs | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
@@ -45,7 +45,7 @@ All ten OWASP API Security Top 10 2023 modules are fully implemented and registe
 ### P1 Modules (High Priority)
 - ✅ **API4 — `resource`**: Missing rate limiting, oversized payload acceptance, deeply nested JSON, ReDoS-susceptible patterns, complex query processing without guards.
 - ✅ **API6 — `business_flow`**: Business logic bypass, sensitive workflow manipulation, excessive-use detection.
-- ✅ **API7 — `ssrf`**: Internal network access, cloud metadata endpoint access (`169.254.169.254`), file-protocol abuse, SSRF via redirect chains.
+- ✅ **API7 — `ssrf`**: Internal network access, cloud metadata endpoint access (`169.254.169.254`), file-protocol abuse, URL-scheme bypass, IP-encoding bypass, blind SSRF via OOB callback, opt-in port scanning and redirect-chain probes.
 - ✅ **API8 — `security_misconfig`**: Misconfigured CORS, missing or weak security headers, insecure framework defaults, verbose error responses.
 
 ### P2 Modules (Medium Priority)
@@ -242,6 +242,7 @@ Integrate OWASP testing into CI/CD pipelines:
 
 - **[BOLA Testing (API1)](bola-testing.md)** - Comprehensive guide to Broken Object Level Authorization testing
 - **[Property Level Authorization (API3)](property-level-auth.md)** - Mass assignment, data exposure, and property-level access control
+- **[SSRF Testing (API7)](ssrf-testing.md)** - Internal network access, cloud metadata, blind SSRF, bypass encodings, port scanning
 - **[OWASP Command Reference](../owasp-command.md)** - Full `owasp` CLI reference for all ten modules and module-specific options
 - **[Scan Guide](../scan-guide.md)** - Orchestrated multi-module scan with full `scan` option reference
 
@@ -256,7 +257,7 @@ For the `auth` (API2) module JWT attack vectors and manual utilities, see the **
 | **Property** | Mass assignment, data exposure | Admin privilege escalation, sensitive data leaks |
 | **Resource** | DoS testing, rate limiting | Missing rate limits, large payload acceptance |
 | **Function** | Admin access, method bypass | Unauthorized admin access, HTTP method bypass |
-| **SSRF** | Internal network access | Cloud metadata access, internal service exposure |
+| **SSRF** | Internal/metadata access, scheme bypass, blind OOB, port scan | Cloud metadata exposure, blocklist bypass, blind SSRF |
 
 ## 🔍 Finding Analysis
 

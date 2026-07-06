@@ -120,7 +120,13 @@ class TestSSRFSafeMode:
         assert mock_http_client.request.call_count > 0
         # The POST probes were issued with the original (state-changing) method.
         assert all(call.args[0] == "POST" for call in mock_http_client.request.call_args_list)
-        assert any(f.category == "SSRF_INTERNAL_ACCESS" for f in findings)
+        # 169.254.169.254 is a cloud metadata address; Task 5's category override
+        # emits SSRF_CLOUD_METADATA (not SSRF_INTERNAL_ACCESS) when signatures
+        # match. Accept either category to confirm probes produced findings.
+        assert any(
+            f.category in {"SSRF_INTERNAL_ACCESS", "SSRF_CLOUD_METADATA"}
+            for f in findings
+        )
 
     @pytest.mark.asyncio
     async def test_safe_method_still_probed_when_safe_mode_enabled(
@@ -140,7 +146,12 @@ class TestSSRFSafeMode:
 
         assert mock_http_client.request.call_count > 0
         assert all(call.args[0] == "GET" for call in mock_http_client.request.call_args_list)
-        assert any(f.category == "SSRF_INTERNAL_ACCESS" for f in findings)
+        # 169.254.169.254 is a cloud metadata address; Task 5's category override
+        # emits SSRF_CLOUD_METADATA when signatures match. Accept either category.
+        assert any(
+            f.category in {"SSRF_INTERNAL_ACCESS", "SSRF_CLOUD_METADATA"}
+            for f in findings
+        )
 
 
 class TestBusinessFlowsSafeMode:
