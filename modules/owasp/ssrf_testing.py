@@ -1640,9 +1640,17 @@ class SSRFTestingModule(OWASPModule):
                                    response: Optional[Response],
                                    injection_point: str) -> Optional[Finding]:
         """
-        Detect internal/metadata access. A finding is emitted when the response
-        body contains internal-host/metadata signatures, or when an injected
-        internal target yields a successful 2xx response.
+        Detect internal/metadata access. A finding is emitted when:
+        - The response body contains an INTERNAL_TARGET_SIGNATURES match, OR
+        - The response status code is in config.success_status_codes AND
+          config.require_signature is False.
+
+        When config.require_signature is True, plain 2xx responses without a
+        body signature are suppressed — useful to reduce false positives on APIs
+        that return 200 for any URL parameter regardless of what was fetched.
+
+        config.success_status_codes controls which status codes count as a
+        "success hit" (defaults to the full 2xx range 200-299).
         """
         if response is None:
             return None
@@ -1651,10 +1659,18 @@ class SSRFTestingModule(OWASPModule):
         matched = self._match_signature(body, INTERNAL_TARGET_SIGNATURES)
 
         signature_hit = matched is not None
-        success_hit = 200 <= response.status_code < 300
+        success_codes = getattr(self.config, 'success_status_codes', list(range(200, 300)))
+        success_hit = response.status_code in success_codes
+        require_sig = getattr(self.config, 'require_signature', False)
 
-        if not (signature_hit or success_hit):
-            return None
+        # When require_signature is True, plain success responses without a
+        # body signature are not evidence of SSRF — suppress the finding.
+        if require_sig:
+            if not signature_hit:
+                return None
+        else:
+            if not (signature_hit or success_hit):
+                return None
 
         if signature_hit:
             evidence = (f"Internal target content reached via {injection_point} injection. "

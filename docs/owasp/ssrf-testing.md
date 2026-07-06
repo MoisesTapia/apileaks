@@ -20,6 +20,7 @@ The module runs in isolation as `apileaks owasp ssrf --target URL` (the recommen
   - [JSON body injection (`--ssrf-body-injection`)](#json-body-injection---ssrf-body-injection)
   - [Forced body injection methods (`--ssrf-body-methods`)](#forced-body-injection-methods---ssrf-body-methods)
   - [Aggressive mode (`--allow-aggressive-ssrf`)](#aggressive-mode---allow-aggressive-ssrf)
+  - [Spec-seeded scan (`--openapi` / `--postman`)](#spec-seeded-scan---openapi----postman)
   - [Burp Suite XML import (`--burp-xml`)](#burp-suite-xml-import---burp-xml)
   - [HAR file import (`--har`)](#har-file-import---har)
   - [Explicit body field (`--ssrf-body-field`)](#explicit-body-field---ssrf-body-field)
@@ -86,6 +87,36 @@ python apileaks.py scan \
   --modules ssrf,auth,bola
 ```
 
+### Two-Phase SSRF Workflow
+
+The recommended approach when you don't have a spec: use `par` to find URL-accepting parameters first, then target them with `owasp ssrf`.
+
+```bash
+# Phase 1 — discover which endpoints accept URL parameters
+python apileaks.py par \
+  --target https://api.example.com/v1/proxy \
+  --methods GET
+# Look for MEDIUM findings tagged OWASP API7 — those are SSRF candidates.
+
+# Phase 2 — exploit confirmed URL params with SSRF probes
+python apileaks.py owasp ssrf \
+  --target https://api.example.com \
+  --ssrf-internal-targets 169.254.169.254 \
+  --ssrf-body-methods POST,PUT,PATCH
+```
+
+When you already have a spec (OpenAPI or Postman), skip Phase 1 and feed it directly to `owasp ssrf` with `--openapi`:
+
+```bash
+curl -s https://api.example.com/openapi.json -o /tmp/spec.json
+
+python apileaks.py owasp ssrf \
+  --target https://api.example.com \
+  --openapi /tmp/spec.json \
+  --ssrf-body-methods POST,PUT,PATCH \
+  --ssrf-internal-targets 169.254.169.254
+```
+
 ## 📖 Command Reference
 
 All SSRF options are supplied to `apileaks owasp ssrf` (single-module) or to `scan` when running SSRF alongside other modules. The following options control SSRF behavior directly.
@@ -106,6 +137,8 @@ All SSRF options are supplied to `apileaks owasp ssrf` (single-module) or to `sc
 | `--burp-xml PATH` | Feed a Burp Suite Proxy History XML export into the module (Full_Replay_Mode) |
 | `--har PATH` | Feed a HAR file (Burp, Caido, Chrome DevTools, Firefox) into the module (Full_Replay_Mode) |
 | `--ssrf-body-field FIELD` | Explicitly name a JSON body field to always probe (repeatable, additive) |
+| `--openapi PATH` | OpenAPI/Swagger spec that seeds the module with known endpoints (repeatable). When supplied, discovery wordlist is skipped and parameter fuzzing is disabled — only SSRF probes run against the spec-declared endpoints |
+| `--postman PATH` | Postman collection as an endpoint seed source (repeatable, merged with `--openapi`) |
 
 ### Enable the module (`--modules ssrf`)
 
@@ -270,6 +303,45 @@ python apileaks.py owasp ssrf \
   --allow-aggressive-ssrf \
   --ssrf-scan-ports 80,443,8080,8443,3306
 ```
+
+### Spec-seeded scan (`--openapi` / `--postman`)
+
+**Description.** Feeds a known API spec into `owasp ssrf` so it probes spec-declared endpoints directly — without running the wordlist discovery phase. When `--openapi` or `--postman` is supplied:
+
+1. All operations from the spec are converted into scope endpoints.
+2. Wordlist discovery is skipped entirely — no `/api`, `/v1`, `/admin` probes are issued.
+3. Parameter fuzzing is disabled — only the SSRF module runs.
+4. The module tests every spec endpoint with the full SSRF probe set (query params, headers, body injection if enabled).
+
+This is the recommended way to run `owasp ssrf` against a known API because it scopes the scan precisely to real endpoints and is dramatically faster than wordlist discovery against paths that don't exist.
+
+Both options are repeatable and merged when both are supplied.
+
+**Example:**
+
+```bash
+# Download the spec once, then scan against it
+curl -s https://api.example.com/openapi.json -o /tmp/spec.json
+
+python apileaks.py owasp ssrf \
+  --target https://api.example.com \
+  --openapi /tmp/spec.json \
+  --ssrf-body-methods POST,PUT,PATCH \
+  --ssrf-internal-targets 172.16.0.1
+
+# Combine OpenAPI + Postman sources
+python apileaks.py owasp ssrf \
+  --target https://api.example.com \
+  --openapi /tmp/openapi.json \
+  --postman /tmp/collection.json \
+  --ssrf-body-methods POST
+```
+
+> **Tip**: when the target runs FastAPI, Flask, or any framework that auto-exposes `/openapi.json` or `/swagger.json`, pull the spec directly:
+> ```bash
+> curl -s http://localhost:8000/openapi.json -o /tmp/spec.json
+> python apileaks.py owasp ssrf --target http://localhost:8000 --openapi /tmp/spec.json
+> ```
 
 ### Burp Suite XML import (`--burp-xml`)
 
@@ -483,6 +555,14 @@ owasp_testing:
 
     # Extra body field names to always probe regardless of auto-detection
     extra_body_fields: []
+
+    # OpenAPI/Swagger spec paths — when set, wordlist discovery and parameter
+    # fuzzing are skipped; only SSRF probes run against spec-declared endpoints
+    # (equivalent to passing --openapi on the CLI).
+    openapi_paths: []
+
+    # Postman collection paths — merged with openapi_paths when both are set
+    postman_paths: []
 ```
 
 | Field | CLI equivalent | Default | Purpose |
@@ -499,6 +579,8 @@ owasp_testing:
 | `burp_xml_path` | `--burp-xml` | `null` | Path to Burp Suite XML export; activates Full Replay Mode |
 | `har_path` | `--har` | `null` | Path to HAR JSON file; activates Full Replay Mode |
 | `extra_body_fields` | `--ssrf-body-field` | `[]` | Additional body field names to always probe (highest priority) |
+| `openapi_paths` | `--openapi` | `[]` | Spec sources — skips discovery/param-fuzzing, probes spec endpoints only |
+| `postman_paths` | `--postman` | `[]` | Postman collection sources — merged with openapi_paths |
 
 ## 🔍 Detection Techniques
 
@@ -963,6 +1045,42 @@ class WebhookRequest(BaseModel):
         if v.host not in ALLOWED_OUTBOUND_HOSTS:
             raise ValueError("callback_url host is not in the permitted list")
         return v
+```
+
+---
+
+## 🔧 Known Fixes & Behavior Notes
+
+### Empty bearer token no longer causes `Illegal header value` errors
+
+In earlier builds, running `owasp ssrf` (or any OWASP subcommand) without a `--jwt` flag would inject an empty `Authorization: Bearer ` header that caused every request to fail with an `httpx` `Illegal header value` error. This is now fixed: when the auth context carries an empty token the `Authorization` header is omitted entirely, so unauthenticated scans against open APIs work correctly.
+
+**Before (broken):**
+```bash
+python apileaks.py owasp ssrf --target http://localhost:8000 --openapi /tmp/spec.json
+# All requests failed: "Illegal header value b'Bearer '"
+```
+
+**After (fixed):**
+```bash
+python apileaks.py owasp ssrf --target http://localhost:8000 --openapi /tmp/spec.json
+# Requests succeed; Authorization header is omitted when no token is supplied
+```
+
+### `--openapi` on `owasp ssrf` disables parameter fuzzing automatically
+
+When `--openapi` or `--postman` is passed to `owasp ssrf`, the engine seeds the scan from spec operations and disables both wordlist discovery and parameter fuzzing. Without this, the parameter fuzzer would run 352 probes per endpoint (the full `parameters.txt` wordlist) before the SSRF module could start — adding several minutes of noise that produces no SSRF-relevant findings.
+
+If you need both parameter fuzzing and SSRF testing in one run, use `scan --modules ssrf` (which supports `--openapi`) and add the `par` command separately:
+```bash
+# Parameter discovery first
+python apileaks.py par --target https://api.example.com/v1/proxy --methods GET
+
+# SSRF testing next (spec-scoped, no parameter fuzzing)
+python apileaks.py owasp ssrf \
+  --target https://api.example.com \
+  --openapi /tmp/spec.json \
+  --ssrf-body-methods POST
 ```
 
 ---

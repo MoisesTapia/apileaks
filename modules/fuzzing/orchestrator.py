@@ -1904,20 +1904,53 @@ class ParameterFuzzer:
                     response_difference=True
                 )
                 self.discovered_parameters.append(parameter)
-                
+
+                # Escalate severity when the discovered parameter name suggests
+                # a URL-carrying field — a common SSRF attack surface.
+                _SSRF_PARAM_KEYWORDS = {
+                    "url", "uri", "host", "endpoint", "target", "webhook",
+                    "callback", "redirect", "link", "href", "src", "source",
+                    "dest", "destination", "fetch", "feed", "import",
+                    "imageurl", "avatarurl", "feedurl", "importurl",
+                }
+                _param_lower = param_name.lower()
+                _is_ssrf_candidate = any(kw in _param_lower for kw in _SSRF_PARAM_KEYWORDS)
+
+                if _is_ssrf_candidate:
+                    _severity = Severity.MEDIUM
+                    _category = "PARAMETER_FOUND"
+                    _owasp_category = "API7"
+                    _evidence = (
+                        f"Query parameter '{param_name}' discovered - response differs from baseline. "
+                        f"Parameter name suggests a URL-carrying field — potential SSRF attack surface. "
+                        f"Test manually with internal target payloads (e.g. ?{param_name}=http://127.0.0.1/)."
+                    )
+                    _recommendation = (
+                        f"The '{param_name}' parameter likely accepts a URL for server-side fetching. "
+                        "Verify that outbound requests are restricted to an explicit allow-list of "
+                        "permitted hosts and schemes. Test with: "
+                        f"?{param_name}=http://169.254.169.254/latest/meta-data/"
+                    )
+                else:
+                    _severity = Severity.INFO
+                    _category = "PARAMETER_FOUND"
+                    _owasp_category = None
+                    _evidence = f"Query parameter '{param_name}' discovered - response differs from baseline"
+                    _recommendation = "Review parameter usage and ensure proper validation"
+
                 finding = Finding(
                     id=str(uuid4()),
                     scan_id="",  # Will be set by findings collector
-                    category="PARAMETER_FOUND",
-                    owasp_category=None,
-                    severity=Severity.INFO,
+                    category=_category,
+                    owasp_category=_owasp_category,
+                    severity=_severity,
                     endpoint=endpoint.url,
                     method=endpoint.method,
                     status_code=test_response.status_code,
                     response_size=len(test_response.content),
                     response_time=test_response.elapsed,
-                    evidence=f"Query parameter '{param_name}' discovered - response differs from baseline",
-                    recommendation="Review parameter usage and ensure proper validation",
+                    evidence=_evidence,
+                    recommendation=_recommendation,
                     payload=f"?{param_name}={sentinel}",
                     headers=dict(test_response.headers),
                     detection_signal=self._primary_signal(diff),

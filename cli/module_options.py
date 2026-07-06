@@ -253,6 +253,13 @@ def apply_auth_options(auth_cfg, opts: dict) -> None:
 # ---------------------------------------------------------------------------
 
 SSRF_OPTIONS = [
+    click.option('--openapi', 'openapi', multiple=True, type=click.Path(),
+                 help='OpenAPI/Swagger document (JSON or YAML) that seeds the SSRF scan '
+                      'with the API\'s known endpoints. Repeatable. Enables the SSRF module '
+                      'to probe all spec-declared endpoints without running full discovery.'),
+    click.option('--postman', 'postman', multiple=True, type=click.Path(),
+                 help='Postman collection (JSON) that seeds the SSRF scan with known '
+                      'endpoints. Repeatable. Merged with --openapi when both are supplied.'),
     click.option('--ssrf-callback-url', 'ssrf_callback_url', metavar='URL', default=None,
                  help='OOB callback URL for blind SSRF detection. '
                       'Inject this URL as a payload and check your listener '
@@ -293,6 +300,17 @@ SSRF_OPTIONS = [
                  help='Aggressive_Opt_In: authorize the SSRF module to issue high-impact '
                       'probes (internal port scanning, redirect-chain testing). '
                       'Off by default; when omitted these probes are skipped.'),
+    click.option('--ssrf-require-signature', 'ssrf_require_signature', is_flag=True, default=False,
+                 help='Only emit a finding when a known internal-target signature (e.g. '
+                      '"iam/security-credentials", "ami-id") is matched in the response body. '
+                      'Suppresses plain 2xx findings without body evidence. '
+                      'Useful to eliminate false positives on APIs that return 200 for any URL.'),
+    click.option('--ssrf-match-status', 'ssrf_match_status', metavar='CODES', default=None,
+                 help='Comma-separated HTTP status codes (or ranges) that count as a '
+                      '"success hit" for SSRF detection instead of the default 2xx range. '
+                      'Example: --ssrf-match-status 200 restricts to exact 200 only. '
+                      'Example: --ssrf-match-status 200,201,301 includes redirects. '
+                      'Ignored when --ssrf-require-signature is set (signature match always wins).'),
 ]
 
 
@@ -390,6 +408,25 @@ def apply_ssrf_options(ssrf_cfg, opts: dict) -> None:
     # --allow-aggressive-ssrf flag → enable port scanning gate (Requirement 9.8)
     if opts.get('allow_aggressive_ssrf'):
         ssrf_cfg.allow_port_scan = True
+
+    # --ssrf-require-signature → only emit findings when a known signature is matched
+    if opts.get('ssrf_require_signature'):
+        ssrf_cfg.require_signature = True
+
+    # --ssrf-match-status → parse comma-separated status codes / ranges into
+    # the list of codes that count as a success hit for SSRF detection.
+    if opts.get('ssrf_match_status'):
+        codes: list = []
+        for part in opts['ssrf_match_status'].split(','):
+            part = part.strip()
+            if '-' in part and not part.startswith('http'):
+                # range like 200-204
+                lo, hi = part.split('-', 1)
+                codes.extend(range(int(lo.strip()), int(hi.strip()) + 1))
+            elif part.isdigit():
+                codes.append(int(part))
+        if codes:
+            ssrf_cfg.success_status_codes = codes
 
     # Req 9.10: warn when --ssrf-scan-ports is supplied without
     # --allow-aggressive-ssrf so the operator knows the ports list has no effect.

@@ -998,6 +998,17 @@ Response matchers retain findings; filters exclude them. Matchers are applied be
 | `--response` | Filter by response codes (legacy) | All codes | `--response 200,400` |
 | `--status-code` | Show only specific status codes | All codes | `--status-code 200,500-599` |
 | `--proxy` | HTTP/SOCKS proxy URL | — | `--proxy http://127.0.0.1:8080` |
+
+### Finding Severity and SSRF Escalation
+
+`par` reports all discovered parameters as `PARAMETER_FOUND`. Severity is set based on the parameter name:
+
+| Condition | Severity | OWASP | When |
+|-----------|----------|-------|------|
+| Generic parameter name | **INFO** | — | Default for any discovered parameter |
+| Name contains URL keyword (`url`, `uri`, `host`, `endpoint`, `target`, `webhook`, `callback`, `redirect`, `src`, `source`, `feed`, `imageUrl`, etc.) | **MEDIUM** | **API7** | Parameter likely carries a URL → potential SSRF surface |
+
+When a MEDIUM finding is reported, the recommendation includes a ready-to-use SSRF test payload so the operator can immediately follow up with `owasp ssrf`.
 | `--proxy-verify-ssl` | Keep TLS verification with proxy | Off | `--proxy-verify-ssl` |
 | `--no-banner` | Suppress startup banner | Off | `--no-banner` |
 

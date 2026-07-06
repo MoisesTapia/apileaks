@@ -3784,11 +3784,45 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
                 click.echo(f"Error: {error}", err=True)
             sys.exit(1)
 
+        # --- 6b. Build scope_endpoints from spec when --openapi / --postman
+        #     was supplied on an owasp subcommand (no wordlist discovery path).
+        #     Convert each SpecOperation into a synthetic DiscoveryResult so the
+        #     engine's scope-seeding path skips wordlist discovery entirely and
+        #     feeds the SSRF (and other) modules exactly the spec-declared endpoints.
+        scope_endpoints = None
+        if merged_spec_schema is not None and merged_spec_schema.operations:
+            from utils.discovery_session import DiscoveryResult
+            base_url = cfg.target.base_url.rstrip("/")
+            scope_endpoints = []
+            for op in merged_spec_schema.operations:
+                url = base_url + op.path
+                scope_endpoints.append(
+                    DiscoveryResult(
+                        url=url,
+                        method=op.method,
+                        status_code=200,
+                        endpoint_status="valid",
+                    )
+                )
+            logger.info(
+                "Seeding scan from spec",
+                source="openapi/postman",
+                endpoints=len(scope_endpoints),
+            )
+            click.echo(f"📋 Spec endpoints loaded: {len(scope_endpoints)} operations from OpenAPI/Postman")
+            # When endpoints come from a spec, skip parameter fuzzing — it
+            # generates thousands of wordlist probes against endpoints the
+            # operator already knows about and drowns the OWASP module output.
+            if hasattr(cfg, 'fuzzing') and hasattr(cfg.fuzzing, 'parameters'):
+                cfg.fuzzing.parameters.enabled = False
+                cfg.fuzzing.headers.enabled = False
+
         asyncio.run(run_enhanced_apileak(
             cfg,
             opts.get('ci_mode', False),
             opts.get('fail_on', 'high'),
             opts.get('baseline'),
+            scope_endpoints=scope_endpoints,
         ))
 
     except (click.ClickException, SystemExit):
@@ -4450,13 +4484,11 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         click.echo("-" * 20)
         click.echo(colorize_jwt(decode_jwt(token)))
         if is_none_alg:
+            # Print raw token — colorize_jwt would fail on empty signature
+            click.echo(token)
             click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
                        + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
                        + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
-        else:
-        if is_none_alg:
-            # Print raw token — colorize_jwt would fail on empty signature
-            click.echo(token)
         else:
             click.echo(colorize_jwt(decode_jwt(token)))
             click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)

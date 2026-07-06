@@ -412,6 +412,17 @@ class SSRFConfig:
     har_path: Optional[str] = None
     # Explicit body field names to always probe (merged with auto-detection).
     extra_body_fields: List[str] = field(default_factory=list)
+    # --- Response filtering -----------------------------------------------
+    # When True, only emit a finding when a known internal-target signature is
+    # matched in the response body. Plain 2xx responses without a signature are
+    # suppressed. Use this to eliminate false positives on APIs that return 200
+    # for any URL parameter regardless of what was fetched.
+    require_signature: bool = False
+    # HTTP status codes considered a "success hit" for SSRF_INTERNAL_ACCESS
+    # detection (in addition to signature matches). Defaults to the 2xx range.
+    # Set to a narrower list (e.g. [200]) to reduce noise on APIs that return
+    # other 2xx codes normally.
+    success_status_codes: List[int] = field(default_factory=lambda: list(range(200, 300)))
 
 
 @dataclass
