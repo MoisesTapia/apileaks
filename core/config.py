@@ -109,11 +109,13 @@ class EndpointFuzzingConfig:
     # Per-marker wordlists in marker order (Requirement 39/43). ``None`` means no
     # marker mode is configured, preserving the wordlist/candidate_set paths.
     marker_wordlists: list[list[str]] | None = None
+    marker_wordlists: Optional[List[List[str]]] = None
     # Rich SpecSchema loaded from --openapi / --postman sources. When not None,
     # the EndpointFuzzer uses the declared per-route parameters, headers, and
     # request body to send contextually correct requests (spec-aware mode).
     # None (the default) preserves the existing brute-force behavior.
     spec_schema: "SpecSchema | None" = None
+    spec_schema: Optional["SpecSchema"] = None
     # Spec-methods-only mode (--spec-methods-only). When True and a spec is
     # supplied, each spec-seeded path is probed with ONLY the method(s) declared
     # in the spec; the base ``methods`` set is suppressed for those paths.
@@ -126,6 +128,7 @@ class EndpointFuzzingConfig:
     # is flagged as a wildcard. 0 disables the feature. Defaults to 10, matching
     # the EndpointFuzzer.DEFAULT_QUARANTINE_THRESHOLD.
     quarantine_threshold: int | None = None  # None => use class default (10)
+    quarantine_threshold: Optional[int] = None  # None => use class default (10)
 
 
 @dataclass
@@ -349,6 +352,8 @@ class AuthTestingConfig:
     token_lifetime_threshold: int = 3600
     ecdsa_algorithms: list[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
     canary_value: str | None = None
+    ecdsa_algorithms: List[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
+    canary_value: Optional[str] = None
     # -------------------------------------------------------------------
     # OTP / MFA brute-force fields (Levels 2 & Expert).
     # All default to None / 0 so existing configs load unchanged.
@@ -356,6 +361,7 @@ class AuthTestingConfig:
     # URL of the OTP/MFA verification endpoint (e.g. /api/v1/auth/otp/verify).
     # Required for OTP brute-force and OTP race-condition probes.
     otp_endpoint: str | None = None
+    otp_endpoint: Optional[str] = None
     # Number of digits in the OTP code (4 or 6 are the most common).
     otp_digits: int = 6
     # JSON field name carrying the OTP code in the verification request body.
@@ -364,6 +370,7 @@ class AuthTestingConfig:
     otp_session_field: str = "session_token"
     # Operator-supplied provisional/session token obtained before the OTP step.
     otp_session_token: str | None = None
+    otp_session_token: Optional[str] = None
     # Number of parallel goroutines for the OTP race-condition probe.
     otp_race_concurrency: int = 50
     # -------------------------------------------------------------------
@@ -373,6 +380,9 @@ class AuthTestingConfig:
     users_wordlist: str | None = None
     # Single password to spray across all usernames.
     spray_password: str | None = None
+    users_wordlist: Optional[str] = None
+    # Single password to spray across all usernames.
+    spray_password: Optional[str] = None
     # Maximum requests per spray batch before a pause (safety bound).
     spray_batch_size: int = 50
     # JSON field names for username and password in the login body.
@@ -385,6 +395,7 @@ class AuthTestingConfig:
     ip_rotation_burst: int = 15
     # Extra override headers to test beyond the built-in list.
     extra_ip_headers: list[str] = field(default_factory=list)
+    extra_ip_headers: List[str] = field(default_factory=list)
     # -------------------------------------------------------------------
     # Timing / Content-Length oracle fields (Expert level).
     # -------------------------------------------------------------------
@@ -428,6 +439,11 @@ class FunctionAuthConfig:
     ])
     # HTTP methods treated as privileged for verb-tampering probes.
     dangerous_methods: list[str] = field(default_factory=lambda: ["DELETE", "PUT", "PATCH"])
+    admin_endpoints: List[str] = field(default_factory=lambda: [
+        "/admin", "/api/admin", "/management", "/dashboard"
+    ])
+    # HTTP methods treated as privileged for verb-tampering probes.
+    dangerous_methods: List[str] = field(default_factory=lambda: ["DELETE", "PUT", "PATCH"])
     # -----------------------------------------------------------------------
     # Multi-token / grey-box BFLA fields (Levels 1-4).
     # -----------------------------------------------------------------------
@@ -441,11 +457,13 @@ class FunctionAuthConfig:
     # JSON field names and values tried as privilege-escalation payloads.
     # -----------------------------------------------------------------------
     role_fields: list[str] = field(default_factory=lambda: [
+    role_fields: List[str] = field(default_factory=lambda: [
         "role", "roles", "user_role", "userRole", "user_type", "userType",
         "is_admin", "isAdmin", "admin", "privilege", "access_level",
         "accessLevel", "permission", "permissions",
     ])
     role_values: list[str] = field(default_factory=lambda: [
+    role_values: List[str] = field(default_factory=lambda: [
         "admin", "administrator", "ADMIN", "SUPER_ADMIN", "superadmin",
         "root", "owner", "manager",
     ])
@@ -454,12 +472,14 @@ class FunctionAuthConfig:
     # Version strings to try when downgrading discovered versioned endpoints.
     # -----------------------------------------------------------------------
     api_versions: list[str] = field(default_factory=lambda: [
+    api_versions: List[str] = field(default_factory=lambda: [
         "v1", "v2", "v3", "v4", "v0",
     ])
     # -----------------------------------------------------------------------
     # Output – persist BFLA matrix to a JSON file for downstream analysis.
     # -----------------------------------------------------------------------
     bfla_output_file: str | None = None
+    bfla_output_file: Optional[str] = None
 
 
 @dataclass
@@ -516,6 +536,52 @@ class SSRFConfig:
     # Set to a narrower list (e.g. [200]) to reduce noise on APIs that return
     # other 2xx codes normally.
     success_status_codes: list[int] = field(default_factory=lambda: list(range(200, 300)))
+
+    # Expanded fields (Requirement 1.1–1.7)
+    # Authoritative safe-mode flag — replaces getattr fallbacks (Req 1.1, 10.6).
+    safe_mode: bool = False
+    # OOB callback listener URL for blind SSRF detection (Req 1.2).
+    callback_url: Optional[str] = None
+    # Extra internal hosts/IPs to probe in addition to internal_targets (Req 1.3).
+    additional_internal_targets: List[str] = field(default_factory=list)
+    # Extra URL schemes to test in addition to file_protocols (Req 1.4).
+    additional_schemes: List[str] = field(default_factory=list)
+    # Gate for internal port-scanning probes (Req 1.5).
+    allow_port_scan: bool = False
+    # Ports to probe when allow_port_scan is True (Req 1.6).
+    scan_ports: List[int] = field(default_factory=lambda: [
+        22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
+    ])
+    # When True, IP-encoding bypass payloads (decimal, octal, hex, IPv6) are
+    # generated and injected alongside the plain internal targets (Req 1.7).
+    bypass_encodings: bool = True
+    # When True, SSRF payloads are injected into JSON request body fields on
+    # POST/PUT/PATCH endpoints (Req 1.4, 3.1–3.5).
+    body_injection: bool = False
+    # HTTP methods to use for body injection probes. When non-empty, body
+    # injection is attempted with each of these methods regardless of the
+    # method the discovery engine recorded for the endpoint. This lets the
+    # operator force POST/PUT/PATCH body probes even when the endpoint was
+    # discovered via GET. Defaults to empty list (use the endpoint's own method).
+    body_injection_methods: List[str] = field(default_factory=list)
+    # --- Import source fields (--burp-xml / --har / --ssrf-body-field) ----
+    # Path to a Burp Suite XML Proxy-History export file.
+    burp_xml_path: Optional[str] = None
+    # Path to a HAR (HTTP Archive) JSON file.
+    har_path: Optional[str] = None
+    # Explicit body field names to always probe (merged with auto-detection).
+    extra_body_fields: List[str] = field(default_factory=list)
+    # --- Response filtering -----------------------------------------------
+    # When True, only emit a finding when a known internal-target signature is
+    # matched in the response body. Plain 2xx responses without a signature are
+    # suppressed. Use this to eliminate false positives on APIs that return 200
+    # for any URL parameter regardless of what was fetched.
+    require_signature: bool = False
+    # HTTP status codes considered a "success hit" for SSRF_INTERNAL_ACCESS
+    # detection (in addition to signature matches). Defaults to the 2xx range.
+    # Set to a narrower list (e.g. [200]) to reduce noise on APIs that return
+    # other 2xx codes normally.
+    success_status_codes: List[int] = field(default_factory=lambda: list(range(200, 300)))
 
 
 @dataclass
@@ -1250,6 +1316,8 @@ class ConfigurationManager:
         )
 
     def _build_ssrf_config(self, data: dict[str, Any]) -> SSRFConfig:
+    
+    def _build_ssrf_config(self, data: Dict[str, Any]) -> SSRFConfig:
         """Build SSRFConfig from a YAML/JSON config dict, mapping all known
         fields explicitly so new fields are always populated correctly even when
         the caller passes a partial or empty dict."""
@@ -1281,6 +1349,7 @@ class ConfigurationManager:
         )
 
     def _build_auth_config(self, data: dict[str, Any]) -> AuthConfig:
+    def _build_auth_config(self, data: Dict[str, Any]) -> AuthConfig:
         """Build authentication configuration from dict"""
         contexts_data = data.get('contexts', [])
         contexts = []

@@ -15,6 +15,7 @@ import base64
 import json
 import xml.etree.ElementTree as _stdlib_ET  # for type annotations only
 import defusedxml.ElementTree as ET
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
@@ -168,6 +169,7 @@ class BurpXmlImporter:
         return results
 
     def _parse_item(self, item: _stdlib_ET.Element) -> Optional["ImportedRequest"]:
+    def _parse_item(self, item: ET.Element) -> Optional["ImportedRequest"]:
         """Extract an ``ImportedRequest`` from a single ``<item>`` element."""
         request_elem = item.find("request")
         if request_elem is None or request_elem.text is None:

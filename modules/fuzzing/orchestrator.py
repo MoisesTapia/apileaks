@@ -28,6 +28,7 @@ from utils.url_normalize import normalize_url
 # present so the import does not pull extra dependencies on every discovery run.
 try:
     from utils.typed_payload import build_typed_params, build_typed_payload
+    from utils.typed_payload import build_typed_payload, build_typed_params
     _TYPED_PAYLOAD_AVAILABLE = True
 except ImportError:  # pragma: no cover — defensive
     _TYPED_PAYLOAD_AVAILABLE = False
@@ -227,6 +228,7 @@ class EndpointFuzzer:
     # Kiterunner's --quarantine-threshold 10 behavior.
     DEFAULT_QUARANTINE_THRESHOLD = 0
 
+    
     # Relative tolerance applied when comparing confirmation response body sizes
     # for Hit_Confirmation consistency (Requirement 35.3). Two body sizes are
     # "comparable" when their difference is within this fraction of the larger
@@ -325,6 +327,7 @@ class EndpointFuzzer:
         # base URL answers random non-existent paths with 2xx responses.
         self.catch_all_detected = False
         self.catch_all_signature: tuple[int, int] | None = None
+        self.catch_all_signature: Optional[Tuple[int, int]] = None
 
         # Live quarantine counter. Tracks consecutive "interesting" (non-404)
         # responses during the scan so we can quarantine a host that accepts every
@@ -340,6 +343,7 @@ class EndpointFuzzer:
         self._consecutive_hits: int = 0
         self.quarantine_triggered: bool = False
 
+        
         # Soft-404 baseline signature (Soft_404_Baseline, Requirement 22.5/22.6).
         # The (status_code, response_size, word_count) signature of the responses
         # returned for paths that are not expected to exist, captured from the same
@@ -357,6 +361,7 @@ class EndpointFuzzer:
         # it (27.4). It stays None when GraphQL probing is disabled, no GraphQL
         # endpoint is found, or introspection is not enabled (27.6).
         self.graphql_introspection_endpoint: str | None = None
+        self.graphql_introspection_endpoint: Optional[str] = None
 
         # Streaming JSONL output (Streaming_Hit_Output). When set, each newly
         # discovered endpoint is written to this open file handle immediately —
@@ -366,6 +371,7 @@ class EndpointFuzzer:
         # closing it afterwards. None disables streaming (no extra I/O).
         self.streaming_output_handle = None
 
+        
         self.logger.info("Endpoint Fuzzer initialized",
                         recursive=config.recursive,
                         max_depth=config.max_depth,
@@ -572,6 +578,8 @@ class EndpointFuzzer:
         return discovered
 
     async def _load_wordlist(self, wordlist_path: str) -> list[str]:
+    
+    async def _load_wordlist(self, wordlist_path: str) -> List[str]:
         """Load wordlist from file with caching.
 
         Supports the ``assetnote:<name>`` prefix: if the path starts with that
@@ -590,6 +598,7 @@ class EndpointFuzzer:
             self.logger.warning("Could not resolve Assetnote wordlist",
                                 path=wordlist_path, error=str(exc))
 
+        
         try:
             wordlist_file = Path(wordlist_path)
             if not wordlist_file.exists():
@@ -632,6 +641,7 @@ class EndpointFuzzer:
         # key format) paired with the HTTP method: (normalized_path, METHOD).
         spec_schema = getattr(self.config.endpoints, "spec_schema", None)
         _spec_params: dict[tuple, dict[str, Any]] = {}
+        _spec_params: "Dict[tuple, Dict[str, Any]]" = {}
         if spec_schema is not None and _TYPED_PAYLOAD_AVAILABLE:
             for operation in getattr(spec_schema, "operations", []):
                 key = (normalize_candidate_path(operation.path), operation.method.upper())
@@ -798,6 +808,8 @@ class EndpointFuzzer:
         return discovered_endpoints
 
     async def _execute_batch(self, batch: list[tuple]) -> list[Endpoint]:
+    
+    async def _execute_batch(self, batch: List[Tuple]) -> List[Endpoint]:
         """Execute a batch of requests"""
         tasks = []
         for item in batch:
@@ -826,6 +838,9 @@ class EndpointFuzzer:
 
     async def _test_endpoint(self, method: str, url: str, word: str, depth: int,
                              route_ctx: dict[str, Any] | None = None) -> Endpoint | None:
+    
+    async def _test_endpoint(self, method: str, url: str, word: str, depth: int,
+                             route_ctx: Optional[Dict[str, Any]] = None) -> Optional[Endpoint]:
         """Test a single endpoint.
 
         ``route_ctx`` carries spec-derived per-route request context when the
@@ -859,6 +874,7 @@ class EndpointFuzzer:
                 # body is sent as JSON. Empty dicts are intentionally omitted so the
                 # HTTP client keeps its default behavior for brute-force candidates.
                 req_kwargs: dict[str, Any] = {}
+                req_kwargs: Dict[str, Any] = {}
                 if _spec_query:
                     req_kwargs["params"] = _spec_query
                 if _spec_headers:
@@ -867,6 +883,7 @@ class EndpointFuzzer:
                     req_kwargs["json"] = _spec_body
                 response = await self.http_client.request(method, url, **req_kwargs)
 
+            
             # Create endpoint object
             endpoint = Endpoint(
                 url=canonical_url,
@@ -957,6 +974,7 @@ class EndpointFuzzer:
                             threshold=self.quarantine_threshold,
                         )
 
+                
                 # Secret/leak detection (Requirement 30). When enabled, scan the
                 # already-received response body and headers against the
                 # configured Secret_Patterns and accumulate redacted findings
@@ -980,6 +998,7 @@ class EndpointFuzzer:
                 if self.quarantine_threshold > 0:
                     self._consecutive_hits = 0
 
+            
         except Exception as e:
             self.logger.debug("Endpoint test failed", url=url, method=method, error=str(e))
 
@@ -1796,6 +1815,7 @@ class ParameterFuzzer:
                 query_findings = await self._fuzz_query_parameters(endpoint)
                 findings.extend(query_findings)
 
+            
             # Body parameter fuzzing — injection_points already guarantees that
             # 'body' is only present when POST/PUT/PATCH are in the configured
             # methods. For par targets the synthetic endpoint always carries
@@ -1815,6 +1835,7 @@ class ParameterFuzzer:
                     body_findings = await self._fuzz_body_parameters(endpoint)
                     findings.extend(body_findings)
 
+        
         self.logger.info("Parameter fuzzing completed",
                         parameters_tested=self.parameters_tested,
                         requests_made=self.requests_made,

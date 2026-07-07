@@ -103,12 +103,31 @@ from utils.spec_import import (
     import_postman,
     import_postman_schema,
     import_schema,
+    import_schema,
+    import_postman_schema,
     load_schema,
     merge_candidates,
     normalize_candidate_path,
 )
 from utils.spec_import import _parse_document as _parse_spec_document
 from utils.triage_table import render_triage_table
+
+from cli.owasp_descriptors import (
+    OWASP_MODULE_DESCRIPTORS,
+    OwaspModuleDescriptor,
+    all_keys,
+    get_descriptor,
+    iter_descriptors,
+)
+from cli.shared_options import transversal_options
+from cli.shared_options import (
+    _validate_depth,
+    _validate_max_requests,
+    _validate_concurrency,
+    _validate_timeout,
+    _validate_retries,
+)
+from cli.module_options import auth_options, bola_options
 
 
 def parse_response_codes(response_filter: str) -> list:
@@ -163,6 +182,8 @@ def parse_status_codes(status_filter: str) -> list:
                 click.echo(f"Warning: Invalid status code '{part}', ignoring", err=True)
 
     return sorted(set(codes))  # Remove duplicates and sort
+    
+    return sorted(list(set(codes)))  # Remove duplicates and sort
 
 
 
@@ -526,6 +547,12 @@ def parse_target_file(path: str) -> list:
         raise click.BadParameter(f"--target-file cannot be read: {path} ({exc})") from exc
 
     targets: list[str] = []
+        with open(path, "r", encoding="utf-8") as fh:
+            raw_lines = fh.readlines()
+    except OSError as exc:
+        raise click.BadParameter(f"--target-file cannot be read: {path} ({exc})")
+
+    targets: List[str] = []
     for line in raw_lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -554,6 +581,7 @@ def _read_wordlist_entries(source):
         # Resolve (and auto-download) the Assetnote wordlist; then read it.
         resolved = resolve_wordlist(source, show_progress=True)
         with open(resolved, encoding='utf-8', errors='replace') as handle:
+        with open(resolved, 'r', encoding='utf-8', errors='replace') as handle:
             lines = handle.readlines()
     else:
         with open(source, encoding='utf-8') as handle:
@@ -790,6 +818,13 @@ def print_banner():
   .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
  .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
 o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
+      .o.       ooooooooo.   ooooo ooooo                            oooo                 
+     .888.      `888   `Y88. `888' `888'                            `888                 
+    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o 
+   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8 
+  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.  
+ .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b 
+o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P' 
 """ + f"\nAPILeak v{APILEAK_VERSION} - Enterprise API Fuzzing Tool - by Cl0wnR3v\n"
     click.echo(banner, color=True)
 
@@ -1212,6 +1247,7 @@ def machine_output_options(f):
 def cli(ctx, no_banner):
     """APILeak v0.2.1 - Enterprise API Fuzzing Tool
 
+    
     \b
     Performs comprehensive security testing of APIs including:
     • Traditional endpoint and parameter fuzzing
@@ -1670,6 +1706,301 @@ def _echo_discovery_control_status(core):
     _echo_fuzzing_stats(core)
     _echo_secret_findings(core)
 
+
+def _echo_fuzzing_stats(core):
+    """Surface the discovery :class:`FuzzingStats` summary line (Requirement 31.3).
+
+    Reads the fuzzing statistics defensively via
+    :meth:`APILeakCore.get_fuzzing_stats` (accessed through ``getattr`` so the
+    function stays safe when called with a fake/partial ``core`` that does not
+    expose the accessor, as in the discovery-control tests). When stats are
+    available, prints a single line reporting endpoints tested, endpoints
+    discovered, total requests, success rate, and recursion depth reached. Stays
+    silent when stats are unavailable (no discovery ran).
+    """
+    get_stats = getattr(core, "get_fuzzing_stats", None)
+    if get_stats is None:
+        return
+    stats = get_stats()
+    if stats is None:
+        return
+
+    endpoints_tested = getattr(stats, "endpoints_tested", 0)
+    endpoints_discovered = getattr(stats, "endpoints_discovered", 0)
+    total_requests = getattr(stats, "total_requests", 0)
+    success_rate = getattr(stats, "success_rate", 0.0)
+    recursive_depth = getattr(stats, "recursive_depth_reached", 0)
+
+    click.echo(
+        f"📊 Discovery stats: {endpoints_tested} endpoint(s) tested, "
+        f"{endpoints_discovered} discovered, {total_requests} request(s), "
+        f"{success_rate:.1f}% success rate, recursion depth "
+        f"{recursive_depth}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spec-file brute-force discovery — integrated into ``dir --brute-spec``.
+#
+# Equivalent to ``sj brute``: sends a series of HTTP GET requests to a target
+# trying well-known paths where Swagger/OpenAPI/RAML/AsyncAPI definition files
+# are commonly exposed.  When a candidate returns a 2xx status whose body looks
+# like a valid API specification, the result is reported and (optionally)
+# auto-loaded for further use.
+# ---------------------------------------------------------------------------
+
+# Signatures that identify a response body as an API spec document.
+_SPEC_BODY_SIGNATURES = (
+    # OpenAPI 3.x
+    b'"openapi"',
+    b"'openapi'",
+    b"openapi:",
+    # Swagger 2.x
+    b'"swagger"',
+    b"'swagger'",
+    b"swagger:",
+    # RAML
+    b"#%RAML",
+    # AsyncAPI
+    b'"asyncapi"',
+    b"asyncapi:",
+    # API Blueprint
+    b"FORMAT: 1A",
+    # JSON:API / Hydra hints
+    b'"@context"',
+    # Generic doc hints
+    b'"info"',
+    b'"paths"',
+    b'"components"',
+    b'"definitions"',
+    b'"basePath"',
+    b'"host"',
+)
+
+# Default wordlist shipped with apileaks (relative to the script directory).
+_DEFAULT_SPEC_WORDLIST = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "wordlists", "spec_files.txt"
+)
+
+
+def _load_spec_brute_wordlist(wordlist_path: str) -> list:
+    """Load and normalise the brute-force wordlist, stripping blanks/comments."""
+    entries = []
+    try:
+        with open(wordlist_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    # Normalise leading slash — we build the full URL ourselves.
+                    entries.append(stripped.lstrip("/"))
+    except OSError as exc:
+        raise click.BadParameter(
+            f"--brute-spec-wordlist cannot be read: {wordlist_path} ({exc})"
+        )
+    return entries
+
+
+def _looks_like_spec(status_code: int, body: bytes, content_type: str) -> bool:
+    """Return True when the response is likely an API specification document.
+
+    Checks:
+    1. HTTP status is 2xx.
+    2. Content-Type is JSON, YAML, or plain text (spec files are never HTML-only).
+    3. The body contains at least one known spec keyword.
+    """
+    if not (200 <= status_code < 300):
+        return False
+
+    ct = (content_type or "").lower()
+    # Reject obvious HTML pages (Swagger UI HTML is not the raw spec).
+    if "text/html" in ct and "json" not in ct and "yaml" not in ct:
+        return False
+
+    body_lower = body[:4096].lower()  # only inspect the first 4 KB
+    return any(sig.lower() in body_lower for sig in _SPEC_BODY_SIGNATURES)
+
+
+async def _brute_spec_async(
+    target: str,
+    entries: list,
+    *,
+    proxy: str = None,
+    timeout: float = 10.0,
+    concurrency: int = 20,
+    verify_ssl: bool = True,
+    jwt: str = None,
+    header: tuple = (),
+    user_agent_random: bool = False,
+    user_agent_custom: str = None,
+    output_file: str = None,
+    quiet: bool = False,
+) -> list:
+    """Async core: probe *entries* paths under *target* and return spec hits.
+
+    Returns a list of dicts with keys: url, status, content_type, size, spec.
+    ``spec`` is True when _looks_like_spec() matched.
+    """
+    import httpx
+    import asyncio as _asyncio
+
+    base = target.rstrip("/")
+    hits = []
+    sem = _asyncio.Semaphore(concurrency)
+
+    # Build shared headers.
+    extra_headers = parse_header_options(header)
+    if jwt:
+        extra_headers["Authorization"] = f"Bearer {jwt}"
+    if user_agent_custom:
+        extra_headers["User-Agent"] = user_agent_custom
+    elif user_agent_random:
+        import random as _random
+        _ua_pool = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "curl/7.88.1",
+            "python-httpx/0.24.0",
+            "Swagger Jacker (github.com/BishopFox/sj)",
+            "PostmanRuntime/7.32.2",
+        ]
+        extra_headers["User-Agent"] = _random.choice(_ua_pool)
+
+    proxies = proxy if proxy else None
+    total = len(entries)
+    done = 0
+
+    async with httpx.AsyncClient(
+        verify=verify_ssl,
+        proxy=proxies,
+        timeout=timeout,
+        follow_redirects=True,
+        headers=extra_headers,
+    ) as client:
+
+        async def _probe(path: str):
+            nonlocal done
+            url = f"{base}/{path}"
+            async with sem:
+                try:
+                    resp = await client.get(url)
+                    ct = resp.headers.get("content-type", "")
+                    body = resp.content
+                    is_spec = _looks_like_spec(resp.status_code, body, ct)
+                    result = {
+                        "url": str(resp.url),
+                        "status": resp.status_code,
+                        "content_type": ct,
+                        "size": len(body),
+                        "spec": is_spec,
+                    }
+                    if not quiet:
+                        if is_spec:
+                            click.echo(
+                                click.style(
+                                    f"✓  {resp.status_code}  {url}  [{len(body)} bytes]  ← SPEC FOUND",
+                                    fg="green", bold=True,
+                                )
+                            )
+                        elif 200 <= resp.status_code < 300:
+                            click.echo(
+                                click.style(
+                                    f"⚠  {resp.status_code}  {url}  [{len(body)} bytes]",
+                                    fg="yellow",
+                                )
+                            )
+                    return result
+                except (httpx.RequestError, httpx.HTTPStatusError):
+                    return None
+                finally:
+                    done += 1
+                    if not quiet and sys.stdout.isatty():
+                        # In-place progress counter (overwrite same line).
+                        sys.stdout.write(f"\r  Probing: {done}/{total} requests sent")
+                        sys.stdout.flush()
+
+        tasks = [_probe(path) for path in entries]
+        results = await _asyncio.gather(*tasks)
+
+    if not quiet and sys.stdout.isatty():
+        sys.stdout.write("\n")
+
+    hits = [r for r in results if r is not None and r["status"] != 404]
+    spec_hits = [r for r in hits if r["spec"]]
+    return hits, spec_hits
+
+
+def _run_spec_brute(
+    target: str,
+    *,
+    brute_spec_wordlist: str = None,
+    brute_spec_extensions: bool = False,
+    proxy: str = None,
+    timeout: float = 10.0,
+    concurrency: int = 20,
+    verify_ssl: bool = True,
+    jwt: str = None,
+    header: tuple = (),
+    user_agent_random: bool = False,
+    user_agent_custom: str = None,
+    output_file: str = None,
+    quiet: bool = False,
+    logger=None,
+):
+    """Entry point for ``dir --brute-spec``.
+
+    Loads the wordlist, probes every path under *target*, prints a summary
+    table with ✓/⚠/✗ status indicators (matching sj's UX), and optionally
+    writes results to a JSON file.
+
+    Returns (hits, spec_hits) — all non-404 responses and the subset that
+    look like valid spec files respectively.
+    """
+    if logger is None:
+        logger = get_logger("brute-spec")
+
+    # Resolve wordlist.
+    wl_path = brute_spec_wordlist or _DEFAULT_SPEC_WORDLIST
+    try:
+        entries = _load_spec_brute_wordlist(wl_path)
+    except click.BadParameter as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if not entries:
+        click.echo("Error: spec-brute wordlist is empty.", err=True)
+        sys.exit(1)
+
+    # Optionally expand each entry with common spec extensions.
+    if brute_spec_extensions:
+        extra = []
+        extensions = [".json", ".yaml", ".yml"]
+        for entry in entries:
+            for ext in extensions:
+                if not entry.endswith(ext):
+                    extra.append(entry + ext)
+        entries = entries + extra
+
+    click.echo(f"\n🔍 Spec-file brute-force: {target}")
+    click.echo(f"   Wordlist : {wl_path}  ({len(entries)} paths)")
+    click.echo(f"   Proxy    : {proxy or 'none'}")
+    click.echo(f"   Timeout  : {timeout}s   Concurrency: {concurrency}")
+    click.echo("─" * 60)
+
+    hits, spec_hits = asyncio.run(
+        _brute_spec_async(
+            target,
+            entries,
+            proxy=proxy,
+            timeout=timeout,
+            concurrency=concurrency,
+            verify_ssl=verify_ssl,
+            jwt=jwt,
+            header=header,
+            user_agent_random=user_agent_random,
+            user_agent_custom=user_agent_custom,
+            output_file=output_file,
+            quiet=quiet,
+        )
+    )
 
 def _echo_fuzzing_stats(core):
     """Surface the discovery :class:`FuzzingStats` summary line (Requirement 31.3).
@@ -3527,6 +3858,483 @@ def _run_par_multi_target(targets, *, ctx, **kwargs):
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Multi-target orchestration helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_dir_core(*, target, ctx,
+                  wordlist, openapi, postman, output,
+                  log_level, log_file, json_logs, rate_limit, methods,
+                  fuzz_keyword, fuzz_mode, depth, recursive, max_requests,
+                  concurrency, confirm_hits, timeout, retries, extensions,
+                  user_agent_random, user_agent_custom, user_agent_file,
+                  jwt, header, cookie, basic_auth, enumerate_methods, graphql,
+                  response, status_code, match_size, match_words, match_lines,
+                  match_regex, match_time, filter_size, filter_words,
+                  filter_lines, filter_regex, filter_time, detect_framework,
+                  fuzz_versions, save_session, load_session, checkpoint, resume,
+                  export_format, export_file, output_format, output_file,
+                  interactive, scan_scope, ci_mode, proxy, proxy_verify_ssl,
+                  client_cert, ca_bundle, allow_cross_domain_redirects, resolve,
+                  detect_secrets, secret_patterns, include_path, exclude_path,
+                  include_status, exclude_status, recursion_status, recursion_type,
+                  spec_methods_only, quarantine_threshold=None,
+                  marker_only_requested=False):
+    """Core single-target discovery pipeline for the ``dir`` command.
+
+    Returns a summary dict:
+        target        – the URL scanned
+        endpoints     – number of discovered (non-404) endpoints
+        valid         – 2xx endpoint count
+        auth_required – 401/403 endpoint count
+        error         – error message string, or None on success
+        report_files  – list of generated report file paths
+    """
+    import asyncio as _asyncio
+
+    summary = {
+        "target": target, "endpoints": 0, "valid": 0,
+        "auth_required": 0, "error": None, "report_files": [],
+    }
+
+    validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file)
+    validate_basic_auth_options(basic_auth, jwt)
+    setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
+    _logger = get_logger("dir")
+
+    match_exprs = (
+        [f"size:{e}" for e in match_size] + [f"words:{e}" for e in match_words]
+        + [f"lines:{e}" for e in match_lines] + [f"regex:{e}" for e in match_regex]
+        + [f"time:{e}" for e in match_time]
+    )
+    filter_exprs = (
+        [f"size:{e}" for e in filter_size] + [f"words:{e}" for e in filter_words]
+        + [f"lines:{e}" for e in filter_lines] + [f"regex:{e}" for e in filter_regex]
+        + [f"time:{e}" for e in filter_time]
+    )
+    try:
+        matchers, filters = parse_selectors(match_exprs, filter_exprs)
+        path_scope = parse_path_scope(include_path, exclude_path)
+        storage_status = parse_storage_status_selection(include_status, exclude_status)
+        recursion_scope = parse_recursion_scope(recursion_status, recursion_type)
+    except (SelectorError, PathScopeError, StorageStatusError, RecursionScopeError) as exc:
+        summary["error"] = str(exc)
+        return summary
+
+    if scan_scope is not None:
+        try:
+            select_scope_records([], scan_scope)
+        except ScanScopeError as exc:
+            summary["error"] = str(exc)
+            return summary
+
+    marker_wordlists = None
+    try:
+        resolved_fuzz_keyword = validate_fuzz_keyword(fuzz_keyword)
+        markers = find_markers(target, resolved_fuzz_keyword)
+        resolved_fuzz_mode = parse_fuzz_mode(fuzz_mode)
+        # marker_only_requested is True when --fuzz-keyword or --fuzz-mode were
+        # explicitly given on the CLI (passed in from the dir command via ctx).
+        # When True and no marker is found in the target URL, that is a config
+        # error (Requirement 46.2).
+        if not markers and marker_only_requested:
+            raise ValueError(
+                f"no Fuzz_Marker found in target URL {target!r} "
+                f"for keyword {resolved_fuzz_keyword!r}"
+            )
+        if markers:
+            wordlist_sources = [[src] for src in wordlist]
+            associated_sources = associate_wordlists(markers, wordlist_sources)
+            marker_wordlists = []
+            for assoc in associated_sources:
+                try:
+                    marker_wordlists.append(_read_wordlist_entries(assoc[0]))
+                except OSError as exc2:
+                    raise ValueError(
+                        f"unreadable wordlist source '{assoc[0]}': {exc2}"
+                    ) from exc2
+            if resolved_fuzz_mode == FuzzMode.PITCHFORK:
+                for marker, entries in zip(markers, marker_wordlists):
+                    if not entries:
+                        raise ValueError(
+                            f"Pitchfork_Mode requires a non-empty wordlist for "
+                            f"every marker; the wordlist for marker at order "
+                            f"{marker.order} is empty"
+                        )
+    except ValueError as exc:
+        summary["error"] = str(exc)
+        return summary
+
+    try:
+        candidate_set, seed_methods, wordlist_path = _resolve_dir_candidates(
+            wordlist, openapi, postman
+        )
+    except SpecImportError as exc:
+        summary["error"] = str(exc)
+        return summary
+
+    if candidate_set is not None and not candidate_set and not load_session:
+        click.echo("No candidates available: no wordlist entries or spec seeds to scan.")
+        return summary
+
+    resume_checkpoint = None
+    if resume:
+        try:
+            resume_checkpoint = DiscoveryCheckpoint.load(resume)
+        except DiscoveryCheckpointError as exc:
+            summary["error"] = str(exc)
+            return summary
+
+    triage_requested = bool(
+        save_session or load_session or export_format or export_file
+        or output_format or output_file or interactive or scan_scope
+        or matchers or filters
+    )
+
+    try:
+        if triage_requested:
+            _run_dir_triage(
+                target=target, wordlist_path=wordlist_path,
+                candidate_set=candidate_set, seed_methods=seed_methods,
+                output=output, rate_limit=rate_limit, methods=methods,
+                fuzz_keyword=resolved_fuzz_keyword,
+                fuzz_mode=resolved_fuzz_mode.value,
+                marker_wordlists=marker_wordlists,
+                user_agent_random=user_agent_random,
+                user_agent_custom=user_agent_custom,
+                user_agent_file=user_agent_file,
+                jwt=jwt, header=header, cookie=cookie, basic_auth=basic_auth,
+                response=response, status_code=status_code,
+                matchers=matchers, filters=filters,
+                detect_framework=detect_framework, fuzz_versions=fuzz_versions,
+                save_session=save_session, load_session=load_session,
+                export_format=export_format, export_file=export_file,
+                output_format=output_format, output_file=output_file,
+                interactive=interactive, scan_scope=scan_scope,
+                ci_mode=ci_mode, proxy=proxy, proxy_verify_ssl=proxy_verify_ssl,
+                client_cert=client_cert, ca_bundle=ca_bundle,
+                allow_cross_domain_redirects=allow_cross_domain_redirects,
+                resolve=resolve, detect_secrets=detect_secrets,
+                secret_patterns=secret_patterns, path_scope=path_scope,
+                storage_status=storage_status, checkpoint=checkpoint,
+                resume_checkpoint=resume_checkpoint,
+                openapi_sources=openapi, postman_sources=postman,
+                spec_methods_only=spec_methods_only,
+                quarantine_threshold=quarantine_threshold,
+                logger=_logger,
+            )
+            return summary
+
+        # --- Non-triage path (direct scan) ---
+        user_agent_config = None
+        if user_agent_random:
+            user_agent_config = {"random": True}
+        elif user_agent_custom:
+            user_agent_config = {"custom": user_agent_custom}
+        elif user_agent_file:
+            user_agents = load_user_agents_from_file(user_agent_file)
+            user_agent_config = {"file_list": user_agents}
+
+        output_filename = prepare_output_filename(output)
+        advanced_config = {
+            "detect_framework": detect_framework,
+            "fuzz_versions": fuzz_versions,
+            "framework_confidence": 0.6,
+        }
+        status_code_filter = parse_status_codes(status_code) if status_code else None
+        extra_headers = parse_header_options(header)
+        if cookie:
+            extra_headers["Cookie"] = cookie
+        basic_auth_creds = parse_basic_auth(basic_auth)
+
+        config_dict = create_default_config(
+            target, wordlist_path, "dir", user_agent_config, output_filename,
+            advanced_config, status_code_filter, extra_headers, basic_auth_creds,
+        )
+        config_dict["proxy"] = proxy
+        config_dict["proxy_verify_ssl"] = proxy_verify_ssl
+        config_dict["client_cert"] = client_cert
+        config_dict["ca_bundle"] = ca_bundle
+        config_dict["resolve"] = resolve
+        config_dict["fuzzing"]["endpoints"][
+            "allow_cross_domain_redirects"
+        ] = allow_cross_domain_redirects
+
+        if candidate_set is not None:
+            config_dict["fuzzing"]["endpoints"]["candidate_set"] = candidate_set
+            config_dict["fuzzing"]["endpoints"]["seed_methods"] = seed_methods
+
+        _dir_spec_schema = _build_dir_spec_schema(openapi, postman)
+        if _dir_spec_schema is not None:
+            config_dict["fuzzing"]["endpoints"]["spec_schema"] = _dir_spec_schema
+        config_dict["fuzzing"]["endpoints"]["spec_methods_only"] = spec_methods_only
+        if quarantine_threshold is not None:
+            config_dict["fuzzing"]["endpoints"]["quarantine_threshold"] = quarantine_threshold
+
+        if rate_limit:
+            config_dict["rate_limiting"]["requests_per_second"] = rate_limit
+        if methods:
+            config_dict["fuzzing"]["endpoints"]["methods"] = [
+                m.strip() for m in methods.split(",")
+            ]
+        config_dict["fuzzing"]["max_depth"] = resolve_max_depth(depth)
+        if recursive is not None:
+            config_dict["fuzzing"]["recursive"] = recursive
+        if depth == 0:
+            config_dict["fuzzing"]["recursive"] = False  # depth 0 => depth-0 pass only
+        if max_requests is not None:
+            config_dict["fuzzing"]["max_requests"] = max_requests
+        if concurrency is not None:
+            config_dict["fuzzing"]["concurrency"] = concurrency
+        if confirm_hits is not None:
+            config_dict["fuzzing"]["hit_confirmation"] = {
+                "enabled": True, "count": confirm_hits
+            }
+        config_dict["fuzzing"]["endpoints"]["fuzz_keyword"] = resolved_fuzz_keyword
+        config_dict["fuzzing"]["endpoints"]["fuzz_mode"] = resolved_fuzz_mode.value
+        config_dict["fuzzing"]["endpoints"]["marker_wordlists"] = marker_wordlists
+        config_dict["fuzzing"]["path_scope"] = path_scope
+        config_dict["fuzzing"]["storage_status"] = storage_status
+        config_dict["fuzzing"]["recursion_scope"] = recursion_scope
+        if timeout is not None:
+            config_dict["target"]["timeout"] = timeout
+        if retries is not None:
+            config_dict["fuzzing"]["retries"] = retries
+        if enumerate_methods:
+            config_dict["fuzzing"]["endpoints"]["enumerate_methods"] = True
+        if graphql:
+            config_dict["fuzzing"]["endpoints"]["graphql"] = True
+        config_dict["fuzzing"]["endpoints"]["extensions"] = normalize_extensions(
+            [ext for value in (extensions or ()) for ext in value.split(",")]
+        )
+        if jwt:
+            config_dict["authentication"]["contexts"][0]["token"] = jwt
+            config_dict["authentication"]["contexts"][0]["type"] = "bearer"
+        if response:
+            config_dict["fuzzing"]["response_filter"] = parse_response_codes(response)
+        config_dict.setdefault("secret_scan", {})
+        config_dict["secret_scan"]["enabled"] = detect_secrets
+        if secret_patterns is not None:
+            config_dict["secret_scan"]["patterns"] = secret_patterns
+
+        config_manager = ConfigurationManager()
+        apileak_config = config_manager.load_config_from_dict(config_dict)
+        validation_errors = config_manager.validate_configuration()
+        if validation_errors:
+            summary["error"] = "; ".join(validation_errors)
+            return summary
+
+        discovery_progress = _build_discovery_progress(
+            ci_mode, apileak_config.fuzzing.max_requests
+        )
+        _asyncio.run(
+            run_enhanced_apileak(
+                apileak_config,
+                ci_mode=ci_mode,
+                fail_on="critical",
+                discovery_progress=discovery_progress,
+                checkpoint_path=checkpoint,
+                resume_checkpoint=resume_checkpoint,
+            )
+        )
+        return summary
+
+    except (DiscoveryCheckpointError, DiscoverySessionError,
+            DiscoveryExportError, DiscoveryOutputError,
+            SpecImportError, ValueError, OSError) as exc:
+        # Only catch expected operational error types so that test sentinel
+        # exceptions (and other BaseException subclasses) propagate naturally.
+        summary["error"] = str(exc)
+        _logger.error("Single-target dir scan failed", target=target, error=str(exc))
+        return summary
+
+
+def _run_dir_multi_target(*, targets, ctx, **kwargs):
+    """Scan targets and print a summary table.
+
+    When ``parallel_hosts`` > 1 (set via ``--parallel-hosts / -j``), scans up to
+    that many hosts concurrently using a ``ThreadPoolExecutor``.  Each host runs
+    ``_run_dir_core`` in its own thread (each thread has its own asyncio event
+    loop, so ``asyncio.run()`` inside ``_run_dir_core`` works correctly).
+    Sequential mode (``parallel_hosts`` <= 1, the default) preserves the existing
+    behaviour exactly.
+    """
+    import concurrent.futures
+    from urllib.parse import urlparse as _urlparse
+    import threading
+
+    _RESET  = "\033[0m"
+    _BOLD   = "\033[1m"
+    _GREEN  = "\033[92m"
+    _RED    = "\033[91m"
+    _CYAN   = "\033[96m"
+    _YELLOW = "\033[93m"
+
+    parallel_hosts = kwargs.pop("parallel_hosts", 1) or 1
+    total = len(targets)
+
+    mode_label = f"parallel (j={parallel_hosts})" if parallel_hosts > 1 else "sequential"
+    click.echo(
+        f"\n{_BOLD}{_CYAN}Multi-target scan: {total} host(s) [{mode_label}]{_RESET}\n"
+        f"{'─' * 60}"
+    )
+
+    # Per-target work: build kwargs, run scan, return summary.
+    _print_lock = threading.Lock()
+
+    def _scan_one(idx_target):
+        idx, t = idx_target
+        hostname = _urlparse(t).netloc or t
+        base_output = kwargs.get("output")
+        if base_output:
+            per_target_output = f"{base_output}_{hostname.replace(':', '_')}"
+        else:
+            safe_name = hostname.replace(":", "_").replace("/", "_")
+            per_target_output = f"scan_{safe_name}"
+
+        per_kwargs = dict(kwargs)
+        per_kwargs["output"] = per_target_output
+        per_kwargs["interactive"] = False
+
+        if parallel_hosts > 1:
+            with _print_lock:
+                click.echo(f"\n{_BOLD}[{idx}/{total}]{_RESET} {_CYAN}{t}{_RESET} starting…")
+        else:
+            click.echo(f"\n{_BOLD}[{idx}/{total}]{_RESET} {_CYAN}{t}{_RESET}")
+
+        result = _run_dir_core(target=t, ctx=ctx, **per_kwargs)
+        result["hostname"] = hostname
+
+        with _print_lock:
+            if result["error"]:
+                click.echo(f"  {_RED}✗ [{hostname}] Error: {result['error']}{_RESET}")
+            else:
+                click.echo(
+                    f"  {_GREEN}✓{_RESET} [{hostname}] "
+                    f"endpoints={result['endpoints']}  "
+                    f"valid={result['valid']}  "
+                    f"auth_req={result['auth_required']}"
+                )
+        return result
+
+    # Run scans
+    if parallel_hosts <= 1:
+        summaries = [_scan_one((idx, t)) for idx, t in enumerate(targets, 1)]
+    else:
+        workers = min(parallel_hosts, total)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            summaries = list(pool.map(_scan_one, enumerate(targets, 1)))
+
+    # Consolidated summary
+    col_host = 40
+    click.echo(
+        f"\n{_BOLD}{_CYAN}{'═' * 60}\n  MULTI-TARGET SUMMARY  ({total} hosts)\n"
+        f"{'═' * 60}{_RESET}"
+    )
+    click.echo(
+        f"{_BOLD}{'HOST':<{col_host}} {'ENDPOINTS':>9} {'VALID':>7}"
+        f" {'AUTH_REQ':>9} {'STATUS':<8}{_RESET}"
+    )
+    click.echo("─" * 75)
+
+    success_count = error_count = 0
+    for s in summaries:
+        host_d = s["hostname"][:col_host - 1] if len(s["hostname"]) > col_host else s["hostname"]
+        if s["error"]:
+            error_count += 1
+            click.echo(
+                f"{host_d:<{col_host}} {'—':>9} {'—':>7} {'—':>9}"
+                f" {_RED}ERROR{_RESET}"
+            )
+        else:
+            success_count += 1
+            click.echo(
+                f"{host_d:<{col_host}} {s['endpoints']:>9} {s['valid']:>7}"
+                f" {s['auth_required']:>9} {_GREEN}OK{_RESET}"
+            )
+
+    click.echo("─" * 75)
+    click.echo(
+        f"\n{_BOLD}Total:{_RESET} {total}  "
+        f"{_GREEN}Success: {success_count}{_RESET}  "
+        f"{_RED}Errors: {error_count}{_RESET}\n"
+    )
+
+
+def _run_par_multi_target(targets, *, ctx, **kwargs):
+    """Fuzz parameters across multiple targets sequentially and print a summary."""
+    from urllib.parse import urlparse as _urlparse
+
+    _RESET  = "\033[0m"
+    _BOLD   = "\033[1m"
+    _GREEN  = "\033[92m"
+    _RED    = "\033[91m"
+    _CYAN   = "\033[96m"
+
+    total = len(targets)
+    click.echo(
+        f"\n{_BOLD}{_CYAN}Multi-target parameter fuzzing: {total} host(s){_RESET}\n"
+        f"{'─' * 60}"
+    )
+
+    summaries = []
+    for idx, t in enumerate(targets, 1):
+        hostname = _urlparse(t).netloc or t
+        click.echo(f"\n{_BOLD}[{idx}/{total}]{_RESET} {_CYAN}{t}{_RESET}")
+        base_output = kwargs.get("output")
+        per_output = (
+            f"{base_output}_{hostname.replace(':', '_')}"
+            if base_output
+            else f"par_{hostname.replace(':', '_').replace('/', '_')}"
+        )
+        per_kwargs = dict(kwargs)
+        per_kwargs["output"] = per_output
+
+        error_msg = None
+        try:
+            # Re-invoke the par command body logic with the per-target URL by
+            # calling the underlying ctx.invoke path — the simplest approach is
+            # to call par.invoke(ctx) after patching, but Click doesn't support
+            # that cleanly; instead we re-invoke the full command via
+            # ctx.invoke so Click handles parameter injection.
+            ctx.invoke(par, target=t, target_file=None, max_hosts=None, **per_kwargs)
+            click.echo(f"  {_GREEN}✓ Completed{_RESET}")
+        except SystemExit as exc:
+            error_msg = f"exited with code {exc.code}"
+            click.echo(f"  {_RED}✗ {error_msg}{_RESET}")
+        except Exception as exc:
+            error_msg = str(exc)
+            click.echo(f"  {_RED}✗ {error_msg}{_RESET}")
+
+        summaries.append({"hostname": hostname, "error": error_msg})
+
+    # Summary table
+    col = 50
+    click.echo(
+        f"\n{_BOLD}{_CYAN}{'═' * 60}\n  MULTI-TARGET PAR SUMMARY  ({total} hosts)\n"
+        f"{'═' * 60}{_RESET}"
+    )
+    click.echo(f"{_BOLD}{'HOST':<{col}} {'STATUS'}{_RESET}")
+    click.echo("─" * 65)
+    success_count = error_count = 0
+    for s in summaries:
+        h = s["hostname"][:col - 1] if len(s["hostname"]) >= col else s["hostname"]
+        if s["error"]:
+            error_count += 1
+            click.echo(f"{h:<{col}} {_RED}ERROR — {s['error'][:30]}{_RESET}")
+        else:
+            success_count += 1
+            click.echo(f"{h:<{col}} {_GREEN}OK{_RESET}")
+    click.echo("─" * 65)
+    click.echo(
+        f"\n{_BOLD}Total:{_RESET} {total}  "
+        f"{_GREEN}Success: {success_count}{_RESET}  "
+        f"{_RED}Errors: {error_count}{_RESET}\n"
+    )
+
+
 @cli.command()
 @click.option('--target', '-t', required=False, default=None,
               help='Target URL to scan. Required unless --target-file is supplied.')
@@ -3642,6 +4450,23 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
         'output_format': output_format, 'output_file': output_file,
         'client_cert': client_cert, 'ca_bundle': ca_bundle, 'resolve': resolve,
     }
+    _par_kwargs = dict(
+        wordlist=wordlist, output=output, log_level=log_level, log_file=log_file,
+        json_logs=json_logs, rate_limit=rate_limit, methods=methods,
+        fuzz_keyword=fuzz_keyword, fuzz_mode=fuzz_mode,
+        user_agent_random=user_agent_random, user_agent_custom=user_agent_custom,
+        user_agent_file=user_agent_file, jwt=jwt, response=response,
+        status_code=status_code, detect_framework=detect_framework,
+        proxy=proxy, proxy_verify_ssl=proxy_verify_ssl, concurrency=concurrency,
+        confirm_hits=confirm_hits, max_requests=max_requests, timeout=timeout,
+        retries=retries, header=header, cookie=cookie, basic_auth=basic_auth,
+        match_size=match_size, match_words=match_words, match_lines=match_lines,
+        match_regex=match_regex, match_time=match_time, filter_size=filter_size,
+        filter_words=filter_words, filter_lines=filter_lines,
+        filter_regex=filter_regex, filter_time=filter_time,
+        output_format=output_format, output_file=output_file,
+        client_cert=client_cert, ca_bundle=ca_bundle, resolve=resolve,
+    )
 
     if len(all_targets) > 1:
         _run_par_multi_target(all_targets, ctx=ctx, **_par_kwargs)
@@ -3689,6 +4514,7 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("par")
 
+    
     logger.info("APILeak parameter fuzzing starting", version=APILEAK_VERSION, target=target)
 
     # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
@@ -4153,6 +4979,105 @@ def _apply_transversal_overrides(cfg, opts, parsed_auth_contexts):
     # --- per-request timeout (target read timeout; Requirement 28.1) ---
     if opts.get('timeout') is not None and hasattr(cfg, 'target'):
         cfg.target.timeout = opts['timeout']
+
+
+def _run_scan_multi_target(ctx, *, targets, selected_keys, descriptors,
+                           config_path=None, **opts_overrides):
+    """Run an orchestrated OWASP scan over multiple targets sequentially.
+
+    Iterates ``targets``, calling ``_build_and_run`` for each with the target
+    injected into ``opts`` and interactive triage suppressed. Prints a
+    consolidated one-line-per-host result table at the end.
+
+    Args:
+        ctx:            Click context (forwarded to each ``_build_and_run`` call).
+        targets:        Ordered list of target URL strings.
+        selected_keys:  OWASP module keys to enable (forwarded unchanged).
+        descriptors:    Module descriptor objects (forwarded unchanged).
+        config_path:    Optional config file path (forwarded unchanged).
+        **opts_overrides: All Click option values for the scan/full command.
+    """
+    _RESET  = "\033[0m"
+    _BOLD   = "\033[1m"
+    _GREEN  = "\033[92m"
+    _RED    = "\033[91m"
+    _CYAN   = "\033[96m"
+
+    total = len(targets)
+    click.echo(
+        f"\n{_BOLD}{_CYAN}Multi-target OWASP scan: {total} host(s){_RESET}\n"
+        f"{'─' * 60}"
+    )
+
+    from urllib.parse import urlparse as _urlparse
+
+    summaries = []
+    for idx, t in enumerate(targets, 1):
+        hostname = _urlparse(t).netloc or t
+        click.echo(f"\n{_BOLD}[{idx}/{total}]{_RESET} {_CYAN}{t}{_RESET}")
+
+        # Build per-target opts: inject the resolved target, suppress interactive.
+        per_opts = dict(opts_overrides)
+        per_opts["target"] = t
+        per_opts["target_file"] = None    # don't recurse into file
+        per_opts["max_hosts"] = None
+
+        # Derive a per-host output filename so reports don't overwrite each other.
+        base_output = per_opts.get("output")
+        if base_output:
+            per_opts["output"] = f"{base_output}_{hostname.replace(':', '_')}"
+        else:
+            safe = hostname.replace(":", "_").replace("/", "_")
+            per_opts["output"] = f"scan_{safe}"
+
+        error_msg = None
+        findings_count = 0
+        try:
+            _build_and_run(
+                ctx,
+                selected_keys=selected_keys,
+                descriptors=descriptors,
+                opts=per_opts,
+                config_path=config_path,
+            )
+            click.echo(f"  {_GREEN}✓ Scan completed{_RESET}")
+        except SystemExit as exc:
+            # _build_and_run calls sys.exit on validation / config errors.
+            error_msg = f"exited with code {exc.code}"
+            click.echo(f"  {_RED}✗ {error_msg}{_RESET}")
+        except Exception as exc:
+            error_msg = str(exc)
+            click.echo(f"  {_RED}✗ {error_msg}{_RESET}")
+
+        summaries.append({
+            "hostname": hostname,
+            "target": t,
+            "error": error_msg,
+        })
+
+    # Consolidated summary table
+    col = 50
+    click.echo(
+        f"\n{_BOLD}{_CYAN}{'═' * 60}\n  MULTI-TARGET SCAN SUMMARY  ({total} hosts)\n"
+        f"{'═' * 60}{_RESET}"
+    )
+    click.echo(f"{_BOLD}{'HOST':<{col}} {'STATUS'}{_RESET}")
+    click.echo("─" * 65)
+    success_count = error_count = 0
+    for s in summaries:
+        h = s["hostname"][:col - 1] if len(s["hostname"]) >= col else s["hostname"]
+        if s["error"]:
+            error_count += 1
+            click.echo(f"{h:<{col}} {_RED}ERROR — {s['error'][:30]}{_RESET}")
+        else:
+            success_count += 1
+            click.echo(f"{h:<{col}} {_GREEN}OK{_RESET}")
+    click.echo("─" * 65)
+    click.echo(
+        f"\n{_BOLD}Total:{_RESET} {total}  "
+        f"{_GREEN}Success: {success_count}{_RESET}  "
+        f"{_RED}Errors: {error_count}{_RESET}\n"
+    )
 
 
 def _run_scan_multi_target(ctx, *, targets, selected_keys, descriptors,
@@ -5200,6 +6125,7 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         # Do NOT call encode_jwt again here — that would overwrite the DER-signed
         # key-confusion token with a plain HMAC-secret token (BUG-002 fix).
 
+        
         # Encode JWT
         token = encode_jwt(header_dict, payload_dict, secret)
 
@@ -5226,6 +6152,13 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
         click.echo("\n🎫 Generated Token:")
         click.echo("-" * 20)
+        if is_none_alg:
+            # colorize_jwt would fail on an empty/absent signature — print raw token.
+            click.echo(token)
+            click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
+                       + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
+                       + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
+        else:
         if is_none_alg:
             # colorize_jwt would fail on an empty/absent signature — print raw token.
             click.echo(token)
@@ -7023,6 +7956,10 @@ def replay_cmd(ctx, report, url_filter, method_filter, source_filter, index,
         _extract_requests_from_report,
         filter_requests,
         load_report,
+    from utils.replay import (
+        load_report,
+        _extract_requests_from_report,
+        filter_requests,
         print_request_list,
         replay_request,
     )
