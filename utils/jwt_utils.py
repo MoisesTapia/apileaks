@@ -3,24 +3,29 @@ JWT Utilities for APILeak
 Handles JWT encoding, decoding, and manipulation
 """
 
-import json
 import base64
-import hmac
 import hashlib
+import hmac
+import json
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Tuple, Union
-import click
+from typing import Any
 
+import click
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.serialization import (
-    Encoding, PublicFormat, PrivateFormat, NoEncryption,
-)
-from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding, utils as asym_utils
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers, RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
 from cryptography.hazmat.primitives.asymmetric.ec import (
-    EllipticCurvePublicNumbers, EllipticCurvePublicKey,
+    EllipticCurvePublicKey,
+    EllipticCurvePublicNumbers,
+)
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPublicNumbers
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
 )
 
 
@@ -38,16 +43,16 @@ def base64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
 
 
-def decode_jwt(token: str) -> Dict[str, Any]:
+def decode_jwt(token: str) -> dict[str, Any]:
     """
     Decode a JWT token without verification
-    
+
     Args:
         token: JWT token string
-        
+
     Returns:
         Dictionary with header, payload, and signature
-        
+
     Raises:
         ValueError: If token format is invalid
     """
@@ -55,14 +60,14 @@ def decode_jwt(token: str) -> Dict[str, Any]:
         parts = token.split('.')
         if len(parts) != 3:
             raise ValueError("Invalid JWT format - must have 3 parts separated by dots")
-        
+
         header_data = base64url_decode(parts[0])
         payload_data = base64url_decode(parts[1])
         signature = parts[2]
-        
+
         header = json.loads(header_data.decode('utf-8'))
         payload = json.loads(payload_data.decode('utf-8'))
-        
+
         return {
             'header': header,
             'payload': payload,
@@ -71,20 +76,20 @@ def decode_jwt(token: str) -> Dict[str, Any]:
             'raw_payload': parts[1],
             'raw_signature': parts[2]
         }
-        
+
     except Exception as e:
-        raise ValueError(f"Failed to decode JWT: {str(e)}")
+        raise ValueError(f"Failed to decode JWT: {str(e)}") from e
 
 
-def encode_jwt(header: Dict[str, Any], payload: Dict[str, Any], secret: str = "secret") -> str:
+def encode_jwt(header: dict[str, Any], payload: dict[str, Any], secret: str = "secret") -> str:
     """
     Encode a JWT token with HMAC SHA256 signature
-    
+
     Args:
         header: JWT header dictionary
         payload: JWT payload dictionary
         secret: Secret key for signing (default: "secret")
-        
+
     Returns:
         Encoded JWT token string
     """
@@ -94,7 +99,7 @@ def encode_jwt(header: Dict[str, Any], payload: Dict[str, Any], secret: str = "s
             header['alg'] = 'HS256'
         if 'typ' not in header:
             header['typ'] = 'JWT'
-        
+
         # Encode header and payload
         header_encoded = base64url_encode(json.dumps(header, separators=(',', ':')).encode('utf-8'))
         payload_encoded = base64url_encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
@@ -111,11 +116,11 @@ def encode_jwt(header: Dict[str, Any], payload: Dict[str, Any], secret: str = "s
             hashlib.sha256
         ).digest()
         signature_encoded = base64url_encode(signature)
-        
+
         return f"{header_encoded}.{payload_encoded}.{signature_encoded}"
-        
+
     except Exception as e:
-        raise ValueError(f"Failed to encode JWT: {str(e)}")
+        raise ValueError(f"Failed to encode JWT: {str(e)}") from e
 
 
 def verify_hmac_secret(token: str, secret: str) -> bool:
@@ -140,7 +145,7 @@ def verify_hmac_secret(token: str, secret: str) -> bool:
         return False
 
     # HMAC over the ORIGINAL raw header.payload segments (no re-encoding).
-    signing_input = f"{parts[0]}.{parts[1]}".encode('utf-8')
+    signing_input = f"{parts[0]}.{parts[1]}".encode()
 
     # Select the digest based on the header's declared algorithm.
     try:
@@ -201,7 +206,7 @@ _ES_EC_HASHES = {
 }
 
 
-def encode_jwt_ecdsa(header: Dict[str, Any], payload: Dict[str, Any],
+def encode_jwt_ecdsa(header: dict[str, Any], payload: dict[str, Any],
                      private_key: "ec.EllipticCurvePrivateKey") -> str:
     """Sign ``header.payload`` with an ECDSA private key (Req 59.1).
 
@@ -233,7 +238,7 @@ def encode_jwt_ecdsa(header: Dict[str, Any], payload: Dict[str, Any],
 
     header_encoded = base64url_encode(json.dumps(header, separators=(',', ':')).encode('utf-8'))
     payload_encoded = base64url_encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
-    message = f"{header_encoded}.{payload_encoded}".encode('utf-8')
+    message = f"{header_encoded}.{payload_encoded}".encode()
 
     der_signature = private_key.sign(message, ec.ECDSA(_ES_EC_HASHES[alg]()))
     r, s = asym_utils.decode_dss_signature(der_signature)
@@ -296,7 +301,7 @@ def verify_ecdsa_signature(token: str, public_key: "ec.EllipticCurvePublicKey") 
 
     try:
         der_signature = asym_utils.encode_dss_signature(r, s)
-        signing_input = f"{parts[0]}.{parts[1]}".encode('utf-8')
+        signing_input = f"{parts[0]}.{parts[1]}".encode()
         public_key.verify(der_signature, signing_input, ec.ECDSA(_ES_EC_HASHES[alg]()))
         return True
     except Exception:
@@ -317,7 +322,7 @@ def psychic_signature_segment(alg: str) -> str:
 # Algorithm-confusion public-key representation variants — Requirement 60.
 # ---------------------------------------------------------------------------
 
-def _public_key_variants(material: Union[str, bytes]) -> List[Tuple[str, bytes]]:
+def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
     """Yield ``(representation_name, key_bytes)`` for the same source public key.
 
     Produces the public-key representations an algorithm-confusion test submits
@@ -334,11 +339,11 @@ def _public_key_variants(material: Union[str, bytes]) -> List[Tuple[str, bytes]]
     Representations that cannot be produced from the given material are OMITTED,
     never raised — an unparseable input yields an empty list.
     """
-    variants: List[Tuple[str, bytes]] = []
+    variants: list[tuple[str, bytes]] = []
 
     if isinstance(material, str):
         raw = material.encode('utf-8')
-    elif isinstance(material, (bytes, bytearray)):
+    elif isinstance(material, bytes | bytearray):
         raw = bytes(material)
     else:
         return variants
@@ -431,10 +436,10 @@ class ClaimFinding:
     """
     category: str
     claim: str
-    detail: Dict[str, Any] = field(default_factory=dict)
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
-def assess_claim_hygiene(payload: Dict[str, Any]) -> List[ClaimFinding]:
+def assess_claim_hygiene(payload: dict[str, Any]) -> list[ClaimFinding]:
     """Statically assess Registered_Claim hygiene of a decoded JWT payload.
 
     Reports one ``ClaimFinding`` per ABSENT Registered_Claim in
@@ -450,7 +455,7 @@ def assess_claim_hygiene(payload: Dict[str, Any]) -> List[ClaimFinding]:
         A list of ``ClaimFinding`` objects, one per absent security claim, in
         the fixed ``SECURITY_CLAIMS`` order.
     """
-    findings: List[ClaimFinding] = []
+    findings: list[ClaimFinding] = []
     for claim in SECURITY_CLAIMS:
         if claim not in payload:
             findings.append(ClaimFinding(
@@ -461,8 +466,8 @@ def assess_claim_hygiene(payload: Dict[str, Any]) -> List[ClaimFinding]:
     return findings
 
 
-def assess_lifetime(payload: Dict[str, Any],
-                    threshold_seconds: int) -> List[ClaimFinding]:
+def assess_lifetime(payload: dict[str, Any],
+                    threshold_seconds: int) -> list[ClaimFinding]:
     """Statically assess token lifetime and replay protection (Req 62).
 
     When both ``exp`` and ``iat`` are present, computes ``lifetime = exp - iat``
@@ -481,7 +486,7 @@ def assess_lifetime(payload: Dict[str, Any],
         A list of ``ClaimFinding`` objects for the lifetime/replay weaknesses
         detected (possibly empty).
     """
-    findings: List[ClaimFinding] = []
+    findings: list[ClaimFinding] = []
 
     if "exp" in payload and "iat" in payload:
         lifetime = payload["exp"] - payload["iat"]
@@ -563,7 +568,7 @@ def _verify_rsa_signature(token: str, public_key: "RSAPublicKey", alg: str) -> b
     except Exception:
         return False
 
-    signing_input = f"{parts[0]}.{parts[1]}".encode('utf-8')
+    signing_input = f"{parts[0]}.{parts[1]}".encode()
     hash_alg = hash_cls()
 
     if alg.startswith("PS"):
@@ -578,8 +583,8 @@ def _verify_rsa_signature(token: str, public_key: "RSAPublicKey", alg: str) -> b
         return False
 
 
-def _load_public_key_for_verify(key_file: Optional[str], pem: Optional[str],
-                                jwks: Optional[Dict[str, Any]]):
+def _load_public_key_for_verify(key_file: str | None, pem: str | None,
+                                jwks: dict[str, Any] | None):
     """Resolve an asymmetric public key from exactly one supplied source.
 
     Returns ``(public_key, key_source_name)``. Raises a ``ValueError`` whose
@@ -596,14 +601,14 @@ def _load_public_key_for_verify(key_file: Optional[str], pem: Optional[str],
                 cert = x509.load_pem_x509_certificate(data)
                 return cert.public_key(), "pem"
             except Exception as exc:
-                raise ValueError(f"Could not parse public key from PEM material: {exc}")
+                raise ValueError(f"Could not parse public key from PEM material: {exc}") from exc
 
     if key_file is not None:
         try:
             with open(key_file, 'rb') as fh:
                 data = fh.read()
         except Exception as exc:
-            raise ValueError(f"Could not read key file '{key_file}': {exc}")
+            raise ValueError(f"Could not read key file '{key_file}': {exc}") from exc
         for loader in (serialization.load_pem_public_key,
                        serialization.load_der_public_key):
             try:
@@ -632,16 +637,16 @@ def _load_public_key_for_verify(key_file: Optional[str], pem: Optional[str],
         except ValueError:
             raise
         except Exception as exc:
-            raise ValueError(f"Could not reconstruct public key from JWKS: {exc}")
+            raise ValueError(f"Could not reconstruct public key from JWKS: {exc}") from exc
 
     raise ValueError(
         "No asymmetric key source supplied (expected one of: key file, pem, jwks)"
     )
 
 
-def verify_token(token: str, *, secret: Optional[str] = None,
-                 key_file: Optional[str] = None, pem: Optional[str] = None,
-                 jwks: Optional[Dict[str, Any]] = None) -> VerifyResult:
+def verify_token(token: str, *, secret: str | None = None,
+                 key_file: str | None = None, pem: str | None = None,
+                 jwks: dict[str, Any] | None = None) -> VerifyResult:
     """Verify a token signature against exactly one supplied key source (Req 65).
 
     Dispatches on the header ``alg``:
@@ -672,7 +677,7 @@ def verify_token(token: str, *, secret: Optional[str] = None,
     try:
         header = json.loads(base64url_decode(parts[0]).decode('utf-8'))
     except Exception as exc:
-        raise ValueError(f"Could not decode JWT header: {exc}")
+        raise ValueError(f"Could not decode JWT header: {exc}") from exc
 
     alg_raw = header.get('alg', '')
     alg = str(alg_raw).upper()
@@ -708,7 +713,7 @@ def verify_token(token: str, *, secret: Optional[str] = None,
     raise ValueError(f"Unsupported algorithm '{alg_raw}' for token verification")
 
 
-def generate_rsa_keypair(bits: int = 2048) -> Tuple[str, str]:
+def generate_rsa_keypair(bits: int = 2048) -> tuple[str, str]:
     """Generate a fresh RSA keypair for testing (Req 66.1).
 
     Args:
@@ -728,7 +733,7 @@ def generate_rsa_keypair(bits: int = 2048) -> Tuple[str, str]:
     return private_pem, public_pem
 
 
-def generate_ec_keypair(curve: str = "ES256") -> Tuple[str, str]:
+def generate_ec_keypair(curve: str = "ES256") -> tuple[str, str]:
     """Generate a fresh EC keypair for testing (Req 66.1).
 
     Args:
@@ -755,7 +760,7 @@ def generate_ec_keypair(curve: str = "ES256") -> Tuple[str, str]:
     return private_pem, public_pem
 
 
-def reconstruct_public_key_from_jwks(jwk: Dict[str, Any]) -> str:
+def reconstruct_public_key_from_jwks(jwk: dict[str, Any]) -> str:
     """Reconstruct a PEM public key from a single JWK entry (Req 66.2).
 
     Reuses the same JWK-to-key conversion approach used for Algorithm_Confusion
@@ -817,14 +822,14 @@ def reconstruct_public_key_from_jwks(jwk: Dict[str, Any]) -> str:
     except ValueError:
         raise
     except Exception as exc:
-        raise ValueError(f"Could not reconstruct public key from JWKS entry: {exc}")
+        raise ValueError(f"Could not reconstruct public key from JWKS entry: {exc}") from exc
 
     return public_key.public_bytes(
         Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
     ).decode('utf-8')
 
 
-def read_vector_file(path: str) -> List[str]:
+def read_vector_file(path: str) -> list[str]:
     """Read a Vector_File, returning one candidate value per line (Req 63.6).
 
     Blank lines are skipped; each returned value has its trailing line-ending
@@ -841,12 +846,12 @@ def read_vector_file(path: str) -> List[str]:
         ValueError: If the Vector_File cannot be read (message names ``path``).
     """
     try:
-        with open(path, 'r', encoding='utf-8') as fh:
+        with open(path, encoding='utf-8') as fh:
             lines = fh.readlines()
     except Exception as exc:
-        raise ValueError(f"Could not read vector file '{path}': {exc}")
+        raise ValueError(f"Could not read vector file '{path}': {exc}") from exc
 
-    values: List[str] = []
+    values: list[str] = []
     for line in lines:
         value = line.rstrip('\r\n')
         if value:
@@ -874,14 +879,14 @@ class RawRequest:
     """
     method: str
     url: str
-    headers: Dict[str, str]
-    cookies: Dict[str, str]
-    body: Optional[str]
+    headers: dict[str, str]
+    cookies: dict[str, str]
+    body: str | None
     token: str
 
 
-def _locate_jwt(headers: Dict[str, str], cookies: Dict[str, str],
-                body: Optional[str]) -> Optional[str]:
+def _locate_jwt(headers: dict[str, str], cookies: dict[str, str],
+                body: str | None) -> str | None:
     """Locate a JWT within parsed request components.
 
     Search order: ``Authorization: Bearer <token>``, then any cookie value, then
@@ -916,9 +921,9 @@ def _locate_jwt(headers: Dict[str, str], cookies: Dict[str, str],
     return None
 
 
-def _parse_cookie_header(cookie_value: str) -> Dict[str, str]:
+def _parse_cookie_header(cookie_value: str) -> dict[str, str]:
     """Parse a ``Cookie`` header value into a name->value dict."""
-    cookies: Dict[str, str] = {}
+    cookies: dict[str, str] = {}
     for pair in cookie_value.split(';'):
         pair = pair.strip()
         if not pair or '=' not in pair:
@@ -948,10 +953,10 @@ def parse_raw_request(path: str) -> RawRequest:
             (message names ``path``).
     """
     try:
-        with open(path, 'r', encoding='utf-8') as fh:
+        with open(path, encoding='utf-8') as fh:
             raw = fh.read()
     except Exception as exc:
-        raise ValueError(f"Could not read raw request file '{path}': {exc}")
+        raise ValueError(f"Could not read raw request file '{path}': {exc}") from exc
 
     if not raw.strip():
         raise ValueError(f"Raw request file '{path}' is empty")
@@ -978,7 +983,7 @@ def parse_raw_request(path: str) -> RawRequest:
     method = request_line_parts[0]
     request_target = request_line_parts[1]
 
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     for line in header_lines[1:]:
         if ':' not in line:
             continue
@@ -996,7 +1001,7 @@ def parse_raw_request(path: str) -> RawRequest:
                 break
         url = f"http://{host}{request_target}" if host else request_target
 
-    cookies: Dict[str, str] = {}
+    cookies: dict[str, str] = {}
     for name, value in headers.items():
         if name.lower() == 'cookie':
             cookies = _parse_cookie_header(value)
@@ -1025,35 +1030,35 @@ def get_random_user_agents() -> list:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        
+
         # Firefox
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
-        
+
         # Safari
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-        
+
         # Edge
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-        
+
         # Mobile
         "Mozilla/5.0 (Android 14; Mobile; rv:121.0) Gecko/121.0 Firefox/121.0",
         "Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        
+
         # API Clients
         "curl/8.4.0",
         "HTTPie/3.2.2",
         "Postman/10.20.0",
         "insomnia/2023.8.0",
-        
+
         # Security Tools (for legitimate testing)
         "Burp Suite Professional/2023.10.3.4",
         "OWASP ZAP/2.14.0",
         "Nmap Scripting Engine",
         "sqlmap/1.7.11",
-        
+
         # Custom API testing
         "APITester/1.0",
         "SecurityScanner/2.1",
@@ -1070,7 +1075,7 @@ JWT_PAYLOAD_COLOR = 'magenta'
 JWT_SIGNATURE_COLOR = 'cyan'
 
 
-def colorize_jwt(decoded_jwt: Dict[str, Any]) -> str:
+def colorize_jwt(decoded_jwt: dict[str, Any]) -> str:
     """Return the raw token with each segment coloured by section.
 
     The header, payload, and signature segments are styled in their section
@@ -1083,7 +1088,7 @@ def colorize_jwt(decoded_jwt: Dict[str, Any]) -> str:
     return f"{header_seg}.{payload_seg}.{signature_seg}"
 
 
-def print_jwt_info(decoded_jwt: Dict[str, Any]) -> None:
+def print_jwt_info(decoded_jwt: dict[str, Any]) -> None:
     """Pretty print JWT information with per-section colours."""
     click.echo("\n" + "="*60)
     click.echo("JWT Token Analysis")
@@ -1113,7 +1118,7 @@ def print_jwt_info(decoded_jwt: Dict[str, Any]) -> None:
                 import datetime
                 readable_date = datetime.datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M:%S UTC')
                 click.echo("  " + click.style(f"{key}: {value} ({readable_date})", fg=JWT_PAYLOAD_COLOR))
-            except:
+            except Exception:
                 click.echo("  " + click.style(f"{key}: {value}", fg=JWT_PAYLOAD_COLOR))
         else:
             click.echo("  " + click.style(f"{key}: {value}", fg=JWT_PAYLOAD_COLOR))

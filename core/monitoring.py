@@ -3,19 +3,17 @@ APILeak Monitoring System
 Advanced monitoring, metrics collection, and anomaly detection
 """
 
-import asyncio
-import time
-import threading
-import os
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Callable
-from dataclasses import dataclass, field
-from collections import deque, defaultdict
-from pathlib import Path
 import logging
 import logging.handlers
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
+from typing import Any
 
 from .logging import get_logger
 
@@ -44,9 +42,9 @@ class Alert:
     level: AlertLevel
     category: str
     message: str
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
     resolved: bool = False
-    resolved_at: Optional[datetime] = None
+    resolved_at: datetime | None = None
 
 
 @dataclass
@@ -56,8 +54,8 @@ class Metric:
     type: MetricType
     value: float
     timestamp: datetime
-    labels: Dict[str, str] = field(default_factory=dict)
-    unit: Optional[str] = None
+    labels: dict[str, str] = field(default_factory=dict)
+    unit: str | None = None
 
 
 @dataclass
@@ -90,11 +88,11 @@ class LogRotationHandler:
     """
     Advanced log rotation handler with size and time-based rotation
     """
-    
+
     def __init__(self, log_dir: str = "logs", max_size_mb: int = 100, max_files: int = 10):
         """
         Initialize log rotation handler
-        
+
         Args:
             log_dir: Directory for log files
             max_size_mb: Maximum size per log file in MB
@@ -104,21 +102,21 @@ class LogRotationHandler:
         self.max_size_bytes = max_size_mb * 1024 * 1024
         self.max_files = max_files
         self.log_dir.mkdir(exist_ok=True)
-        
+
         # Setup rotating file handler
         self.setup_rotation()
-    
+
     def setup_rotation(self):
         """Setup log rotation with size and time-based rotation"""
         log_file = self.log_dir / "apileak.log"
-        
+
         # Size-based rotation
         size_handler = logging.handlers.RotatingFileHandler(
             log_file,
             maxBytes=self.max_size_bytes,
             backupCount=self.max_files
         )
-        
+
         # Time-based rotation (daily)
         time_handler = logging.handlers.TimedRotatingFileHandler(
             self.log_dir / "apileak_daily.log",
@@ -126,30 +124,30 @@ class LogRotationHandler:
             interval=1,
             backupCount=30  # Keep 30 days
         )
-        
+
         # Configure formatters
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         size_handler.setFormatter(formatter)
         time_handler.setFormatter(formatter)
-        
+
         # Add handlers to root logger
         logger = logging.getLogger()
         logger.addHandler(size_handler)
         logger.addHandler(time_handler)
-    
+
     def cleanup_old_logs(self):
         """Clean up old log files beyond retention period"""
         try:
             log_files = list(self.log_dir.glob("*.log*"))
             # Sort by modification time
             log_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            
+
             # Keep only the most recent files
             for log_file in log_files[self.max_files:]:
                 log_file.unlink()
-                
+
         except Exception as e:
             logging.error(f"Error cleaning up old logs: {e}")
 
@@ -158,11 +156,11 @@ class PerformanceMonitor:
     """
     Performance monitoring and metrics collection
     """
-    
+
     def __init__(self, window_size: int = 1000):
         """
         Initialize performance monitor
-        
+
         Args:
             window_size: Size of sliding window for metrics
         """
@@ -175,30 +173,30 @@ class PerformanceMonitor:
         self.rate_limited_requests = 0
         self.total_requests = 0
         self.total_errors = 0
-        
+
         self.logger = get_logger("performance_monitor")
-    
+
     def record_request(self, response_time: float, success: bool, memory_mb: float = 0):
         """
         Record a request's performance metrics
-        
+
         Args:
             response_time: Response time in seconds
             success: Whether the request was successful
             memory_mb: Current memory usage in MB
         """
         now = datetime.now()
-        
+
         self.response_times.append(response_time)
         self.request_results.append(success)
         self.request_timestamps.append(now)
         if memory_mb > 0:
             self.memory_usage.append(memory_mb)
-        
+
         self.total_requests += 1
         if not success:
             self.total_errors += 1
-    
+
     def get_performance_snapshot(self) -> PerformanceSnapshot:
         """Get current performance metrics snapshot"""
         if not self.response_times:
@@ -214,29 +212,29 @@ class PerformanceMonitor:
                 active_connections=self.active_connections,
                 rate_limited_requests=self.rate_limited_requests
             )
-        
+
         # Calculate response time metrics
         sorted_times = sorted(self.response_times)
         avg_time = sum(sorted_times) / len(sorted_times)
         p95_time = sorted_times[int(len(sorted_times) * 0.95)] if sorted_times else 0
         p99_time = sorted_times[int(len(sorted_times) * 0.99)] if sorted_times else 0
-        
+
         # Calculate success rate
         success_count = sum(1 for result in self.request_results if result)
         success_rate = success_count / len(self.request_results) if self.request_results else 1.0
         error_rate = 1.0 - success_rate
-        
+
         # Calculate requests per second (last minute)
         now = datetime.now()
         recent_requests = [
-            ts for ts in self.request_timestamps 
+            ts for ts in self.request_timestamps
             if (now - ts).total_seconds() <= 60
         ]
         requests_per_second = len(recent_requests) / 60.0
-        
+
         # Get current memory usage
         current_memory = self.memory_usage[-1] if self.memory_usage else 0.0
-        
+
         return PerformanceSnapshot(
             timestamp=now,
             response_time_avg=avg_time,
@@ -249,15 +247,15 @@ class PerformanceMonitor:
             active_connections=self.active_connections,
             rate_limited_requests=self.rate_limited_requests
         )
-    
+
     def increment_active_connections(self):
         """Increment active connections counter"""
         self.active_connections += 1
-    
+
     def decrement_active_connections(self):
         """Decrement active connections counter"""
         self.active_connections = max(0, self.active_connections - 1)
-    
+
     def increment_rate_limited(self):
         """Increment rate limited requests counter"""
         self.rate_limited_requests += 1
@@ -267,38 +265,38 @@ class AnomalyDetector:
     """
     Anomaly detection and alerting system
     """
-    
+
     def __init__(self, thresholds: AnomalyThresholds = None):
         """
         Initialize anomaly detector
-        
+
         Args:
             thresholds: Anomaly detection thresholds
         """
         self.thresholds = thresholds or AnomalyThresholds()
         self.consecutive_timeouts = 0
         self.consecutive_rate_limits = 0
-        self.alerts: List[Alert] = []
-        self.alert_callbacks: List[Callable[[Alert], None]] = []
-        
+        self.alerts: list[Alert] = []
+        self.alert_callbacks: list[Callable[[Alert], None]] = []
+
         self.logger = get_logger("anomaly_detector")
-    
+
     def add_alert_callback(self, callback: Callable[[Alert], None]):
         """Add callback function for alert notifications"""
         self.alert_callbacks.append(callback)
-    
-    def check_anomalies(self, snapshot: PerformanceSnapshot) -> List[Alert]:
+
+    def check_anomalies(self, snapshot: PerformanceSnapshot) -> list[Alert]:
         """
         Check for anomalies in performance snapshot
-        
+
         Args:
             snapshot: Performance metrics snapshot
-            
+
         Returns:
             List of detected alerts
         """
         alerts = []
-        
+
         # Check response time anomaly
         if snapshot.response_time_avg > self.thresholds.max_response_time:
             alert = Alert(
@@ -315,7 +313,7 @@ class AnomalyDetector:
                 }
             )
             alerts.append(alert)
-        
+
         # Check success rate anomaly
         if snapshot.success_rate < self.thresholds.min_success_rate:
             alert = Alert(
@@ -331,7 +329,7 @@ class AnomalyDetector:
                 }
             )
             alerts.append(alert)
-        
+
         # Check error rate anomaly
         if snapshot.error_rate > self.thresholds.max_error_rate:
             alert = Alert(
@@ -347,7 +345,7 @@ class AnomalyDetector:
                 }
             )
             alerts.append(alert)
-        
+
         # Check memory usage anomaly
         if snapshot.memory_usage_mb > self.thresholds.max_memory_usage_mb:
             alert = Alert(
@@ -362,7 +360,7 @@ class AnomalyDetector:
                 }
             )
             alerts.append(alert)
-        
+
         # Check rate limiting anomaly
         if snapshot.rate_limited_requests > 0:
             self.consecutive_rate_limits += 1
@@ -382,7 +380,7 @@ class AnomalyDetector:
                 alerts.append(alert)
         else:
             self.consecutive_rate_limits = 0
-        
+
         # Store alerts and trigger callbacks
         for alert in alerts:
             self.alerts.append(alert)
@@ -394,16 +392,16 @@ class AnomalyDetector:
                 message=alert.message,
                 details=alert.details
             )
-            
+
             # Trigger alert callbacks
             for callback in self.alert_callbacks:
                 try:
                     callback(alert)
                 except Exception as e:
                     self.logger.error(f"Error in alert callback: {e}")
-        
+
         return alerts
-    
+
     def record_timeout(self):
         """Record a timeout event"""
         self.consecutive_timeouts += 1
@@ -420,22 +418,22 @@ class AnomalyDetector:
                 }
             )
             self.alerts.append(alert)
-            
+
             # Trigger callbacks
             for callback in self.alert_callbacks:
                 try:
                     callback(alert)
                 except Exception as e:
                     self.logger.error(f"Error in timeout alert callback: {e}")
-    
+
     def record_success(self):
         """Record a successful request (resets timeout counter)"""
         self.consecutive_timeouts = 0
-    
-    def get_active_alerts(self) -> List[Alert]:
+
+    def get_active_alerts(self) -> list[Alert]:
         """Get list of active (unresolved) alerts"""
         return [alert for alert in self.alerts if not alert.resolved]
-    
+
     def resolve_alert(self, alert_id: str):
         """Mark an alert as resolved"""
         for alert in self.alerts:
@@ -450,8 +448,8 @@ class MonitoringSystem:
     """
     Main monitoring system that coordinates all monitoring components
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  log_dir: str = "logs",
                  max_log_size_mb: int = 100,
                  max_log_files: int = 10,
@@ -459,7 +457,7 @@ class MonitoringSystem:
                  metrics_window_size: int = 1000):
         """
         Initialize monitoring system
-        
+
         Args:
             log_dir: Directory for log files
             max_log_size_mb: Maximum size per log file in MB
@@ -470,16 +468,16 @@ class MonitoringSystem:
         self.log_rotation = LogRotationHandler(log_dir, max_log_size_mb, max_log_files)
         self.performance_monitor = PerformanceMonitor(metrics_window_size)
         self.anomaly_detector = AnomalyDetector(thresholds)
-        
+
         self.monitoring_active = False
         self.monitoring_thread = None
         self.monitoring_interval = 30  # seconds
-        
+
         self.logger = get_logger("monitoring_system")
-        
+
         # Setup default alert callback
         self.anomaly_detector.add_alert_callback(self._default_alert_handler)
-    
+
     def _default_alert_handler(self, alert: Alert):
         """Default alert handler that logs alerts"""
         self.logger.error(
@@ -489,36 +487,36 @@ class MonitoringSystem:
             category=alert.category,
             details=alert.details
         )
-    
+
     def start_monitoring(self):
         """Start background monitoring thread"""
         if self.monitoring_active:
             return
-        
+
         self.monitoring_active = True
         self.monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
         self.monitoring_thread.start()
-        
+
         self.logger.info("Monitoring system started")
-    
+
     def stop_monitoring(self):
         """Stop background monitoring"""
         self.monitoring_active = False
         if self.monitoring_thread:
             self.monitoring_thread.join(timeout=5)
-        
+
         self.logger.info("Monitoring system stopped")
-    
+
     def _monitoring_loop(self):
         """Background monitoring loop"""
         while self.monitoring_active:
             try:
                 # Get performance snapshot
                 snapshot = self.performance_monitor.get_performance_snapshot()
-                
+
                 # Check for anomalies
                 alerts = self.anomaly_detector.check_anomalies(snapshot)
-                
+
                 # Log performance metrics
                 self.logger.info(
                     "Performance metrics",
@@ -532,60 +530,60 @@ class MonitoringSystem:
                     rate_limited_requests=snapshot.rate_limited_requests,
                     alerts_count=len(alerts)
                 )
-                
+
                 # Clean up old logs periodically
                 if int(time.time()) % 3600 == 0:  # Every hour
                     self.log_rotation.cleanup_old_logs()
-                
+
             except Exception as e:
                 self.logger.error(f"Error in monitoring loop: {e}", exc_info=True)
-            
+
             time.sleep(self.monitoring_interval)
-    
+
     def record_request(self, response_time: float, success: bool, memory_mb: float = 0):
         """Record request metrics"""
         self.performance_monitor.record_request(response_time, success, memory_mb)
-        
+
         if success:
             self.anomaly_detector.record_success()
-    
+
     def record_timeout(self):
         """Record timeout event"""
         self.anomaly_detector.record_timeout()
-    
+
     def record_rate_limit(self):
         """Record rate limiting event"""
         self.performance_monitor.increment_rate_limited()
-    
+
     def increment_connections(self):
         """Increment active connections"""
         self.performance_monitor.increment_active_connections()
-    
+
     def decrement_connections(self):
         """Decrement active connections"""
         self.performance_monitor.decrement_active_connections()
-    
+
     def get_performance_snapshot(self) -> PerformanceSnapshot:
         """Get current performance snapshot"""
         return self.performance_monitor.get_performance_snapshot()
-    
-    def get_active_alerts(self) -> List[Alert]:
+
+    def get_active_alerts(self) -> list[Alert]:
         """Get active alerts"""
         return self.anomaly_detector.get_active_alerts()
-    
+
     def resolve_alert(self, alert_id: str):
         """Resolve an alert"""
         self.anomaly_detector.resolve_alert(alert_id)
-    
+
     def add_alert_callback(self, callback: Callable[[Alert], None]):
         """Add custom alert callback"""
         self.anomaly_detector.add_alert_callback(callback)
-    
-    def get_metrics_summary(self) -> Dict[str, Any]:
+
+    def get_metrics_summary(self) -> dict[str, Any]:
         """Get comprehensive metrics summary"""
         snapshot = self.get_performance_snapshot()
         active_alerts = self.get_active_alerts()
-        
+
         return {
             "timestamp": snapshot.timestamp.isoformat(),
             "performance": {

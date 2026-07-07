@@ -25,7 +25,7 @@ base (even for fields not declared in the schema, and even when no schema is
 declared) so callers can inject a mass-assignment or BOLA-mutated field.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from utils.spec_import import SpecOperation, SpecParameter
 
@@ -36,7 +36,7 @@ _PAYLOAD_PARAMETER_LOCATIONS = ("query", "header")
 # Canonical value produced for each declared JSON Schema type when no
 # ``example``/``examples`` and no ``enum`` narrow the choice. An unknown or
 # absent type defaults to ``"string"``.
-_CANONICAL_BY_TYPE: Dict[str, Any] = {
+_CANONICAL_BY_TYPE: dict[str, Any] = {
     "string": "x",
     "integer": 1,
     "number": 1.0,
@@ -48,8 +48,8 @@ _CANONICAL_BY_TYPE: Dict[str, Any] = {
 
 def build_typed_payload(
     operation: SpecOperation,
-    overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Construct a request body honoring ``operation.request_body_schema``.
 
     Every property listed in the schema's ``required`` list is present in the
@@ -68,7 +68,7 @@ def build_typed_payload(
     empty base when they are supplied (Req 52.6).
     """
     schema = operation.request_body_schema
-    body: Dict[str, Any] = {}
+    body: dict[str, Any] = {}
 
     if schema is not None:
         properties = schema.get("properties") or {}
@@ -98,9 +98,9 @@ def apply_actor_profile(
     auth_context: Any,
     endpoint: str,
     *,
-    query: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    query: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Overlay an Auth_Context's Actor_Profile per-endpoint values onto a base.
 
     Consumes the per-identity :class:`~core.config.ActorProfile` carried by an
@@ -141,7 +141,7 @@ def apply_actor_profile(
     return query, body
 
 
-def build_typed_params(operation: SpecOperation) -> Dict[str, Dict[str, Any]]:
+def build_typed_params(operation: SpecOperation) -> dict[str, dict[str, Any]]:
     """Build valid values for ``query`` and ``header`` parameters.
 
     Returns a mapping grouped by parameter ``location`` (for example
@@ -150,7 +150,7 @@ def build_typed_params(operation: SpecOperation) -> Dict[str, Dict[str, Any]]:
     parameters are always included; optional parameters are included as well.
     ``path`` parameters are intentionally excluded.
     """
-    grouped: Dict[str, Dict[str, Any]] = {loc: {} for loc in _PAYLOAD_PARAMETER_LOCATIONS}
+    grouped: dict[str, dict[str, Any]] = {loc: {} for loc in _PAYLOAD_PARAMETER_LOCATIONS}
 
     for param in operation.parameters:
         if param.location in grouped:
@@ -159,7 +159,7 @@ def build_typed_params(operation: SpecOperation) -> Dict[str, Dict[str, Any]]:
     return grouped
 
 
-def _value_for(spec: Union[SpecParameter, Dict[str, Any]]) -> Any:
+def _value_for(spec: SpecParameter | dict[str, Any]) -> Any:
     """Type-directed value factory for a parameter or JSON Schema property node.
 
     Accepts either a :class:`~utils.spec_import.SpecParameter` or a raw JSON
@@ -192,7 +192,7 @@ def _value_for(spec: Union[SpecParameter, Dict[str, Any]]) -> Any:
     return _CANONICAL_BY_TYPE["string"]
 
 
-def _read_type(spec: Union[SpecParameter, Dict[str, Any]]) -> str:
+def _read_type(spec: SpecParameter | dict[str, Any]) -> str:
     """Return the declared JSON Schema type, defaulting to ``"string"``."""
     if isinstance(spec, dict):
         declared = spec.get("type")
@@ -201,7 +201,7 @@ def _read_type(spec: Union[SpecParameter, Dict[str, Any]]) -> str:
     return declared if isinstance(declared, str) and declared else "string"
 
 
-def _read_enum(spec: Union[SpecParameter, Dict[str, Any]]) -> Optional[List[Any]]:
+def _read_enum(spec: SpecParameter | dict[str, Any]) -> list[Any] | None:
     """Return the declared ``enum`` values when present, else ``None``."""
     if isinstance(spec, dict):
         enum = spec.get("enum")
@@ -210,7 +210,7 @@ def _read_enum(spec: Union[SpecParameter, Dict[str, Any]]) -> Optional[List[Any]
     return enum if isinstance(enum, list) and enum else None
 
 
-def _read_example(spec: Union[SpecParameter, Dict[str, Any]]) -> "tuple[Any, bool]":
+def _read_example(spec: SpecParameter | dict[str, Any]) -> "tuple[Any, bool]":
     """Return ``(value, found)`` for a declared ``example``/``examples``.
 
     Prefers a scalar ``example`` when present; otherwise uses the first entry of
@@ -233,7 +233,7 @@ def _read_example(spec: Union[SpecParameter, Dict[str, Any]]) -> "tuple[Any, boo
     return None, False
 
 
-def _read_items(spec: Union[SpecParameter, Dict[str, Any]]) -> Dict[str, Any]:
+def _read_items(spec: SpecParameter | dict[str, Any]) -> dict[str, Any]:
     """Return the ``array`` item schema node, defaulting to an empty node.
 
     Only raw JSON Schema property nodes carry an ``items`` definition;

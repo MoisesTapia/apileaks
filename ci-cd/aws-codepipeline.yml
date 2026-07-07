@@ -1,0 +1,468 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'APILeaks Security Scanning Pipeline — AWS CodePipeline/CodeBuild'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IAM PERMISSIONS SUMMARY (Req 5.7)
+#
+#   APILeaksCodeBuildRole (assumed by CodeBuild):
+#     ssm:GetParameter          — reads /apileaks/* parameters from Parameter Store
+#     ssm:GetParametersByPath   — batch-reads the /apileaks/ prefix
+#     s3:GetObject              — pulls source artifact from the artifact bucket
+#     s3:PutObject              — uploads reports to APILEAK_S3_BUCKET
+#     s3:GetBucketLocation      — needed for aws s3 sync
+#     ecr:GetAuthorizationToken — pulls the apileak Docker image from ECR (optional)
+#     logs:CreateLogGroup       — creates CloudWatch log group for CodeBuild
+#     logs:CreateLogStream      — creates log stream inside the group
+#     logs:PutLogEvents         — streams build output to CloudWatch
+#     securityhub:BatchImportFindings — publishes findings to Security Hub (Req 5.5)
+#
+#   APILeaksPipelineRole (assumed by CodePipeline):
+#     s3:GetObject / s3:PutObject — reads/writes pipeline artifacts
+#     s3:GetBucketVersioning      — required by CodePipeline source actions
+#     codebuild:BatchGetBuilds    — monitors CodeBuild project status
+#     codebuild:StartBuild        — triggers CodeBuild project executions
+#     iam:PassRole                — passes APILeaksCodeBuildRole to CodeBuild
+# ─────────────────────────────────────────────────────────────────────────────
+
+Parameters:
+
+  # ── Source ──────────────────────────────────────────────────────────────────
+  SourceBucket:
+    Type: String
+    Description: >
+      S3 bucket that contains the versioned source ZIP uploaded before each
+      pipeline execution (must have versioning enabled).
+    Default: apileaks-source
+
+  SourceObjectKey:
+    Type: String
+    Description: S3 object key of the source archive (e.g. source.zip).
+    Default: source.zip
+
+  # ── Artifacts ───────────────────────────────────────────────────────────────
+  ArtifactBucketName:
+    Type: String
+    Description: >
+      S3 bucket where CodePipeline stores inter-stage artifacts.
+      Created separately; must exist before stack deployment.
+    Default: apileaks-pipeline-artifacts
+
+  # ── Reports ─────────────────────────────────────────────────────────────────
+  ApileaksS3Bucket:
+    Type: String
+    Description: >
+      S3 bucket where the post_build phase uploads the reports/ directory.
+      Value is injected into the build environment as APILEAK_S3_BUCKET.
+    Default: apileaks-reports
+
+  # ── CodeBuild environment ────────────────────────────────────────────────────
+  BuildEnvironmentType:
+    Type: String
+    Description: CodeBuild compute environment type.
+    Default: LINUX_CONTAINER
+    AllowedValues:
+      - LINUX_CONTAINER
+      - LINUX_GPU_CONTAINER
+
+  BuildComputeType:
+    Type: String
+    Description: CodeBuild compute size.
+    Default: BUILD_GENERAL1_MEDIUM
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+
+  # ── Docker image ─────────────────────────────────────────────────────────────
+  ApileaksDockerImage:
+    Type: String
+    Description: >
+      Fully-qualified Docker image reference for the APILeaks scanner
+      (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/apileak:latest).
+    Default: apileak:latest
+
+  # ── Security Hub ─────────────────────────────────────────────────────────────
+  SecurityHubProductArn:
+    Type: String
+    Description: >
+      ARN of the Security Hub custom product used for BatchImportFindings.
+      Leave empty to skip Security Hub integration.
+    Default: ''
+
+  # ── Logging ──────────────────────────────────────────────────────────────────
+  CloudWatchLogGroupName:
+    Type: String
+    Description: CloudWatch Logs group for CodeBuild output.
+    Default: /apileaks/codebuild
+
+  # ── Tags ─────────────────────────────────────────────────────────────────────
+  ProjectName:
+    Type: String
+    Description: Tag value applied to all created resources.
+    Default: APILeaks
+
+Conditions:
+  # Only attach securityhub:BatchImportFindings when an ARN is provided
+  SecurityHubEnabled: !Not [!Equals [!Ref SecurityHubProductArn, '']]
+
+Resources:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IAM — CodeBuild execution role
+  #
+  # Minimum permissions documented inline (Req 5.7):
+  #   ssm:GetParameter / ssm:GetParametersByPath — /apileaks/* parameters
+  #   s3:PutObject / s3:GetBucketLocation       — report upload
+  #   securityhub:BatchImportFindings            — Security Hub publishing
+  # ═══════════════════════════════════════════════════════════════════════════
+  APILeaksCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-CodeBuildRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+      Policies:
+        - PolicyName: SSMParameterReadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # ssm:GetParameter — reads individual /apileaks/* parameters (Req 5.3, 5.7)
+              - Sid: ReadApileaksParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/apileaks/*'
+
+        - PolicyName: S3ReportUploadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # s3:PutObject — uploads reports to APILEAK_S3_BUCKET (Req 5.4, 5.7)
+              - Sid: UploadReportsToS3
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ApileaksS3Bucket}'
+                  - !Sub 'arn:aws:s3:::${ApileaksS3Bucket}/*'
+              # Read source artifact and write build artifacts
+              - Sid: PipelineArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CreateAndWriteLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CloudWatchLogGroupName}'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CloudWatchLogGroupName}:*'
+
+        - PolicyName: SecurityHubPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # securityhub:BatchImportFindings — publishes ASFF findings (Req 5.5, 5.7)
+              - Sid: PublishFindingsToSecurityHub
+                Effect: !If [SecurityHubEnabled, Allow, Deny]
+                Action:
+                  - securityhub:BatchImportFindings
+                Resource: '*'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IAM — CodePipeline execution role
+  # ═══════════════════════════════════════════════════════════════════════════
+  APILeaksPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-PipelineRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+      Policies:
+        - PolicyName: PipelineExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Read/write pipeline artifacts in the artifact bucket
+              - Sid: ArtifactBucketAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+              # Read the source object from the source bucket
+              - Sid: SourceBucketRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub 'arn:aws:s3:::${SourceBucket}'
+                  - !Sub 'arn:aws:s3:::${SourceBucket}/*'
+              # Start and monitor CodeBuild projects
+              - Sid: CodeBuildAccess
+                Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource:
+                  - !GetAtt SecurityScanProject.Arn
+              # Pass the CodeBuild role to CodeBuild service
+              - Sid: PassCodeBuildRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt APILeaksCodeBuildRole.Arn
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeBuild — Security Scan project (Req 5.6: image aws/codebuild/standard:7.0)
+  # ═══════════════════════════════════════════════════════════════════════════
+  SecurityScanProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-SecurityScan'
+      Description: 'Runs APILeaks security scanning: OpenAPI discovery, JWT attacks, BOLA testing, report generation, and Security Hub publishing.'
+      ServiceRole: !GetAtt APILeaksCodeBuildRole.Arn
+      # Buildspec is loaded from the source artifact (ci-cd/buildspec.yml)
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: ci-cd/buildspec.yml
+      Artifacts:
+        Type: CODEPIPELINE
+      # Image: aws/codebuild/standard:7.0 (Req 5.6) — Ubuntu 22.04,
+      #        Python 3.11, Docker-in-Docker support included
+      Environment:
+        Type: !Ref BuildEnvironmentType
+        ComputeType: !Ref BuildComputeType
+        Image: 'aws/codebuild/standard:7.0'
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: true   # required for docker-in-docker (running apileak container)
+        EnvironmentVariables:
+          # ── Core scan settings ────────────────────────────────────────────
+          - Name: APILEAK_LOG_LEVEL
+            Value: WARNING
+            Type: PLAINTEXT
+          - Name: APILEAK_RATE_LIMIT
+            Value: '20'
+            Type: PLAINTEXT
+          - Name: APILEAK_TIMEOUT
+            Value: '30'
+            Type: PLAINTEXT
+          # ── Security thresholds ───────────────────────────────────────────
+          - Name: APILEAK_CRITICAL_THRESHOLD
+            Value: '0'
+            Type: PLAINTEXT
+          - Name: APILEAK_HIGH_THRESHOLD
+            Value: '5'
+            Type: PLAINTEXT
+          - Name: APILEAK_MEDIUM_THRESHOLD
+            Value: '20'
+            Type: PLAINTEXT
+          # ── Report settings ───────────────────────────────────────────────
+          - Name: APILEAK_REPORT_FORMATS
+            Value: 'html,json'
+            Type: PLAINTEXT
+          - Name: APILEAK_CSV_DELIMITER
+            Value: ';'
+            Type: PLAINTEXT
+          # ── Auth concurrency ──────────────────────────────────────────────
+          - Name: APILEAK_AUTH_CONCURRENCY
+            Value: '10'
+            Type: PLAINTEXT
+          # ── S3 report destination (Req 5.4) ──────────────────────────────
+          - Name: APILEAK_S3_BUCKET
+            Value: !Ref ApileaksS3Bucket
+            Type: PLAINTEXT
+          # ── Docker image reference ────────────────────────────────────────
+          - Name: APILEAK_DOCKER_IMAGE
+            Value: !Ref ApileaksDockerImage
+            Type: PLAINTEXT
+          # ── Security Hub product ARN (Req 5.5) ───────────────────────────
+          - Name: APILEAK_SECURITY_HUB_PRODUCT_ARN
+            Value: !Ref SecurityHubProductArn
+            Type: PLAINTEXT
+          # ── AWS account/region (needed by aws_security_hub.py) ────────────
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+            Type: PLAINTEXT
+          - Name: APILEAK_AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+            Type: PLAINTEXT
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref CloudWatchLogGroupName
+          StreamName: 'security-scan'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodePipeline — four stages: Source → Build → SecurityScan → Report (Req 5.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  APILeaksPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${ProjectName}-Pipeline'
+      RoleArn: !GetAtt APILeaksPipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketName
+      RestartExecutionOnUpdate: false
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+      Stages:
+
+        # ── Stage 1: Source ──────────────────────────────────────────────────
+        # Polls the SourceBucket/SourceObjectKey for new versions.
+        # The versioned ZIP is produced by your upload/deploy process
+        # (e.g. a GitHub Actions workflow that zips and uploads on push).
+        - Name: Source
+          Actions:
+            - Name: S3Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: !Ref SourceBucket
+                S3ObjectKey: !Ref SourceObjectKey
+                PollForSourceChanges: 'true'
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+        # ── Stage 2: Build ───────────────────────────────────────────────────
+        # Installs dependencies and builds the apileak Docker image.
+        # Reuses SecurityScanProject with an inline override so the same
+        # CodeBuild project handles both Build and SecurityScan phases,
+        # keeping infrastructure footprint minimal.
+        - Name: Build
+          Actions:
+            - Name: InstallAndBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref SecurityScanProject
+                EnvironmentVariables: |
+                  [{"name":"APILEAK_PIPELINE_STAGE","value":"build","type":"PLAINTEXT"}]
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+
+        # ── Stage 3: SecurityScan ────────────────────────────────────────────
+        # Reads SSM parameters, runs validate_config.py, auth_flow.py,
+        # openapi_discoverer.py, docker run apileak, jwt_attack_suite.py,
+        # and bola_tester.py as configured.  All logic lives in buildspec.yml.
+        - Name: SecurityScan
+          Actions:
+            - Name: RunAPILeaksScan
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref SecurityScanProject
+                EnvironmentVariables: |
+                  [{"name":"APILEAK_PIPELINE_STAGE","value":"scan","type":"PLAINTEXT"}]
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: ScanOutput
+              RunOrder: 1
+
+        # ── Stage 4: Report ──────────────────────────────────────────────────
+        # Generates reports in all configured formats, evaluates the security
+        # gate, uploads reports/ to S3, and publishes to Security Hub when
+        # thresholds are exceeded.
+        - Name: Report
+          Actions:
+            - Name: GenerateAndPublishReports
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref SecurityScanProject
+                EnvironmentVariables: |
+                  [{"name":"APILEAK_PIPELINE_STAGE","value":"report","type":"PLAINTEXT"}]
+              InputArtifacts:
+                - Name: ScanOutput
+              OutputArtifacts:
+                - Name: ReportOutput
+              RunOrder: 1
+
+Outputs:
+
+  PipelineUrl:
+    Description: Direct link to the APILeaks pipeline in the AWS Console.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${APILeaksPipeline}/view'
+    Export:
+      Name: !Sub '${ProjectName}-PipelineUrl'
+
+  SecurityScanProjectName:
+    Description: Name of the CodeBuild project used for scanning.
+    Value: !Ref SecurityScanProject
+    Export:
+      Name: !Sub '${ProjectName}-SecurityScanProjectName'
+
+  SecurityScanProjectArn:
+    Description: ARN of the CodeBuild project (use in cross-stack references).
+    Value: !GetAtt SecurityScanProject.Arn
+    Export:
+      Name: !Sub '${ProjectName}-SecurityScanProjectArn'
+
+  CodeBuildRoleArn:
+    Description: ARN of the IAM role assumed by CodeBuild during scans.
+    Value: !GetAtt APILeaksCodeBuildRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-CodeBuildRoleArn'
+
+  PipelineName:
+    Description: CodePipeline pipeline name (useful for CLI/API calls).
+    Value: !Ref APILeaksPipeline
+    Export:
+      Name: !Sub '${ProjectName}-PipelineName'

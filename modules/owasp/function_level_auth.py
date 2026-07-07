@@ -21,6 +21,24 @@ All confirmed BFLA findings are persisted to ``config.bfla_output_file``
 
 from __future__ import annotations
 
+import json
+import re
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from core.config import AuthContext, AuthType, FunctionAuthConfig, Severity
+from core.logging import get_logger
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine, Response
+from utils.safe_mode import STATE_CHANGING_METHODS, SafeModeGuard
+
+from .registry import OWASPModule
+
+
 import asyncio
 import json
 import re
@@ -55,6 +73,8 @@ class BFLAProbeResult:
     response_time: float
     is_confirmed: bool         # True → access was granted (BFLA confirmed)
     evidence: str
+    payload: str | None = None
+    response_snippet: str | None = None
     payload: Optional[str] = None
     response_snippet: Optional[str] = None
 
@@ -66,8 +86,16 @@ class AdminEndpointRecord:
     method: str
     status_code: int           # observed with the high-priv token
     admin_score: float         # 0.0-1.0 heuristic confidence
+    admin_indicators: list[str] = field(default_factory=list)
     admin_indicators: List[str] = field(default_factory=list)
 
+
+# ---------------------------------------------------------------------------
+# Helper: privilege-level ordering
+# ---------------------------------------------------------------------------
+
+def _privilege_level(ctx: AuthContext) -> int:
+    """Return a numeric privilege level for an AuthContext.
 
 # ---------------------------------------------------------------------------
 # Helper: privilege-level ordering
@@ -120,6 +148,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     # Admin endpoint heuristics
     # -----------------------------------------------------------------------
 
+    _ADMIN_PATH_KEYWORDS: list[str] = [
     _ADMIN_PATH_KEYWORDS: List[str] = [
         "admin", "administrator", "management", "manage", "control",
         "dashboard", "panel", "console", "config", "configuration",
@@ -128,6 +157,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         "operator", "maintenance", "debug", "backstage",
     ]
 
+    _ADMIN_ACTION_KEYWORDS: list[str] = [
     _ADMIN_ACTION_KEYWORDS: List[str] = [
         "delete", "remove", "destroy", "purge", "clear", "reset",
         "create", "add", "insert", "generate", "approve", "reject",
@@ -138,6 +168,10 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     ]
 
     # HTTP methods that convey administrative intent
+    _PRIVILEGED_METHODS: set[str] = {"DELETE", "PUT", "PATCH", "POST"}
+
+    # X-HTTP-Method-Override header name variants
+    _METHOD_OVERRIDE_HEADERS: list[str] = [
     _PRIVILEGED_METHODS: Set[str] = {"DELETE", "PUT", "PATCH", "POST"}
 
     # X-HTTP-Method-Override header name variants
@@ -158,6 +192,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         self,
         config: FunctionAuthConfig,
         http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
         auth_contexts: List[AuthContext],
     ):
         super().__init__(config)
@@ -168,6 +203,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         self._init_safe_mode(config)
 
         # Sort contexts by privilege (descending) so index-0 is highest priv.
+        self._sorted_contexts: list[AuthContext] = sorted(
         self._sorted_contexts: List[AuthContext] = sorted(
             auth_contexts, key=_privilege_level, reverse=True
         )
@@ -181,6 +217,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         )
 
         # Collected probe results (for output file).
+        self._probe_results: list[BFLAProbeResult] = []
         self._probe_results: List[BFLAProbeResult] = []
 
         self.logger.info(
@@ -196,6 +233,10 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     # Entry point
     # -----------------------------------------------------------------------
 
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
+        """Run all four BFLA attack levels and return unified findings."""
+        self.logger.info("Starting BFLA testing", endpoints=len(endpoints))
+        findings: list[Finding] = []
     async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
         """Run all four BFLA attack levels and return unified findings."""
         self.logger.info("Starting BFLA testing", endpoints=len(endpoints))
@@ -232,6 +273,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     # Phase 0: mapping with high-privilege token
     # -----------------------------------------------------------------------
 
+    async def _map_admin_endpoints(self, endpoints: list[Any]) -> list[AdminEndpointRecord]:
     async def _map_admin_endpoints(self, endpoints: List[Any]) -> List[AdminEndpointRecord]:
         """Issue every discovered endpoint with the highest-privilege token.
 
@@ -242,6 +284,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         high_ctx = self._sorted_contexts[0]
         self.http_client.set_auth_context(high_ctx)
 
+        records: list[AdminEndpointRecord] = []
         records: List[AdminEndpointRecord] = []
 
         # Seed from config.admin_endpoints (operator-declared known admin paths).
@@ -280,6 +323,9 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         self.http_client.current_auth_context = None
         return records
 
+    def _admin_score(self, url: str, method: str) -> tuple[float, list[str]]:
+        """Return a (score, indicators) tuple for a URL+method combination."""
+        url.lower()
     def _admin_score(self, url: str, method: str) -> Tuple[float, List[str]]:
         """Return a (score, indicators) tuple for a URL+method combination."""
         url_lower = url.lower()
@@ -287,6 +333,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         path_lower = parsed.path.lower()
 
         score = 0.0
+        indicators: list[str] = []
         indicators: List[str] = []
 
         for kw in self._ADMIN_PATH_KEYWORDS:
@@ -312,6 +359,8 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     # -----------------------------------------------------------------------
 
     async def _level1_multi_token_replay(
+        self, admin_records: list[AdminEndpointRecord]
+    ) -> list[Finding]:
         self, admin_records: List[AdminEndpointRecord]
     ) -> List[Finding]:
         """Replay every mapped admin endpoint with each lower-privilege token.
@@ -325,6 +374,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         • BFLA_ADMIN_ENDPOINT_EXPOSED (MEDIUM) – endpoint exists but
           access was 403/401 (informational exposure finding)
         """
+        findings: list[Finding] = []
         findings: List[Finding] = []
         high_level = _privilege_level(self._sorted_contexts[0])
 
@@ -353,6 +403,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
             ))
 
             # Probe contexts below the high-priv level.
+            lower_contexts: list[AuthContext] = [
             lower_contexts: List[AuthContext] = [
                 ctx for ctx in self._sorted_contexts
                 if _privilege_level(ctx) < high_level
@@ -447,6 +498,9 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
 
     async def _level2_verb_tampering(
         self,
+        endpoints: list[Any],
+        admin_records: list[AdminEndpointRecord],
+    ) -> list[Finding]:
         endpoints: List[Any],
         admin_records: List[AdminEndpointRecord],
     ) -> List[Finding]:
@@ -463,6 +517,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
 
         Findings: BFLA_VERB_TAMPERING, BFLA_METHOD_OVERRIDE.
         """
+        findings: list[Finding] = []
         findings: List[Finding] = []
         low_ctx = self._pick_low_priv_ctx()
 
@@ -612,6 +667,11 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         re.IGNORECASE,
     )
     # Methods that carry a request body.
+    _BODY_METHODS: set[str] = {"POST", "PUT", "PATCH"}
+
+    async def _level3_mass_assignment_role(
+        self, endpoints: list[Any]
+    ) -> list[Finding]:
     _BODY_METHODS: Set[str] = {"POST", "PUT", "PATCH"}
 
     async def _level3_mass_assignment_role(
@@ -628,12 +688,15 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
 
         Finding: BFLA_MASS_ASSIGNMENT_ROLE (CRITICAL).
         """
+        findings: list[Finding] = []
         findings: List[Finding] = []
 
         if self.safe_mode:
             self.logger.info("Mass-assignment probe skipped in safe mode")
             return findings
 
+        role_fields: list[str] = getattr(self.config, "role_fields", []) or []
+        role_values: list[str] = getattr(self.config, "role_values", []) or []
         role_fields: List[str] = getattr(self.config, "role_fields", []) or []
         role_values: List[str] = getattr(self.config, "role_values", []) or []
 
@@ -660,6 +723,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
             method = (ep.method if hasattr(ep, "method") else "POST").upper()
 
             # Capture a baseline with a benign-but-minimal body (no role field).
+            baseline_body: dict[str, Any] = {
             baseline_body: Dict[str, Any] = {
                 "username": f"apileaks_probe_{uuid.uuid4().hex[:8]}",
                 "email": f"probe_{uuid.uuid4().hex[:8]}@apileaks.invalid",
@@ -763,6 +827,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     # Level 4 – API version downgrade
     # -----------------------------------------------------------------------
 
+    def _extract_version(self, url: str) -> tuple[str, int] | None:
     def _extract_version(self, url: str) -> Optional[Tuple[str, int]]:
         """Return (version_prefix, version_number) if the URL has a version segment."""
         m = self._VERSION_RE.search(url)
@@ -775,6 +840,8 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         return self._VERSION_RE.sub(f"/v{new_version}/", url)
 
     async def _level4_version_downgrade(
+        self, admin_records: list[AdminEndpointRecord]
+    ) -> list[Finding]:
         self, admin_records: List[AdminEndpointRecord]
     ) -> List[Finding]:
         """Replay each versioned admin endpoint against all lower API versions.
@@ -785,6 +852,9 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
 
         Finding: BFLA_VERSION_DOWNGRADE (HIGH).
         """
+        findings: list[Finding] = []
+        low_ctx = self._pick_low_priv_ctx()
+        configured_versions: list[str] = getattr(self.config, "api_versions", []) or []
         findings: List[Finding] = []
         low_ctx = self._pick_low_priv_ctx()
         configured_versions: List[str] = getattr(self.config, "api_versions", []) or []
@@ -879,6 +949,7 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
     # Helpers
     # -----------------------------------------------------------------------
 
+    def _pick_low_priv_ctx(self) -> AuthContext | None:
     def _pick_low_priv_ctx(self) -> Optional[AuthContext]:
         """Return the lowest-privilege context that has a token (not anonymous)."""
         high_level = _privilege_level(self._sorted_contexts[0]) if self._sorted_contexts else 100
@@ -899,6 +970,8 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         response_time: float,
         evidence: str,
         recommendation: str,
+        payload: str | None = None,
+        response_snippet: str | None = None,
         payload: Optional[str] = None,
         response_snippet: Optional[str] = None,
     ) -> Finding:
@@ -940,6 +1013,9 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             confirmed = [r for r in self._probe_results if r.is_confirmed]
+            all_records = list(self._probe_results)
+            payload = {
+                "generated_at": datetime.now(tz=UTC).isoformat(),
             all_records = [r for r in self._probe_results]
             payload = {
                 "generated_at": datetime.now(tz=timezone.utc).isoformat(),

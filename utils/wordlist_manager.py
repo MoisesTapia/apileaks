@@ -17,6 +17,8 @@ Design principles:
 from __future__ import annotations
 
 import json
+import time
+from pathlib import Path
 import os
 import time
 from pathlib import Path
@@ -80,6 +82,7 @@ def _fetch_text(url: str, timeout: float = 30.0) -> str:
         raise RuntimeError(f"Failed to fetch {url}: {exc}") from exc
 
 
+def _load_catalogue(refresh: bool = False) -> list[dict]:
 def _load_catalogue(refresh: bool = False) -> List[Dict]:
     """Load the merged Assetnote wordlist catalogue.
 
@@ -95,12 +98,14 @@ def _load_catalogue(refresh: bool = False) -> List[Dict]:
         ``alias``     – short alias used with the ``assetnote:`` prefix
     """
     _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    entries: list[dict] = []
     entries: List[Dict] = []
 
     for cat_url in _CATALOGUE_URLS:
         cache_path = _catalogue_path(cat_url)
         if not refresh and _catalogue_is_fresh(cache_path):
             try:
+                with open(cache_path, encoding="utf-8") as fh:
                 with open(cache_path, "r", encoding="utf-8") as fh:
                     raw = json.load(fh)
                 entries.extend(_normalise_catalogue(raw, cat_url))
@@ -121,6 +126,7 @@ def _load_catalogue(refresh: bool = False) -> List[Dict]:
             # Use stale cache if present
             if cache_path.exists():
                 try:
+                    with open(cache_path, encoding="utf-8") as fh:
                     with open(cache_path, "r", encoding="utf-8") as fh:
                         raw = json.load(fh)
                     entries.extend(_normalise_catalogue(raw, cat_url))
@@ -131,6 +137,9 @@ def _load_catalogue(refresh: bool = False) -> List[Dict]:
     return entries
 
 
+def _normalise_catalogue(raw: list, base_url: str) -> list[dict]:
+    """Normalise a raw catalogue list into a consistent entry format."""
+    normalised: list[dict] = []
 def _normalise_catalogue(raw: List, base_url: str) -> List[Dict]:
     """Normalise a raw catalogue list into a consistent entry format."""
     normalised: List[Dict] = []
@@ -198,6 +207,10 @@ def _derive_alias(filename: str) -> str:
 # ---------------------------------------------------------------------------
 
 def list_wordlists(
+    filter_term: str | None = None,
+    refresh: bool = False,
+    limit: int = 50,
+) -> list[dict]:
     filter_term: Optional[str] = None,
     refresh: bool = False,
     limit: int = 50,
@@ -265,6 +278,7 @@ def resolve_wordlist(
     name_or_alias = spec[len(ASSETNOTE_PREFIX):]
     # Support "assetnote:apiroutes-210328:20000" head-syntax: strip the :N suffix
     # for resolution; the caller handles slicing the file to N lines.
+    head_n: int | None = None
     head_n: Optional[int] = None
     if ":" in name_or_alias:
         name_or_alias, head_part = name_or_alias.rsplit(":", 1)
@@ -324,6 +338,7 @@ def _make_head_file(source: Path, n: int) -> str:
         return str(head_path)
     _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     count = 0
+    with open(source, encoding="utf-8", errors="replace") as src, \
     with open(source, "r", encoding="utf-8", errors="replace") as src, \
          open(head_path, "w", encoding="utf-8") as dst:
         for line in src:
@@ -335,6 +350,7 @@ def _make_head_file(source: Path, n: int) -> str:
     return str(head_path)
 
 
+def _find_entry(entries: list[dict], query: str) -> dict | None:
 def _find_entry(entries: List[Dict], query: str) -> Optional[Dict]:
     """Find a catalogue entry by alias (exact) or name (substring)."""
     query_lower = query.lower()

@@ -4,15 +4,15 @@ Intelligent analysis of HTTP responses for vulnerability detection
 """
 
 import re
-import json
 import statistics
-from typing import List, Dict, Any, Optional, Pattern, Tuple
 from dataclasses import dataclass, field
-from enum import Enum
 from datetime import datetime
+from enum import Enum
+from re import Pattern
+from typing import Any
 
-from core.logging import get_logger
 from core.config import Severity
+from core.logging import get_logger
 
 
 class EndpointStatus(str, Enum):
@@ -55,18 +55,18 @@ class TimingAnalysis:
     average_response_time: float
     min_response_time: float
     max_response_time: float
-    timing_anomalies: List[str]
-    potential_timing_attacks: List[str] = field(default_factory=list)
+    timing_anomalies: list[str]
+    potential_timing_attacks: list[str] = field(default_factory=list)
     response_time_variance: float = 0.0
 
 
 @dataclass
 class AnalysisRules:
     """Analysis rules configuration"""
-    sensitive_data_patterns: Dict[str, Pattern] = field(default_factory=dict)
-    error_patterns: Dict[str, Pattern] = field(default_factory=dict)
-    stack_trace_patterns: List[Pattern] = field(default_factory=list)
-    security_headers: List[str] = field(default_factory=list)
+    sensitive_data_patterns: dict[str, Pattern] = field(default_factory=dict)
+    error_patterns: dict[str, Pattern] = field(default_factory=dict)
+    stack_trace_patterns: list[Pattern] = field(default_factory=list)
+    security_headers: list[str] = field(default_factory=list)
     timing_threshold: float = 2.0  # seconds
     size_anomaly_threshold: float = 0.5  # 50% difference
 
@@ -76,16 +76,16 @@ class RequestContext:
     """Request context for analysis"""
     endpoint: str
     method: str
-    payload: Optional[str] = None
-    headers: Dict[str, str] = field(default_factory=dict)
-    auth_context: Optional[str] = None
+    payload: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    auth_context: str | None = None
     timestamp: datetime = field(default_factory=datetime.now)
 
 
 class ResponseAnalyzer:
     """
     Response Analyzer for intelligent HTTP response analysis
-    
+
     Provides advanced pattern matching and classification for:
     - Vulnerability detection through response analysis
     - Endpoint status classification with intelligent logic
@@ -94,25 +94,25 @@ class ResponseAnalyzer:
     - Error message and stack trace detection
     - Sensitive data exposure detection
     """
-    
-    def __init__(self, analysis_rules: Optional[AnalysisRules] = None):
+
+    def __init__(self, analysis_rules: AnalysisRules | None = None):
         """
         Initialize Response Analyzer with advanced pattern matching
-        
+
         Args:
             analysis_rules: Analysis rules configuration
         """
         self.analysis_rules = analysis_rules or self._get_default_rules()
         self.logger = get_logger(__name__)
-        
+
         # Compile regex patterns for performance
         self._compile_patterns()
-        
+
         self.logger.info("Response Analyzer initialized with advanced pattern matching")
-    
+
     def _get_default_rules(self) -> AnalysisRules:
         """Get default analysis rules with comprehensive patterns"""
-        
+
         # Sensitive data patterns
         sensitive_patterns = {
             'api_key': re.compile(r'(?i)(api[_-]?key|apikey)["\s]*[:=]["\s]*([a-zA-Z0-9_-]{20,})', re.IGNORECASE),
@@ -126,7 +126,7 @@ class ResponseAnalyzer:
             'private_key': re.compile(r'-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----', re.IGNORECASE),
             'secret_key': re.compile(r'(?i)(secret[_-]?key|secretkey)["\s]*[:=]["\s]*([a-zA-Z0-9_-]{20,})', re.IGNORECASE)
         }
-        
+
         # Error message patterns
         error_patterns = {
             'sql_error': re.compile(r'(?i)(sql|mysql|postgresql|oracle|sqlite).*(error|exception|syntax)', re.IGNORECASE),
@@ -135,7 +135,7 @@ class ResponseAnalyzer:
             'database_error': re.compile(r'(?i)(database|db).*(connection|error|failed|timeout)', re.IGNORECASE),
             'internal_error': re.compile(r'(?i)(internal\s+server\s+error|500\s+error|application\s+error)', re.IGNORECASE)
         }
-        
+
         # Stack trace patterns
         stack_trace_patterns = [
             re.compile(r'at\s+[\w\.$]+\([\w\.]+:\d+\)', re.IGNORECASE),  # Java stack trace
@@ -145,7 +145,7 @@ class ResponseAnalyzer:
             re.compile(r'Traceback\s+\(most\s+recent\s+call\s+last\)', re.IGNORECASE),  # Python traceback
             re.compile(r'Exception\s+in\s+thread\s+"[^"]+"', re.IGNORECASE)  # Java exception
         ]
-        
+
         # Security headers to check
         security_headers = [
             'X-Frame-Options',
@@ -157,7 +157,7 @@ class ResponseAnalyzer:
             'Permissions-Policy',
             'X-Permitted-Cross-Domain-Policies'
         ]
-        
+
         return AnalysisRules(
             sensitive_data_patterns=sensitive_patterns,
             error_patterns=error_patterns,
@@ -166,66 +166,66 @@ class ResponseAnalyzer:
             timing_threshold=2.0,
             size_anomaly_threshold=0.5
         )
-    
+
     def _compile_patterns(self) -> None:
         """Compile regex patterns for better performance"""
         # Patterns are already compiled in _get_default_rules
         self.logger.debug("Regex patterns compiled for performance optimization")
-    
-    def analyze_response(self, response: Any, context: RequestContext) -> List[Finding]:
+
+    def analyze_response(self, response: Any, context: RequestContext) -> list[Finding]:
         """
         Analyze HTTP response for vulnerabilities with advanced pattern matching
-        
+
         Args:
             response: HTTP response to analyze
             context: Request context
-            
+
         Returns:
             List of security findings
         """
-        self.logger.debug("Analyzing response with advanced pattern matching", 
+        self.logger.debug("Analyzing response with advanced pattern matching",
                          status_code=response.status_code,
                          url=context.endpoint,
                          method=context.method)
-        
+
         findings = []
-        
+
         try:
             # Get response content safely
             response_text = self._get_response_text(response)
             response_headers = getattr(response, 'headers', {})
-            
+
             # Detect sensitive data exposure
             sensitive_findings = self._detect_sensitive_data(response_text, context)
             findings.extend(sensitive_findings)
-            
+
             # Detect error messages and stack traces
             error_findings = self._detect_error_messages(response_text, context)
             findings.extend(error_findings)
-            
+
             # Analyze security headers
             header_findings = self._analyze_security_headers(response_headers, context)
             findings.extend(header_findings)
-            
+
             # Detect information disclosure
             info_findings = self._detect_information_disclosure(response_text, response_headers, context)
             findings.extend(info_findings)
-            
+
             # Analyze response size anomalies
             size_findings = self._analyze_response_size(response, context)
             findings.extend(size_findings)
-            
-            self.logger.debug("Response analysis completed", 
+
+            self.logger.debug("Response analysis completed",
                             findings_count=len(findings),
                             endpoint=context.endpoint)
-            
+
         except Exception as e:
-            self.logger.error("Response analysis failed", 
+            self.logger.error("Response analysis failed",
                             error=str(e),
                             endpoint=context.endpoint)
-        
+
         return findings
-    
+
     def _get_response_text(self, response: Any) -> str:
         """Safely extract response text"""
         try:
@@ -237,14 +237,14 @@ class ResponseAnalyzer:
                 return str(response)
         except Exception:
             return ""
-    
-    def _detect_sensitive_data(self, response_text: str, context: RequestContext) -> List[Finding]:
+
+    def _detect_sensitive_data(self, response_text: str, context: RequestContext) -> list[Finding]:
         """Detect sensitive data exposure in response"""
         findings = []
-        
+
         for data_type, pattern in self.analysis_rules.sensitive_data_patterns.items():
             matches = pattern.findall(response_text)
-            
+
             if matches:
                 # Mask sensitive data in evidence
                 masked_matches = []
@@ -256,7 +256,7 @@ class ResponseAnalyzer:
                         # For simple matches, mask most of it
                         masked_match = match[:4] + "*" * min(len(match) - 4, 8) + "..."
                     masked_matches.append(masked_match)
-                
+
                 finding = Finding(
                     id=f"sensitive_data_{data_type}_{hash(context.endpoint)}",
                     category="SENSITIVE_DATA_EXPOSURE",
@@ -267,13 +267,13 @@ class ResponseAnalyzer:
                     recommendation=f"Remove {data_type} from API responses or implement proper data filtering"
                 )
                 findings.append(finding)
-        
+
         return findings
-    
-    def _detect_error_messages(self, response_text: str, context: RequestContext) -> List[Finding]:
+
+    def _detect_error_messages(self, response_text: str, context: RequestContext) -> list[Finding]:
         """Detect error messages and stack traces"""
         findings = []
-        
+
         # Check for error patterns
         for error_type, pattern in self.analysis_rules.error_patterns.items():
             if pattern.search(response_text):
@@ -287,7 +287,7 @@ class ResponseAnalyzer:
                     recommendation="Implement generic error messages and proper error handling"
                 )
                 findings.append(finding)
-        
+
         # Check for stack traces
         for pattern in self.analysis_rules.stack_trace_patterns:
             if pattern.search(response_text):
@@ -302,21 +302,21 @@ class ResponseAnalyzer:
                 )
                 findings.append(finding)
                 break  # Only report once per response
-        
+
         return findings
-    
-    def _analyze_security_headers(self, headers: Dict[str, str], context: RequestContext) -> List[Finding]:
+
+    def _analyze_security_headers(self, headers: dict[str, str], context: RequestContext) -> list[Finding]:
         """Analyze security headers"""
         findings = []
         missing_headers = []
-        
+
         # Convert headers to case-insensitive dict
         headers_lower = {k.lower(): v for k, v in headers.items()}
-        
+
         for header in self.analysis_rules.security_headers:
             if header.lower() not in headers_lower:
                 missing_headers.append(header)
-        
+
         if missing_headers:
             finding = Finding(
                 id=f"missing_security_headers_{hash(context.endpoint)}",
@@ -328,7 +328,7 @@ class ResponseAnalyzer:
                 recommendation="Implement missing security headers to improve security posture"
             )
             findings.append(finding)
-        
+
         # Check for insecure header values
         if 'x-frame-options' in headers_lower:
             if headers_lower['x-frame-options'].lower() in ['allowall', 'allow-from *']:
@@ -342,13 +342,13 @@ class ResponseAnalyzer:
                     recommendation="Set X-Frame-Options to DENY or SAMEORIGIN"
                 )
                 findings.append(finding)
-        
+
         return findings
-    
-    def _detect_information_disclosure(self, response_text: str, headers: Dict[str, str], context: RequestContext) -> List[Finding]:
+
+    def _detect_information_disclosure(self, response_text: str, headers: dict[str, str], context: RequestContext) -> list[Finding]:
         """Detect various forms of information disclosure"""
         findings = []
-        
+
         # Check for server information disclosure
         server_header = headers.get('Server', headers.get('server', ''))
         if server_header:
@@ -365,7 +365,7 @@ class ResponseAnalyzer:
                     recommendation="Configure server to hide version information"
                 )
                 findings.append(finding)
-        
+
         # Check for technology disclosure in headers
         tech_headers = ['X-Powered-By', 'X-AspNet-Version', 'X-AspNetMvc-Version']
         for header in tech_headers:
@@ -381,7 +381,7 @@ class ResponseAnalyzer:
                     recommendation=f"Remove or configure {header} header"
                 )
                 findings.append(finding)
-        
+
         # Check for directory listing
         if re.search(r'<title>Index of /', response_text, re.IGNORECASE):
             finding = Finding(
@@ -394,16 +394,16 @@ class ResponseAnalyzer:
                 recommendation="Disable directory listing on web server"
             )
             findings.append(finding)
-        
+
         return findings
-    
-    def _analyze_response_size(self, response: Any, context: RequestContext) -> List[Finding]:
+
+    def _analyze_response_size(self, response: Any, context: RequestContext) -> list[Finding]:
         """Analyze response size for anomalies"""
         findings = []
-        
+
         try:
             response_size = len(self._get_response_text(response))
-            
+
             # Check for unusually large responses (potential DoS)
             if response_size > 10 * 1024 * 1024:  # 10MB
                 finding = Finding(
@@ -416,39 +416,39 @@ class ResponseAnalyzer:
                     recommendation="Implement response size limits and pagination"
                 )
                 findings.append(finding)
-        
+
         except Exception as e:
             self.logger.debug("Response size analysis failed", error=str(e))
-        
+
         return findings
-    
-    
+
+
     def classify_endpoint_status(self, response: Any) -> EndpointStatus:
         """
         Classify endpoint status based on response with intelligent logic
-        
+
         Args:
             response: HTTP response
-            
+
         Returns:
             Endpoint status classification
         """
         status_code = getattr(response, 'status_code', 0)
-        headers = getattr(response, 'headers', {})
+        getattr(response, 'headers', {})
         response_text = self._get_response_text(response)
-        
+
         # Rate limiting detection
         if status_code == 429 or 'rate limit' in response_text.lower():
             return EndpointStatus.RATE_LIMITED
-        
+
         # Success responses
         if 200 <= status_code < 300:
             return EndpointStatus.VALID
-        
+
         # Redirect responses
         if 300 <= status_code < 400:
             return EndpointStatus.REDIRECT
-        
+
         # Authentication/Authorization required
         if status_code in [401, 403]:
             # Check if it's actually an auth requirement vs access denied
@@ -457,67 +457,67 @@ class ResponseAnalyzer:
                 return EndpointStatus.AUTH_REQUIRED
             else:
                 return EndpointStatus.AUTH_REQUIRED  # Default for 401/403
-        
+
         # Not found
         if status_code == 404:
             return EndpointStatus.NOT_FOUND
-        
+
         # Server errors
         if 500 <= status_code < 600:
             return EndpointStatus.SERVER_ERROR
-        
+
         # Client errors (other than auth and not found)
         if 400 <= status_code < 500:
             return EndpointStatus.ERROR
-        
+
         # Default case
         return EndpointStatus.ERROR
-    
-    def detect_security_issues(self, response: Any) -> List[SecurityFinding]:
+
+    def detect_security_issues(self, response: Any) -> list[SecurityFinding]:
         """
         Detect security issues in response with comprehensive analysis
-        
+
         Args:
             response: HTTP response
-            
+
         Returns:
             List of security findings
         """
         security_findings = []
-        
+
         try:
             response_text = self._get_response_text(response)
             headers = getattr(response, 'headers', {})
             status_code = getattr(response, 'status_code', 0)
-            
+
             # CORS policy analysis
             cors_findings = self._analyze_cors_policy(headers)
             security_findings.extend(cors_findings)
-            
+
             # Content type analysis
             content_type_findings = self._analyze_content_type(headers, response_text)
             security_findings.extend(content_type_findings)
-            
+
             # Authentication bypass detection
             auth_findings = self._detect_auth_bypass(response_text, status_code)
             security_findings.extend(auth_findings)
-            
+
             # Injection vulnerability indicators
             injection_findings = self._detect_injection_indicators(response_text)
             security_findings.extend(injection_findings)
-            
+
         except Exception as e:
             self.logger.error("Security issue detection failed", error=str(e))
-        
+
         return security_findings
-    
-    def _analyze_cors_policy(self, headers: Dict[str, str]) -> List[SecurityFinding]:
+
+    def _analyze_cors_policy(self, headers: dict[str, str]) -> list[SecurityFinding]:
         """Analyze CORS policy for security issues"""
         findings = []
-        
+
         # Convert to case-insensitive dict
         headers_lower = {k.lower(): v for k, v in headers.items()}
-        
+
         # Check for wildcard CORS
         access_control_origin = headers_lower.get('access-control-allow-origin', '')
         if access_control_origin == '*':
@@ -543,16 +543,16 @@ class ResponseAnalyzer:
                     remediation="Consider specifying explicit allowed origins"
                 )
                 findings.append(finding)
-        
+
         return findings
-    
-    def _analyze_content_type(self, headers: Dict[str, str], response_text: str) -> List[SecurityFinding]:
+
+    def _analyze_content_type(self, headers: dict[str, str], response_text: str) -> list[SecurityFinding]:
         """Analyze content type for security issues"""
         findings = []
-        
+
         headers_lower = {k.lower(): v for k, v in headers.items()}
         content_type = headers_lower.get('content-type', '').lower()
-        
+
         # Check for missing X-Content-Type-Options
         if 'x-content-type-options' not in headers_lower:
             finding = SecurityFinding(
@@ -564,7 +564,7 @@ class ResponseAnalyzer:
                 remediation="Add X-Content-Type-Options: nosniff header"
             )
             findings.append(finding)
-        
+
         # Check for potential MIME type confusion
         if content_type.startswith('text/html') and response_text:
             # Check if HTML content might be interpreted as script
@@ -578,19 +578,19 @@ class ResponseAnalyzer:
                     remediation="Implement proper output encoding and CSP headers"
                 )
                 findings.append(finding)
-        
+
         return findings
-    
-    def _detect_auth_bypass(self, response_text: str, status_code: int) -> List[SecurityFinding]:
+
+    def _detect_auth_bypass(self, response_text: str, status_code: int) -> list[SecurityFinding]:
         """Detect potential authentication bypass indicators"""
         findings = []
-        
+
         # Look for admin/privileged content in responses
         admin_indicators = [
             'admin panel', 'administrator', 'admin dashboard',
             'user management', 'system settings', 'admin console'
         ]
-        
+
         if any(indicator in response_text.lower() for indicator in admin_indicators):
             if status_code == 200:  # Successful access to admin content
                 finding = SecurityFinding(
@@ -602,19 +602,19 @@ class ResponseAnalyzer:
                     remediation="Verify proper authentication and authorization controls"
                 )
                 findings.append(finding)
-        
+
         return findings
-    
-    def _detect_injection_indicators(self, response_text: str) -> List[SecurityFinding]:
+
+    def _detect_injection_indicators(self, response_text: str) -> list[SecurityFinding]:
         """Detect potential injection vulnerability indicators"""
         findings = []
-        
+
         # SQL injection error indicators
         sql_errors = [
             'sql syntax', 'mysql_fetch', 'ora-', 'microsoft ole db',
             'sqlite_', 'postgresql', 'syntax error', 'quoted string'
         ]
-        
+
         if any(error in response_text.lower() for error in sql_errors):
             finding = SecurityFinding(
                 finding_type="SQL_INJECTION_INDICATOR",
@@ -625,13 +625,13 @@ class ResponseAnalyzer:
                 remediation="Implement parameterized queries and input validation"
             )
             findings.append(finding)
-        
+
         # Command injection indicators
         command_indicators = [
             'command not found', 'permission denied', '/bin/', '/usr/bin/',
             'no such file or directory', 'syntax error near'
         ]
-        
+
         if any(indicator in response_text.lower() for indicator in command_indicators):
             finding = SecurityFinding(
                 finding_type="COMMAND_INJECTION_INDICATOR",
@@ -642,16 +642,16 @@ class ResponseAnalyzer:
                 remediation="Implement proper input validation and avoid system calls"
             )
             findings.append(finding)
-        
+
         return findings
-    
-    def analyze_timing_patterns(self, responses: List[Any]) -> TimingAnalysis:
+
+    def analyze_timing_patterns(self, responses: list[Any]) -> TimingAnalysis:
         """
         Analyze timing patterns in responses with anomaly detection
-        
+
         Args:
             responses: List of HTTP responses with timing data
-            
+
         Returns:
             Timing analysis results with anomaly detection
         """
@@ -664,7 +664,7 @@ class ResponseAnalyzer:
                 potential_timing_attacks=[],
                 response_time_variance=0.0
             )
-        
+
         # Extract response times
         response_times = []
         for response in responses:
@@ -675,7 +675,7 @@ class ResponseAnalyzer:
             else:
                 # Default timing if not available
                 response_times.append(0.0)
-        
+
         if not response_times:
             return TimingAnalysis(
                 average_response_time=0.0,
@@ -685,49 +685,49 @@ class ResponseAnalyzer:
                 potential_timing_attacks=[],
                 response_time_variance=0.0
             )
-        
+
         # Calculate basic statistics
         avg_time = statistics.mean(response_times)
         min_time = min(response_times)
         max_time = max(response_times)
-        
+
         # Calculate variance
         variance = statistics.variance(response_times) if len(response_times) > 1 else 0.0
-        
+
         # Detect timing anomalies
         anomalies = []
         potential_attacks = []
-        
+
         # Check for responses significantly slower than average
         threshold = self.analysis_rules.timing_threshold
         for i, time in enumerate(response_times):
             if time > avg_time + threshold:
                 anomalies.append(f"Response {i+1}: {time:.2f}s (significantly slower than average {avg_time:.2f}s)")
-        
+
         # Detect potential timing attack patterns
         if len(response_times) >= 10:  # Need sufficient data
             # Check for bimodal distribution (potential timing attack indicator)
             sorted_times = sorted(response_times)
             median = statistics.median(sorted_times)
-            
+
             fast_responses = [t for t in response_times if t < median]
             slow_responses = [t for t in response_times if t >= median]
-            
+
             if len(fast_responses) > 0 and len(slow_responses) > 0:
                 fast_avg = statistics.mean(fast_responses)
                 slow_avg = statistics.mean(slow_responses)
-                
+
                 # If there's a significant gap between fast and slow responses
                 if slow_avg > fast_avg * 2:
                     potential_attacks.append(
                         f"Potential timing attack pattern detected: "
                         f"Fast responses avg {fast_avg:.2f}s, slow responses avg {slow_avg:.2f}s"
                     )
-        
+
         # Check for consistently slow responses (potential DoS)
         if avg_time > 5.0:  # 5 seconds average
             potential_attacks.append(f"Consistently slow responses detected (avg: {avg_time:.2f}s)")
-        
+
         return TimingAnalysis(
             average_response_time=avg_time,
             min_response_time=min_time,

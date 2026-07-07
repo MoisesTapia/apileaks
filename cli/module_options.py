@@ -29,7 +29,6 @@ Requirements: 2.1, 2.2, 2.3, 2.5, 2.6, 12.1, 12.2
 
 import click
 
-
 # ---------------------------------------------------------------------------
 # BOLA Module_Specific_Options (Requirement 2.1). Copied verbatim from the
 # ``full`` command definitions.

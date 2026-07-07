@@ -23,8 +23,9 @@ candidate set never contains a duplicate normalized path (Requirements 25.4,
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
@@ -107,7 +108,7 @@ def normalize_candidate_path(value: str) -> str:
     return candidate
 
 
-def import_openapi(doc: dict) -> List[SpecSeed]:
+def import_openapi(doc: dict) -> list[SpecSeed]:
     """Extract ``(path, method)`` seeds from an OpenAPI/Swagger document.
 
     Handles both Swagger v2 and OpenAPI v3, which share the same ``paths``
@@ -125,12 +126,12 @@ def import_openapi(doc: dict) -> List[SpecSeed]:
     if not isinstance(paths, dict):
         raise SpecImportError("OpenAPI document has no 'paths' object")
 
-    seeds: List[SpecSeed] = []
+    seeds: list[SpecSeed] = []
     for path, path_item in paths.items():
         if not isinstance(path, str) or not path.strip():
             continue
 
-        operations: List[str] = []
+        operations: list[str] = []
         if isinstance(path_item, dict):
             for key in path_item:
                 if isinstance(key, str) and key.lower() in OPENAPI_OPERATION_KEYS:
@@ -193,7 +194,7 @@ def _path_from_raw_url(raw: str) -> str:
     return path
 
 
-def import_postman(doc: dict) -> List[SpecSeed]:
+def import_postman(doc: dict) -> list[SpecSeed]:
     """Extract ``(path, method)`` seeds from a Postman collection.
 
     Walks the collection's nested ``item`` tree (folders contain ``item`` arrays;
@@ -208,7 +209,7 @@ def import_postman(doc: dict) -> List[SpecSeed]:
     if not isinstance(items, list):
         raise SpecImportError("Postman collection has no 'item' array")
 
-    seeds: List[SpecSeed] = []
+    seeds: list[SpecSeed] = []
 
     def walk(node_list) -> None:
         for node in node_list:
@@ -268,7 +269,7 @@ def _parse_document(path: str) -> dict:
     source when the file cannot be read or parsed (Requirement 25.6).
     """
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except OSError as exc:
         raise SpecImportError(f"Cannot read spec source '{path}': {exc}") from exc
@@ -290,7 +291,7 @@ def _parse_document(path: str) -> dict:
     return parsed
 
 
-def load_spec(path: str) -> List[SpecSeed]:
+def load_spec(path: str) -> list[SpecSeed]:
     """Load, sniff, and parse a Spec_Import source into :class:`SpecSeed` records.
 
     Sniffs JSON vs YAML, detects whether the document is an OpenAPI/Swagger spec
@@ -324,7 +325,7 @@ def load_spec(path: str) -> List[SpecSeed]:
 def merge_candidates(
     wordlist_entries: Iterable[str],
     spec_seeds: Iterable[SpecSeed],
-) -> List[str]:
+) -> list[str]:
     """Merge wordlist entries and spec paths into one de-duplicated candidate set.
 
     Entries are de-duplicated by :func:`normalize_candidate_path` while first-seen
@@ -334,7 +335,7 @@ def merge_candidates(
     are dropped. Blank entries are ignored.
     """
     seen = set()
-    merged: List[str] = []
+    merged: list[str] = []
 
     def add(raw: str) -> None:
         if raw is None:
@@ -388,9 +389,9 @@ class SpecParameter:
     location: str
     type: str = "string"
     required: bool = False
-    enum: Optional[List[Any]] = None
-    example: Optional[Any] = None
-    examples: Optional[List[Any]] = None
+    enum: list[Any] | None = None
+    example: Any | None = None
+    examples: list[Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -406,9 +407,9 @@ class SpecOperation:
 
     path: str
     method: str
-    parameters: List[SpecParameter] = field(default_factory=list)
-    request_body_schema: Optional[Dict[str, Any]] = None
-    security: List[str] = field(default_factory=list)
+    parameters: list[SpecParameter] = field(default_factory=list)
+    request_body_schema: dict[str, Any] | None = None
+    security: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -423,8 +424,8 @@ class SpecSecurityScheme:
 
     name: str
     type: str
-    location: Optional[str] = None
-    scheme: Optional[str] = None
+    location: str | None = None
+    scheme: str | None = None
 
 
 @dataclass(frozen=True)
@@ -437,11 +438,11 @@ class SpecSchema:
     (Req 50.6).
     """
 
-    operations: List[SpecOperation] = field(default_factory=list)
-    security_schemes: List[SpecSecurityScheme] = field(default_factory=list)
-    seeds: List[SpecSeed] = field(default_factory=list)
+    operations: list[SpecOperation] = field(default_factory=list)
+    security_schemes: list[SpecSecurityScheme] = field(default_factory=list)
+    seeds: list[SpecSeed] = field(default_factory=list)
 
-    def operation_for(self, path: str, method: str) -> Optional[SpecOperation]:
+    def operation_for(self, path: str, method: str) -> SpecOperation | None:
         """Look up an operation by ``(path, method)``; ``None`` when absent.
 
         Methods are compared case-insensitively via :func:`_normalize_method`
@@ -454,7 +455,7 @@ class SpecSchema:
                 return operation
         return None
 
-    def path_parameters(self, path: str, method: str) -> List[SpecParameter]:
+    def path_parameters(self, path: str, method: str) -> list[SpecParameter]:
         """Return the declared ``path`` parameters for one operation (Req 53.1).
 
         Returns an empty list when the operation is unknown or declares no path
@@ -476,7 +477,7 @@ def _is_swagger_v2(doc: dict) -> bool:
     return "openapi" not in doc and "swagger" in doc
 
 
-def _normalize_examples(examples: Any) -> Optional[List[Any]]:
+def _normalize_examples(examples: Any) -> list[Any] | None:
     """Normalize a declared ``examples`` value into a flat list of values.
 
     OpenAPI v3 declares ``examples`` as a mapping of name -> example object
@@ -486,7 +487,7 @@ def _normalize_examples(examples: Any) -> Optional[List[Any]]:
     if examples is None:
         return None
     if isinstance(examples, dict):
-        values: List[Any] = []
+        values: list[Any] = []
         for entry in examples.values():
             if isinstance(entry, dict) and "value" in entry:
                 values.append(entry["value"])
@@ -499,7 +500,7 @@ def _normalize_examples(examples: Any) -> Optional[List[Any]]:
     return [examples]
 
 
-def _extract_parameters(raw_params: Any, is_v2: bool) -> List[SpecParameter]:
+def _extract_parameters(raw_params: Any, is_v2: bool) -> list[SpecParameter]:
     """Map a list of declared parameter objects to :class:`SpecParameter` records.
 
     Reads ``name``, ``in`` -> ``location``, the declared type (``schema.type`` for
@@ -508,7 +509,7 @@ def _extract_parameters(raw_params: Any, is_v2: bool) -> List[SpecParameter]:
     location is in :data:`PARAMETER_LOCATIONS` are kept; body/cookie parameters
     are handled elsewhere or ignored.
     """
-    parameters: List[SpecParameter] = []
+    parameters: list[SpecParameter] = []
     if not isinstance(raw_params, list):
         return parameters
 
@@ -547,7 +548,7 @@ def _extract_parameters(raw_params: Any, is_v2: bool) -> List[SpecParameter]:
     return parameters
 
 
-def _extract_request_body(operation: dict, is_v2: bool) -> Optional[Dict[str, Any]]:
+def _extract_request_body(operation: dict, is_v2: bool) -> dict[str, Any] | None:
     """Extract the request body schema for an operation, or ``None`` (Req 50.2).
 
     For OpenAPI v3 the schema is read from ``requestBody.content[*].schema``
@@ -581,7 +582,7 @@ def _extract_request_body(operation: dict, is_v2: bool) -> Optional[Dict[str, An
     return None
 
 
-def _extract_security(operation: dict) -> List[str]:
+def _extract_security(operation: dict) -> list[str]:
     """Return the security scheme names applied to an operation.
 
     The ``security`` value is a list of requirement objects, each a mapping of
@@ -591,7 +592,7 @@ def _extract_security(operation: dict) -> List[str]:
     security = operation.get("security")
     if not isinstance(security, list):
         return []
-    names: List[str] = []
+    names: list[str] = []
     for requirement in security:
         if isinstance(requirement, dict):
             for scheme_name in requirement:
@@ -600,7 +601,7 @@ def _extract_security(operation: dict) -> List[str]:
     return names
 
 
-def _extract_security_schemes(doc: dict, is_v2: bool) -> List[SpecSecurityScheme]:
+def _extract_security_schemes(doc: dict, is_v2: bool) -> list[SpecSecurityScheme]:
     """Extract declared security schemes from a document (Req 50.4).
 
     Reads ``components.securitySchemes`` for OpenAPI v3 and ``securityDefinitions``
@@ -615,7 +616,7 @@ def _extract_security_schemes(doc: dict, is_v2: bool) -> List[SpecSecurityScheme
             components.get("securitySchemes") if isinstance(components, dict) else None
         )
 
-    schemes: List[SpecSecurityScheme] = []
+    schemes: list[SpecSecurityScheme] = []
     if not isinstance(definitions, dict):
         return schemes
 
@@ -646,7 +647,7 @@ def _extract_operation(
     Path-item-level parameters (shared by all operations on the path) are merged
     ahead of the operation's own parameters, matching OpenAPI/Swagger semantics.
     """
-    combined_params: List[Any] = []
+    combined_params: list[Any] = []
     if isinstance(path_level_params, list):
         combined_params.extend(path_level_params)
     op_params = operation.get("parameters")
@@ -679,7 +680,7 @@ def import_schema(doc: dict) -> SpecSchema:
     is_v2 = _is_swagger_v2(doc)
     paths = doc.get("paths")
 
-    operations: List[SpecOperation] = []
+    operations: list[SpecOperation] = []
     if isinstance(paths, dict):
         for path, path_item in paths.items():
             if not isinstance(path, str) or not path.strip():
@@ -706,9 +707,9 @@ def import_schema(doc: dict) -> SpecSchema:
     )
 
 
-def _postman_query_parameters(url) -> List[SpecParameter]:
+def _postman_query_parameters(url) -> list[SpecParameter]:
     """Best-effort query parameters from a structured Postman ``request.url``."""
-    parameters: List[SpecParameter] = []
+    parameters: list[SpecParameter] = []
     if not isinstance(url, dict):
         return parameters
     query = url.get("query")
@@ -732,9 +733,9 @@ def _postman_query_parameters(url) -> List[SpecParameter]:
     return parameters
 
 
-def _postman_header_parameters(request: dict) -> List[SpecParameter]:
+def _postman_header_parameters(request: dict) -> list[SpecParameter]:
     """Best-effort header parameters from a Postman ``request.header`` list."""
-    parameters: List[SpecParameter] = []
+    parameters: list[SpecParameter] = []
     headers = request.get("header")
     if isinstance(headers, list):
         for entry in headers:
@@ -747,7 +748,7 @@ def _postman_header_parameters(request: dict) -> List[SpecParameter]:
     return parameters
 
 
-def _postman_request_body(request: dict) -> Optional[Dict[str, Any]]:
+def _postman_request_body(request: dict) -> dict[str, Any] | None:
     """Best-effort request body from a Postman ``request.body`` (raw JSON)."""
     body = request.get("body")
     if not isinstance(body, dict):
@@ -775,7 +776,7 @@ def import_postman_schema(doc: dict) -> SpecSchema:
     """
     seeds = import_postman(doc)
 
-    operations: List[SpecOperation] = []
+    operations: list[SpecOperation] = []
 
     def walk(node_list) -> None:
         for node in node_list:
