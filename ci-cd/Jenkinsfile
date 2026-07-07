@@ -11,6 +11,46 @@ pipeline {
         string(name: 'OWASP_MODULES', defaultValue: 'bola,auth,property,function_auth', description: 'OWASP modules to enable')
         booleanParam(name: 'ENABLE_FULL_SCAN', defaultValue: false, description: 'Enable full OWASP security scan')
         booleanParam(name: 'FAIL_ON_HIGH', defaultValue: true, description: 'Fail pipeline on high severity findings')
+
+        // OpenAPI / Swagger integration
+        string(name: 'APILEAK_OPENAPI_URL', defaultValue: '', description: 'URL to OpenAPI/Swagger spec')
+        string(name: 'APILEAK_OPENAPI_FILE', defaultValue: '', description: 'Local path to OpenAPI spec (priority over URL)')
+
+        // Auth Flow
+        string(name: 'APILEAK_LOGIN_URL', defaultValue: '', description: 'Login endpoint for auto-auth')
+        string(name: 'APILEAK_LOGIN_USERNAME', defaultValue: '', description: 'Login username (masked in logs)')
+        string(name: 'APILEAK_LOGIN_TOKEN_FIELD', defaultValue: 'access_token', description: 'JSON field containing JWT in login response')
+        string(name: 'APILEAK_LOGIN_REFRESH_TOKEN_FIELD', defaultValue: '', description: 'JSON field for refresh token')
+        string(name: 'APILEAK_LOGIN_MFA_FIELD', defaultValue: 'totp_code', description: 'Body field for TOTP code')
+
+        // JWT Attacks
+        string(name: 'APILEAK_JWT_ATTACKS', defaultValue: '', description: 'Comma-separated attack names or "all"')
+        string(name: 'APILEAK_JWT_SECRETS_WORDLIST', defaultValue: 'wordlists/jwt_secrets.txt', description: 'Wordlist for weak_secret attack')
+        string(name: 'APILEAK_RSA_PUBLIC_KEY', defaultValue: '', description: 'RSA public key for algorithm_confusion attack')
+
+        // BOLA Testing
+        booleanParam(name: 'APILEAK_BOLA_TEST', defaultValue: false, description: 'Enable OpenAPI-based BOLA testing')
+        string(name: 'APILEAK_BOLA_OWNER_ID', defaultValue: '', description: 'Authenticated user own ID for BOLA testing')
+        string(name: 'APILEAK_BOLA_USER_IDS', defaultValue: '', description: 'Comma-separated cross-user IDs for BOLA testing')
+        string(name: 'APILEAK_BOLA_ROLES', defaultValue: '', description: 'Comma-separated role names for BOLA testing')
+
+        // Broken Auth
+        booleanParam(name: 'APILEAK_AUTH_TEST', defaultValue: false, description: 'Enable OpenAPI-based Broken Auth testing')
+        string(name: 'APILEAK_AUTH_CONCURRENCY', defaultValue: '10', description: 'Parallel requests for Broken Auth testing (1-50)')
+
+        // Report formats
+        string(name: 'APILEAK_REPORT_FORMATS', defaultValue: 'html,json', description: 'Comma-separated formats: html,json,sarif,junit,csv,pdf')
+        string(name: 'APILEAK_CSV_DELIMITER', defaultValue: ';', description: 'Single-character CSV delimiter')
+        string(name: 'APILEAK_PROJECT_NAME', defaultValue: '', description: 'Project name for PDF cover page')
+
+        // Security Gate thresholds (new unified gate)
+        string(name: 'APILEAK_CRITICAL_THRESHOLD', defaultValue: '0', description: 'Max critical findings before FAILURE')
+        string(name: 'APILEAK_HIGH_THRESHOLD', defaultValue: '5', description: 'Max high findings before UNSTABLE')
+        string(name: 'APILEAK_MEDIUM_THRESHOLD', defaultValue: '20', description: 'Max medium findings before UNSTABLE')
+        booleanParam(name: 'APILEAK_GATE_FAIL_ON_WARN', defaultValue: false, description: 'Treat UNSTABLE as FAILURE when true')
+
+        // Safe mode
+        booleanParam(name: 'APILEAK_SAFE_MODE', defaultValue: false, description: 'Restrict all scans to GET-only')
     }
     
     environment {
@@ -32,6 +72,34 @@ pipeline {
         BUILD_ID = "${env.BUILD_ID}"
         JOB_NAME = "${env.JOB_NAME}"
         BUILD_URL = "${env.BUILD_URL}"
+
+        // New CI/CD integration variables (Req 11.1)
+        APILEAK_OPENAPI_URL           = "${params.APILEAK_OPENAPI_URL}"
+        APILEAK_OPENAPI_FILE          = "${params.APILEAK_OPENAPI_FILE}"
+        APILEAK_LOGIN_URL             = "${params.APILEAK_LOGIN_URL}"
+        APILEAK_LOGIN_TOKEN_FIELD     = "${params.APILEAK_LOGIN_TOKEN_FIELD}"
+        APILEAK_LOGIN_REFRESH_TOKEN_FIELD = "${params.APILEAK_LOGIN_REFRESH_TOKEN_FIELD}"
+        APILEAK_LOGIN_MFA_FIELD       = "${params.APILEAK_LOGIN_MFA_FIELD}"
+        APILEAK_JWT_ATTACKS           = "${params.APILEAK_JWT_ATTACKS}"
+        APILEAK_JWT_SECRETS_WORDLIST  = "${params.APILEAK_JWT_SECRETS_WORDLIST}"
+        APILEAK_RSA_PUBLIC_KEY        = "${params.APILEAK_RSA_PUBLIC_KEY}"
+        APILEAK_BOLA_TEST             = "${params.APILEAK_BOLA_TEST}"
+        APILEAK_BOLA_OWNER_ID         = "${params.APILEAK_BOLA_OWNER_ID}"
+        APILEAK_BOLA_USER_IDS         = "${params.APILEAK_BOLA_USER_IDS}"
+        APILEAK_BOLA_ROLES            = "${params.APILEAK_BOLA_ROLES}"
+        APILEAK_AUTH_TEST             = "${params.APILEAK_AUTH_TEST}"
+        APILEAK_AUTH_CONCURRENCY      = "${params.APILEAK_AUTH_CONCURRENCY}"
+        APILEAK_REPORT_FORMATS        = "${params.APILEAK_REPORT_FORMATS}"
+        APILEAK_CSV_DELIMITER         = "${params.APILEAK_CSV_DELIMITER}"
+        APILEAK_PROJECT_NAME          = "${params.APILEAK_PROJECT_NAME}"
+        APILEAK_CRITICAL_THRESHOLD    = "${params.APILEAK_CRITICAL_THRESHOLD}"
+        APILEAK_HIGH_THRESHOLD        = "${params.APILEAK_HIGH_THRESHOLD}"
+        APILEAK_MEDIUM_THRESHOLD      = "${params.APILEAK_MEDIUM_THRESHOLD}"
+        APILEAK_GATE_FAIL_ON_WARN     = "${params.APILEAK_GATE_FAIL_ON_WARN}"
+        APILEAK_SAFE_MODE             = "${params.APILEAK_SAFE_MODE}"
+
+        // Secrets — injected via withCredentials() inside relevant stages
+        // APILEAK_LOGIN_USERNAME, APILEAK_LOGIN_PASSWORD, APILEAK_LOGIN_MFA_TOTP_SECRET, APILEAK_BOLA_ROLE_TOKENS
     }
     
     options {
@@ -282,6 +350,209 @@ pipeline {
             }
         }
         
+        stage('Swagger Security Scan') {
+            when {
+                expression { params.API_TARGET_URL != '' && (params.APILEAK_OPENAPI_URL != '' || params.APILEAK_OPENAPI_FILE != '') }
+            }
+            steps {
+                script {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'apileak-login-credentials',
+                            usernameVariable: 'APILEAK_LOGIN_USERNAME',
+                            passwordVariable: 'APILEAK_LOGIN_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                            mkdir -p reports
+                            . venv/bin/activate
+
+                            # Step 1 — Validate configuration (Req 11.3)
+                            echo "=== Validating CI/CD configuration ==="
+                            python ci-cd/scripts/validate_config.py
+
+                            # Step 2 — Auto-auth flow: login and capture JWT (Req 2)
+                            if [ -n "${APILEAK_LOGIN_URL}" ] && [ -n "${APILEAK_LOGIN_USERNAME}" ] && [ -n "${APILEAK_LOGIN_PASSWORD}" ]; then
+                                echo "=== Running auto-auth flow ==="
+                                python ci-cd/scripts/auth_flow.py
+                                # auth_flow.py writes APILEAK_JWT_TOKEN to a temp env file
+                                if [ -f /tmp/apileak_auth.env ]; then
+                                    . /tmp/apileak_auth.env
+                                    export APILEAK_JWT_TOKEN
+                                fi
+                            fi
+
+                            # Step 3 — Discover OpenAPI endpoints (Req 1)
+                            echo "=== Discovering OpenAPI endpoints ==="
+                            python ci-cd/scripts/openapi_discoverer.py
+
+                            # Step 4 — Run APILeaks container with --openapi flag (Req 1.5)
+                            echo "=== Running APILeaks OpenAPI scan ==="
+                            docker run --rm \\
+                                -e APILEAK_LOG_LEVEL=${APILEAK_LOG_LEVEL} \\
+                                -e APILEAK_RATE_LIMIT=${APILEAK_RATE_LIMIT} \\
+                                -e APILEAK_TARGET="${API_TARGET_URL}" \\
+                                -e APILEAK_JWT_TOKEN="${APILEAK_JWT_TOKEN}" \\
+                                -e APILEAK_OPENAPI_URL="${APILEAK_OPENAPI_URL}" \\
+                                -e APILEAK_OPENAPI_FILE="${APILEAK_OPENAPI_FILE}" \\
+                                -e APILEAK_SAFE_MODE="${APILEAK_SAFE_MODE}" \\
+                                -v $(pwd)/reports:/app/reports \\
+                                ${DOCKER_IMAGE} scan \\
+                                --target "${API_TARGET_URL}" \\
+                                --openapi \\
+                                --output apileak-openapi-${BUILD_ID} \\
+                                --log-level ${APILEAK_LOG_LEVEL} \\
+                                --rate-limit ${APILEAK_RATE_LIMIT} \\
+                                ${APILEAK_JWT_TOKEN:+--jwt "${APILEAK_JWT_TOKEN}"}
+                        '''
+
+                        // Step 5 — JWT Attack Suite (Req 3)
+                        if (params.APILEAK_JWT_ATTACKS?.trim()) {
+                            sh '''
+                                . venv/bin/activate
+                                if [ -f /tmp/apileak_auth.env ]; then . /tmp/apileak_auth.env; fi
+                                echo "=== Running JWT Attack Suite ==="
+                                python ci-cd/scripts/jwt_attack_suite.py
+                            '''
+                        }
+
+                        // Step 6 — BOLA Testing (Req 4)
+                        if (params.APILEAK_BOLA_TEST) {
+                            withCredentials([string(credentialsId: 'apileak-bola-role-tokens', variable: 'APILEAK_BOLA_ROLE_TOKENS')]) {
+                                sh '''
+                                    . venv/bin/activate
+                                    if [ -f /tmp/apileak_auth.env ]; then . /tmp/apileak_auth.env; fi
+                                    echo "=== Running BOLA Tester ==="
+                                    python ci-cd/scripts/bola_tester.py
+                                '''
+                            }
+                        }
+
+                        // Step 7 — Broken Auth Testing (Req 12)
+                        if (params.APILEAK_AUTH_TEST) {
+                            sh '''
+                                . venv/bin/activate
+                                if [ -f /tmp/apileak_auth.env ]; then . /tmp/apileak_auth.env; fi
+                                echo "=== Running Broken Auth Testing ==="
+                                APILEAK_AUTH_TEST=true python ci-cd/scripts/auth_flow.py --auth-test
+                            '''
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/apileak-openapi-*,reports/openapi-endpoints-*,reports/apileak-jwt-attacks-*,reports/apileak-bola-*', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Generate Reports') {
+            when {
+                expression { params.API_TARGET_URL != '' }
+            }
+            steps {
+                script {
+                    sh '''
+                        . venv/bin/activate
+                        mkdir -p reports
+
+                        echo "=== Generating reports for formats: ${APILEAK_REPORT_FORMATS} ==="
+                        python ci-cd/scripts/report_generator.py \\
+                            --input-dir reports/ \\
+                            --output-dir reports/ \\
+                            --pipeline-id ${BUILD_ID} \\
+                            --formats "${APILEAK_REPORT_FORMATS}" \\
+                            --project-name "${APILEAK_PROJECT_NAME:-${JOB_NAME}}" \\
+                            --target-url "${API_TARGET_URL}"
+                    '''
+                }
+            }
+            post {
+                always {
+                    // Publish JUnit XML test results for security findings (Req 7)
+                    junit allowEmptyResults: true, testResults: 'reports/apileak-junit-*.xml'
+
+                    // Publish HTML security report
+                    script {
+                        if (fileExists("reports/apileak-report-${env.BUILD_ID}.html") || sh(script: "ls reports/apileak-report-*.html 2>/dev/null | head -1", returnStatus: true) == 0) {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: "apileak-report-${env.BUILD_ID}.html",
+                                reportName: 'APILeaks Security Report (CI/CD)'
+                            ])
+                        }
+                    }
+
+                    // Archive all generated reports (PDF, CSV, SARIF, JUnit, JSON)
+                    archiveArtifacts artifacts: 'reports/apileak-report-*,reports/gl-sast-report.json,reports/apileak-junit-all-*', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Security Gate (Unified)') {
+            when {
+                expression { params.API_TARGET_URL != '' }
+            }
+            steps {
+                script {
+                    sh '''
+                        . venv/bin/activate
+                        mkdir -p reports
+
+                        echo "=== Running unified Security Gate ==="
+                        # security_gate.py always writes security-gate-result.json (Req 10.7)
+                        # Exit codes: 0=pass, 1=warn, 2=fail
+                        set +e
+                        python ci-cd/scripts/security_gate.py \\
+                            --findings-dir reports/ \\
+                            --output security-gate-result.json \\
+                            --pipeline-id ${BUILD_ID} \\
+                            --critical-threshold ${APILEAK_CRITICAL_THRESHOLD} \\
+                            --high-threshold ${APILEAK_HIGH_THRESHOLD} \\
+                            --medium-threshold ${APILEAK_MEDIUM_THRESHOLD} \\
+                            ${APILEAK_GATE_FAIL_ON_WARN:+--fail-on-warn}
+                        GATE_EXIT=$?
+                        set -e
+
+                        echo "Security Gate exit code: ${GATE_EXIT}"
+                        echo "${GATE_EXIT}" > /tmp/apileak_gate_exit.txt
+                    '''
+
+                    // Read security-gate-result.json and set build result accordingly (Req 10)
+                    def gateResultFile = 'security-gate-result.json'
+                    if (fileExists(gateResultFile)) {
+                        def gateResult = readJSON file: gateResultFile
+                        def gateStatus = gateResult.status
+
+                        echo "Security Gate status: ${gateStatus}"
+                        echo "Counts: ${gateResult.counts}"
+                        echo "Exceeded thresholds: ${gateResult.exceeded_thresholds}"
+
+                        if (gateStatus == 'fail') {
+                            currentBuild.result = 'FAILURE'
+                            error("Security Gate FAILED: thresholds exceeded → ${gateResult.exceeded_thresholds}")
+                        } else if (gateStatus == 'warn') {
+                            currentBuild.result = 'UNSTABLE'
+                            echo "Security Gate WARNING: thresholds exceeded → ${gateResult.exceeded_thresholds}"
+                        } else {
+                            echo "Security Gate PASSED: all findings within configured thresholds"
+                        }
+                    } else {
+                        echo "WARNING: security-gate-result.json not found — skipping gate evaluation"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'security-gate-result.json', allowEmptyArchive: true
+                }
+            }
+        }
+
         stage('Security Gate') {
             when {
                 expression { params.API_TARGET_URL != '' }

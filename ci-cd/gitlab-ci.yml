@@ -23,6 +23,54 @@ variables:
   HIGH_THRESHOLD: "5"      # Fail pipeline if more than 5 high vulnerabilities found
   MEDIUM_THRESHOLD: "20"   # Fail pipeline if more than 20 medium vulnerabilities found
 
+  # ── New variables (CI/CD Integration spec) ────────────────────────────────
+
+  # OpenAPI / Swagger discovery (Req 1)
+  APILEAK_OPENAPI_URL: ""        # URL to OpenAPI/Swagger spec
+  APILEAK_OPENAPI_FILE: ""       # Local path to spec (priority over URL when both set)
+
+  # Auto-auth flow (Req 2)
+  APILEAK_LOGIN_URL: ""              # Login endpoint for automatic authentication
+  APILEAK_LOGIN_USERNAME: ""         # Login username — mask in all logs
+  APILEAK_LOGIN_PASSWORD: ""         # Login password — store as a protected secret
+  APILEAK_LOGIN_TOKEN_FIELD: "access_token"   # JWT field in login response
+  APILEAK_LOGIN_REFRESH_TOKEN_FIELD: ""       # Refresh-token field (optional)
+  APILEAK_LOGIN_MFA_TOTP_SECRET: ""           # TOTP secret for MFA logins
+  APILEAK_LOGIN_MFA_FIELD: "totp_code"        # Body field for TOTP code
+
+  # JWT token & attacks (Req 3)
+  APILEAK_JWT_TOKEN: ""          # Pre-existing or auto-captured JWT
+  APILEAK_JWT_ATTACKS: ""        # Comma-separated attack names or "all"
+  APILEAK_JWT_SECRETS_WORDLIST: "wordlists/jwt_secrets.txt"
+  APILEAK_RSA_PUBLIC_KEY: ""     # RSA public key for algorithm_confusion attack
+
+  # BOLA testing (Req 4)
+  APILEAK_BOLA_TEST: "false"         # Enable OpenAPI-based BOLA testing
+  APILEAK_BOLA_OWNER_ID: ""          # Authenticated user's own resource ID
+  APILEAK_BOLA_USER_IDS: ""          # Comma-separated cross-user IDs
+  APILEAK_BOLA_ROLES: ""             # Comma-separated role names
+  APILEAK_BOLA_ROLE_TOKENS: ""       # Comma-separated JWTs matching BOLA_ROLES order
+
+  # Broken Auth testing (Req 12)
+  APILEAK_AUTH_TEST: "false"         # Enable OpenAPI-based Broken Auth testing
+  APILEAK_AUTH_CONCURRENCY: "10"     # Parallel requests for Broken Auth (1–50)
+
+  # Report formats (Req 6–9)
+  APILEAK_REPORT_FORMATS: "html,json"   # Comma-separated: html,json,sarif,junit,csv,pdf
+  APILEAK_CSV_DELIMITER: ";"            # Single-character CSV delimiter
+  APILEAK_PROJECT_NAME: ""              # Project name for PDF cover page
+
+  # Security Gate thresholds — unified names (Req 10)
+  APILEAK_CRITICAL_THRESHOLD: "0"    # Findings above this → FAILURE (exit 2)
+  APILEAK_HIGH_THRESHOLD: "5"        # Findings above this → UNSTABLE (exit 1)
+  APILEAK_MEDIUM_THRESHOLD: "20"     # Findings above this → UNSTABLE (exit 1)
+  APILEAK_GATE_FAIL_ON_WARN: "false" # Escalate UNSTABLE to FAILURE when "true"/"1"
+
+  # Misc (Req 4.6, 5.8)
+  APILEAK_SAFE_MODE: "false"         # Restrict all scans to GET-only
+  APILEAK_S3_BUCKET: ""              # S3 bucket for AWS report upload
+  APILEAK_USE_VPC_ENDPOINT: "false"  # Use private VPC endpoint as target (AWS)
+
 # Build APILeak Docker image
 build-apileak:
   stage: build
@@ -301,3 +349,164 @@ cleanup-artifacts:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
   when: manual
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW JOB: OpenAPI-based security scan (Req 1, 2, 3, 4, 6.4, 11.1, 11.2)
+# Runs in the existing security-scan stage alongside the other scan jobs.
+# ─────────────────────────────────────────────────────────────────────────────
+swagger-security-scan:
+  stage: security-scan
+  image: python:3.11-slim
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: /certs/client
+  before_script:
+    - pip install -r requirements.txt
+    - mkdir -p reports
+  script:
+    - |
+      # ── Step 1: Validate configuration before running any scan (Req 11.3) ──
+      python ci-cd/scripts/validate_config.py
+      echo "Config validation passed."
+
+    - |
+      # ── Step 2: Auto-auth flow — login and capture JWT (Req 2) ─────────────
+      if [ -n "$APILEAK_LOGIN_URL" ] && [ -n "$APILEAK_LOGIN_USERNAME" ] && [ -n "$APILEAK_LOGIN_PASSWORD" ]; then
+        echo "Running auto-auth flow…"
+        python ci-cd/scripts/auth_flow.py
+        # auth_flow.py writes APILEAK_JWT_TOKEN to a temp env file; source it.
+        if [ -f /tmp/apileak_auth.env ]; then
+          set -a && . /tmp/apileak_auth.env && set +a
+          echo "JWT captured and exported."
+        fi
+      fi
+
+    - |
+      # ── Step 3: OpenAPI discovery (Req 1) ───────────────────────────────────
+      if [ -n "$APILEAK_OPENAPI_URL" ] || [ -n "$APILEAK_OPENAPI_FILE" ]; then
+        echo "Running OpenAPI endpoint discovery…"
+        python ci-cd/scripts/openapi_discoverer.py
+      fi
+
+    - |
+      # ── Step 4: APILeaks container scan with --openapi flag ─────────────────
+      if [ -n "$APILEAK_OPENAPI_URL" ] || [ -n "$APILEAK_OPENAPI_FILE" ]; then
+        OPENAPI_ARGS=""
+        if [ -n "$APILEAK_OPENAPI_FILE" ]; then
+          OPENAPI_ARGS="--openapi-file $APILEAK_OPENAPI_FILE"
+        elif [ -n "$APILEAK_OPENAPI_URL" ]; then
+          OPENAPI_ARGS="--openapi $APILEAK_OPENAPI_URL"
+        fi
+
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL=$APILEAK_LOG_LEVEL \
+          -e APILEAK_RATE_LIMIT=$APILEAK_RATE_LIMIT \
+          -e APILEAK_TARGET=$APILEAK_TARGET \
+          -e APILEAK_JWT_TOKEN="$APILEAK_JWT_TOKEN" \
+          -e APILEAK_SAFE_MODE=$APILEAK_SAFE_MODE \
+          -v $(pwd)/reports:/app/reports \
+          $APILEAK_IMAGE scan \
+            --target "$APILEAK_TARGET" \
+            $OPENAPI_ARGS \
+            --output apileak-openapi-$CI_PIPELINE_ID \
+            --log-level $APILEAK_LOG_LEVEL \
+            --rate-limit $APILEAK_RATE_LIMIT \
+            ${APILEAK_JWT_TOKEN:+--jwt "$APILEAK_JWT_TOKEN"}
+      fi
+
+    - |
+      # ── Step 5: JWT attack suite (Req 3) ────────────────────────────────────
+      if [ -n "$APILEAK_JWT_ATTACKS" ]; then
+        echo "Running JWT attack suite: $APILEAK_JWT_ATTACKS"
+        python ci-cd/scripts/jwt_attack_suite.py
+      fi
+
+    - |
+      # ── Step 6: BOLA testing (Req 4) ────────────────────────────────────────
+      if [ "$APILEAK_BOLA_TEST" = "true" ]; then
+        echo "Running BOLA tester…"
+        python ci-cd/scripts/bola_tester.py
+      fi
+
+    - |
+      # ── Step 7: Broken Auth testing (Req 12) ────────────────────────────────
+      if [ "$APILEAK_AUTH_TEST" = "true" ]; then
+        echo "Running Broken Auth testing (via auth_flow.py)…"
+        APILEAK_BROKEN_AUTH_MODE=true python ci-cd/scripts/auth_flow.py
+      fi
+
+    - |
+      # ── Step 8: Generate GitLab SAST report (Req 6) ─────────────────────────
+      echo "Generating report formats: $APILEAK_REPORT_FORMATS"
+      python ci-cd/scripts/report_generator.py \
+        --input-dir reports/ \
+        --pipeline-id "$CI_PIPELINE_ID" \
+        --project-name "${APILEAK_PROJECT_NAME:-$CI_PROJECT_NAME}" \
+        --formats "${APILEAK_REPORT_FORMATS:-sarif,junit}"
+
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    reports:
+      # GitLab automatically processes this file as a Security Dashboard report
+      # on Merge Requests (Req 6.4)
+      sast: gl-sast-report.json
+      junit: reports/apileak-junit-all-$CI_PIPELINE_ID.xml
+    expire_in: 1 month
+  rules:
+    - if: $API_TARGET_URL && $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $API_TARGET_URL && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW JOB: Unified Security Gate (Req 10, 11.1, 11.2)
+# Runs in the report stage AFTER all scan jobs and the existing report job.
+# The existing generate-security-report job is NOT modified.
+# ─────────────────────────────────────────────────────────────────────────────
+security-gate:
+  stage: report
+  image: python:3.11-slim
+  needs:
+    - job: generate-security-report
+      optional: true
+    - job: swagger-security-scan
+      optional: true
+  before_script:
+    - pip install -r requirements.txt
+    - mkdir -p reports
+  script:
+    - |
+      # Evaluate all findings against configured thresholds (Req 10).
+      # security_gate.py always writes security-gate-result.json before exiting
+      # (Req 10.7), even when findings are missing or an exception occurs.
+      python ci-cd/scripts/security_gate.py \
+        --findings-dir reports/ \
+        --output security-gate-result.json \
+        --pipeline-id "$CI_PIPELINE_ID" \
+        --critical-threshold "${APILEAK_CRITICAL_THRESHOLD:-$CRITICAL_THRESHOLD}" \
+        --high-threshold    "${APILEAK_HIGH_THRESHOLD:-$HIGH_THRESHOLD}" \
+        --medium-threshold  "${APILEAK_MEDIUM_THRESHOLD:-$MEDIUM_THRESHOLD}" \
+        --fail-on-warn      "${APILEAK_GATE_FAIL_ON_WARN:-false}"
+      GATE_EXIT=$?
+
+      # Surface the gate result in the job log for quick visibility.
+      if [ -f security-gate-result.json ]; then
+        echo "=== Security Gate Result ==="
+        cat security-gate-result.json
+        echo ""
+      fi
+
+      exit $GATE_EXIT
+
+  artifacts:
+    when: always
+    paths:
+      - security-gate-result.json
+    expire_in: 1 month
+  rules:
+    - if: $API_TARGET_URL
+      when: always

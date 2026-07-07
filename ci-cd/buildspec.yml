@@ -1,0 +1,331 @@
+version: 0.2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APILeaks Security Scanning — AWS CodeBuild Buildspec
+#
+# Requirements covered:
+#   Req 5.2 — CodeBuild-compatible buildspec with install/pre_build/build/post_build
+#   Req 5.3 — SSM Parameter Store reads with prefix /apileaks/
+#   Req 5.4 — Reports uploaded to s3://${APILEAK_S3_BUCKET}/apileaks-reports/{id}/
+#   Req 5.5 — Security Hub publishing when thresholds are exceeded
+#   Req 5.8 — VPC endpoint substitution when APILEAK_USE_VPC_ENDPOINT=true
+#
+# All scripts live in ci-cd/scripts/ relative to the CodeBuild workspace root.
+# ─────────────────────────────────────────────────────────────────────────────
+
+env:
+  # ── Default environment variables ─────────────────────────────────────────
+  # These can be overridden by CodeBuild project or pipeline environment
+  # variables, SSM parameter values loaded in pre_build, or CloudFormation
+  # parameter values injected via the CodePipeline stage environment block.
+  variables:
+    APILEAK_LOG_LEVEL: "WARNING"
+    APILEAK_RATE_LIMIT: "20"
+    APILEAK_TIMEOUT: "30"
+    APILEAK_CRITICAL_THRESHOLD: "0"
+    APILEAK_HIGH_THRESHOLD: "5"
+    APILEAK_MEDIUM_THRESHOLD: "20"
+    APILEAK_REPORT_FORMATS: "html,json"
+    APILEAK_CSV_DELIMITER: ";"
+    APILEAK_AUTH_CONCURRENCY: "10"
+    # Docker image used for the main scan — override with ECR URI if needed
+    APILEAK_DOCKER_IMAGE: "apileak:latest"
+
+phases:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INSTALL — Python dependencies (Req 5.2)
+  # ═══════════════════════════════════════════════════════════════════════════
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo "[install] Installing Python dependencies..."
+      - pip install --upgrade pip --quiet
+      - pip install -r ci-cd/scripts/requirements.txt
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PRE_BUILD — SSM reads, config validation, optional auth flow (Req 5.3)
+  # ═══════════════════════════════════════════════════════════════════════════
+  pre_build:
+    commands:
+      - echo "[pre_build] Starting pre-build phase at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      - mkdir -p reports
+
+      # ── Read required parameters from SSM Parameter Store (Req 5.3) ──────
+      # Log the parameter NAME on failure, never the value.
+      # If a required parameter is missing/inaccessible, fail immediately.
+      - |
+        echo "[pre_build] Reading configuration from SSM Parameter Store (prefix /apileaks/)..."
+
+        _ssm_get() {
+          # Usage: _ssm_get <param_path> <env_var_name> <required: true|false>
+          local param_path="$1"
+          local var_name="$2"
+          local required="$3"
+
+          local value
+          value=$(aws ssm get-parameter \
+            --name "${param_path}" \
+            --with-decryption \
+            --query 'Parameter.Value' \
+            --output text 2>&1)
+
+          if [ $? -ne 0 ]; then
+            if [ "${required}" = "true" ]; then
+              echo "[pre_build] ERROR: Required SSM parameter '${param_path}' is missing or inaccessible. Failing build."
+              exit 1
+            else
+              echo "[pre_build] WARNING: Optional SSM parameter '${param_path}' not found — skipping."
+              return 0
+            fi
+          fi
+
+          export "${var_name}=${value}"
+          echo "[pre_build] Loaded parameter '${param_path}' → \$${var_name}"
+        }
+
+        # Required: target_url — build cannot proceed without a scan target
+        _ssm_get "/apileaks/target_url"          APILEAK_TARGET               true
+
+        # Optional: jwt_token — used for authenticated scans; may be obtained
+        #           via auth_flow.py instead when login vars are present
+        _ssm_get "/apileaks/jwt_token"           APILEAK_JWT_TOKEN            false
+
+        # Optional: openapi_url — enables OpenAPI-based discovery and BOLA testing
+        _ssm_get "/apileaks/openapi_url"         APILEAK_OPENAPI_URL          false
+
+        # Optional login credentials — all three must be present to trigger auth_flow
+        _ssm_get "/apileaks/login_url"           APILEAK_LOGIN_URL            false
+        _ssm_get "/apileaks/login_username"      APILEAK_LOGIN_USERNAME       false
+        _ssm_get "/apileaks/login_password"      APILEAK_LOGIN_PASSWORD       false
+
+      # ── Validate configuration coherence ─────────────────────────────────
+      - echo "[pre_build] Running configuration validator..."
+      - python ci-cd/scripts/validate_config.py
+
+      # ── Optional: Automated auth flow (Req 5.3) ──────────────────────────
+      # Execute auth_flow.py ONLY when all three login variables are defined.
+      # On success it writes APILEAK_JWT_TOKEN to a temp env file that is
+      # sourced immediately so subsequent commands can use the token.
+      - |
+        if [ -n "${APILEAK_LOGIN_URL}" ] && \
+           [ -n "${APILEAK_LOGIN_USERNAME}" ] && \
+           [ -n "${APILEAK_LOGIN_PASSWORD}" ]; then
+          echo "[pre_build] Login variables present — running auth_flow.py..."
+          python ci-cd/scripts/auth_flow.py
+          # auth_flow.py writes APILEAK_JWT_TOKEN=<token> to /tmp/apileak_auth.env
+          if [ -f /tmp/apileak_auth.env ]; then
+            # Source the file to export the token into the current shell
+            set -a
+            . /tmp/apileak_auth.env
+            set +a
+            echo "[pre_build] JWT token loaded from auth_flow output."
+          fi
+        else
+          echo "[pre_build] Login variables not fully defined — skipping auth_flow.py."
+        fi
+
+      - echo "[pre_build] Pre-build phase completed."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BUILD — Discovery, main scan, optional JWT attacks, optional BOLA (Req 5.8)
+  # ═══════════════════════════════════════════════════════════════════════════
+  build:
+    commands:
+      - echo "[build] Starting build phase at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+      # ── VPC endpoint substitution (Req 5.8) ──────────────────────────────
+      # When running inside a CodeBuild project with a VPC configuration and
+      # APILEAK_USE_VPC_ENDPOINT is set, override the public target URL with
+      # the private endpoint so traffic stays within the VPC.
+      - |
+        if [ "${APILEAK_USE_VPC_ENDPOINT}" = "true" ]; then
+          if [ -z "${APILEAK_VPC_ENDPOINT_URL}" ]; then
+            echo "[build] ERROR: APILEAK_USE_VPC_ENDPOINT=true but APILEAK_VPC_ENDPOINT_URL is not defined. Failing build."
+            exit 1
+          fi
+          echo "[build] VPC endpoint mode — overriding APILEAK_TARGET with private endpoint."
+          export APILEAK_TARGET="${APILEAK_VPC_ENDPOINT_URL}"
+        fi
+
+      # ── Optional: OpenAPI discovery ───────────────────────────────────────
+      # Run only when APILEAK_OPENAPI_URL (or APILEAK_OPENAPI_FILE) is set.
+      # The discoverer writes reports/openapi-endpoints-{id}.json which the
+      # main scan picks up via --openapi.
+      - |
+        if [ -n "${APILEAK_OPENAPI_URL}" ] || [ -n "${APILEAK_OPENAPI_FILE}" ]; then
+          echo "[build] OpenAPI spec detected — running openapi_discoverer.py..."
+          python ci-cd/scripts/openapi_discoverer.py
+        else
+          echo "[build] No OpenAPI spec configured — skipping openapi_discoverer.py."
+        fi
+
+      # ── Main scan: docker run apileak ────────────────────────────────────
+      # Assemble flags dynamically based on which variables are defined.
+      # Reports are mounted from the CodeBuild workspace so they persist
+      # after the container exits.
+      - |
+        echo "[build] Assembling docker run command..."
+
+        SCAN_FLAGS="--target ${APILEAK_TARGET}"
+        SCAN_FLAGS="${SCAN_FLAGS} --log-level ${APILEAK_LOG_LEVEL}"
+        SCAN_FLAGS="${SCAN_FLAGS} --rate-limit ${APILEAK_RATE_LIMIT}"
+        SCAN_FLAGS="${SCAN_FLAGS} --output apileak-scan-${CODEBUILD_BUILD_ID}"
+
+        # Append JWT flag when a token is available
+        if [ -n "${APILEAK_JWT_TOKEN}" ]; then
+          SCAN_FLAGS="${SCAN_FLAGS} --jwt ${APILEAK_JWT_TOKEN}"
+        fi
+
+        # Append OpenAPI flag when a spec was discovered
+        if [ -n "${APILEAK_OPENAPI_URL}" ] || [ -n "${APILEAK_OPENAPI_FILE}" ]; then
+          SCAN_FLAGS="${SCAN_FLAGS} --openapi"
+        fi
+
+        # Append modules flag when explicitly configured
+        if [ -n "${APILEAK_MODULES}" ]; then
+          SCAN_FLAGS="${SCAN_FLAGS} --modules ${APILEAK_MODULES}"
+        fi
+
+        echo "[build] Running: docker run apileak ${SCAN_FLAGS}"
+        docker run --rm \
+          -e APILEAK_LOG_LEVEL="${APILEAK_LOG_LEVEL}" \
+          -e APILEAK_RATE_LIMIT="${APILEAK_RATE_LIMIT}" \
+          -e APILEAK_TARGET="${APILEAK_TARGET}" \
+          -e APILEAK_JWT_TOKEN="${APILEAK_JWT_TOKEN}" \
+          -e APILEAK_MODULES="${APILEAK_MODULES}" \
+          -v "$(pwd)/reports:/app/reports" \
+          "${APILEAK_DOCKER_IMAGE}" scan \
+          ${SCAN_FLAGS}
+
+      # ── Optional: JWT attack suite ───────────────────────────────────────
+      # Execute jwt_attack_suite.py only when APILEAK_JWT_ATTACKS is defined.
+      - |
+        if [ -n "${APILEAK_JWT_ATTACKS}" ]; then
+          echo "[build] APILEAK_JWT_ATTACKS defined — running jwt_attack_suite.py..."
+          python ci-cd/scripts/jwt_attack_suite.py
+        else
+          echo "[build] APILEAK_JWT_ATTACKS not set — skipping jwt_attack_suite.py."
+        fi
+
+      # ── Optional: BOLA testing ───────────────────────────────────────────
+      # Execute bola_tester.py only when APILEAK_BOLA_TEST is explicitly true.
+      - |
+        if [ "${APILEAK_BOLA_TEST}" = "true" ]; then
+          echo "[build] APILEAK_BOLA_TEST=true — running bola_tester.py..."
+          python ci-cd/scripts/bola_tester.py
+        else
+          echo "[build] APILEAK_BOLA_TEST not enabled — skipping bola_tester.py."
+        fi
+
+      - echo "[build] Build phase completed."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # POST_BUILD — Reports, security gate, S3 upload, Security Hub (Req 5.4, 5.5)
+  # ═══════════════════════════════════════════════════════════════════════════
+  post_build:
+    commands:
+      - echo "[post_build] Starting post-build phase at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+      # ── Generate reports in all configured formats (Req 5.4) ─────────────
+      - |
+        echo "[post_build] Generating reports for formats: ${APILEAK_REPORT_FORMATS}..."
+        python ci-cd/scripts/report_generator.py \
+          --pipeline-id "${CODEBUILD_BUILD_ID}" \
+          --formats "${APILEAK_REPORT_FORMATS}" \
+          --output-dir reports/
+
+      # ── Security gate evaluation (Req 5.5) ───────────────────────────────
+      # Always runs; always writes security-gate-result.json regardless of
+      # outcome (Req 10.7). Capture the exit code without triggering set -e
+      # so that the S3 upload and Security Hub steps still execute.
+      - |
+        echo "[post_build] Evaluating security gate thresholds..."
+        set +e
+        python ci-cd/scripts/security_gate.py \
+          --findings-dir reports/ \
+          --output security-gate-result.json \
+          --pipeline-id "${CODEBUILD_BUILD_ID}"
+        GATE_EXIT_CODE=$?
+        set -e
+        echo "[post_build] Security gate exited with code ${GATE_EXIT_CODE}."
+
+      # ── Upload reports to S3 (Req 5.4) ───────────────────────────────────
+      # If the upload fails, log the error code and mark the build FAILED
+      # WITHOUT deleting local reports (they are still captured as artifacts).
+      - |
+        if [ -z "${APILEAK_S3_BUCKET}" ]; then
+          echo "[post_build] WARNING: APILEAK_S3_BUCKET is not set — skipping S3 upload."
+        else
+          S3_DEST="s3://${APILEAK_S3_BUCKET}/apileaks-reports/${CODEBUILD_BUILD_ID}/"
+          echo "[post_build] Uploading reports to ${S3_DEST}..."
+          set +e
+          aws s3 sync reports/ "${S3_DEST}" \
+            --no-progress \
+            --sse AES256
+          S3_EXIT_CODE=$?
+          set -e
+          if [ ${S3_EXIT_CODE} -ne 0 ]; then
+            echo "[post_build] ERROR: S3 upload failed with exit code ${S3_EXIT_CODE}. Local reports are preserved."
+            # Fail the build as required (Req 5.4), but after all steps above
+            exit ${S3_EXIT_CODE}
+          fi
+          echo "[post_build] Reports uploaded successfully to ${S3_DEST}"
+        fi
+
+      # ── Optional: Publish to AWS Security Hub (Req 5.5) ──────────────────
+      # Only runs when the security gate result indicates thresholds were
+      # exceeded (status != "pass") AND a Security Hub product ARN is defined.
+      - |
+        if [ -f security-gate-result.json ]; then
+          GATE_STATUS=$(python -c "
+        import json, sys
+        try:
+            d = json.load(open('security-gate-result.json'))
+            print(d.get('status', 'pass'))
+        except Exception as e:
+            print('pass')
+        ")
+          echo "[post_build] Security gate status: ${GATE_STATUS}"
+
+          if [ "${GATE_STATUS}" != "pass" ] && [ -n "${APILEAK_SECURITY_HUB_PRODUCT_ARN}" ]; then
+            echo "[post_build] Thresholds exceeded — publishing findings to AWS Security Hub..."
+            python ci-cd/scripts/aws_security_hub.py \
+              --findings-dir reports/ \
+              --pipeline-id "${CODEBUILD_BUILD_ID}" \
+              --product-arn "${APILEAK_SECURITY_HUB_PRODUCT_ARN}" \
+              --region "${AWS_DEFAULT_REGION}" \
+              --account-id "${APILEAK_AWS_ACCOUNT_ID}"
+          else
+            echo "[post_build] No Security Hub publishing required."
+          fi
+        else
+          echo "[post_build] WARNING: security-gate-result.json not found — skipping Security Hub step."
+        fi
+
+      # ── Propagate security gate exit code ────────────────────────────────
+      # Re-exit with the gate code so CodeBuild marks the build correctly
+      # (0 = pass, 1 = warn/unstable, 2 = fail).
+      - |
+        echo "[post_build] Post-build phase completed at $(date -u '+%Y-%m-%dT%H:%M:%SZ')."
+        if [ "${GATE_EXIT_CODE}" -ne 0 ]; then
+          echo "[post_build] Exiting with security gate code ${GATE_EXIT_CODE}."
+          exit ${GATE_EXIT_CODE}
+        fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTIFACTS — passed to the Report stage and preserved as CodeBuild artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+artifacts:
+  files:
+    - reports/**/*
+    - security-gate-result.json
+  discard-paths: no
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CACHE — speed up subsequent builds by caching pip packages
+# ─────────────────────────────────────────────────────────────────────────────
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
