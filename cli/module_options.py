@@ -162,6 +162,46 @@ AUTH_OPTIONS = [
     click.option('--reset-token-known-input', 'reset_token_known_input', multiple=True, metavar='VALUE',
                  help='Known input (e.g. an account email) used to classify a reset token as '
                       'a hash-of-known-input. Repeatable: pass once per value.'),
+    # --- Advanced / Expert level attack options (NEW) ---------------------
+    click.option('--otp-endpoint', 'otp_endpoint', metavar='URL', default=None,
+                 help='OTP/MFA verification endpoint URL for brute-force and race-condition '
+                      'probes (e.g. /api/v1/auth/otp/verify). Requires --allow-aggressive-auth.'),
+    click.option('--otp-digits', 'otp_digits', type=int, default=None,
+                 help='Number of digits in the OTP code space (4 or 6, default 6). '
+                      'A 4-digit OTP has 10,000 combinations; 6 digits: 1,000,000.'),
+    click.option('--otp-field', 'otp_field', metavar='FIELD', default=None,
+                 help='JSON body field name carrying the OTP code (default: otp).'),
+    click.option('--otp-session-field', 'otp_session_field', metavar='FIELD', default=None,
+                 help='JSON body field name carrying the provisional session token (default: session_token).'),
+    click.option('--otp-session-token', 'otp_session_token', metavar='TOKEN', default=None,
+                 help='Provisional session/transaction token obtained before the OTP step. '
+                      'Required for OTP brute-force and OTP race probes.'),
+    click.option('--otp-race-concurrency', 'otp_race_concurrency', type=int, default=None,
+                 help='Number of concurrent OTP requests for the race-condition probe (default: 50).'),
+    click.option('--users-wordlist', 'users_wordlist', metavar='PATH', default=None,
+                 help='Path to a newline-separated file of usernames/emails for the '
+                      'password-spray probe. Requires --spray-password.'),
+    click.option('--spray-password', 'spray_password', metavar='PASSWORD', default=None,
+                 help='Single password to spray across all usernames in --users-wordlist. '
+                      'Requires --allow-aggressive-auth.'),
+    click.option('--spray-batch-size', 'spray_batch_size', type=int, default=None,
+                 help='Maximum number of users in one spray batch (default: 50).'),
+    click.option('--login-username-field', 'login_username_field', metavar='FIELD', default=None,
+                 help='JSON body field name for the username in login requests (default: username).'),
+    click.option('--login-password-field', 'login_password_field', metavar='FIELD', default=None,
+                 help='JSON body field name for the password in login requests (default: password).'),
+    click.option('--ip-rotation-burst', 'ip_rotation_burst', type=int, default=None,
+                 help='Number of requests per IP-header rotation burst (default: 15). '
+                      'Tests whether rate limiting trusts X-Forwarded-For and similar headers.'),
+    click.option('--extra-ip-headers', 'extra_ip_headers', multiple=True, metavar='HEADER',
+                 help='Additional IP-origin header name(s) to inject during the rotation probe '
+                      '(repeatable). Merged with the built-in list.'),
+    click.option('--timing-samples', 'timing_samples', type=int, default=None,
+                 help='Number of response-time samples per username for the timing oracle '
+                      '(default: 10). Higher values reduce noise.'),
+    click.option('--timing-threshold', 'timing_threshold', type=float, default=None,
+                 help='Minimum response-time delta (seconds) to classify as a timing leak '
+                      '(default: 0.05 = 50ms).'),
 ]
 
 
@@ -244,6 +284,40 @@ def apply_auth_options(auth_cfg, opts: dict) -> None:
         auth_cfg.reset_token_samples = list(opts['reset_token_sample'])
     if opts.get('reset_token_known_input'):
         auth_cfg.reset_token_known_inputs = list(opts['reset_token_known_input'])
+
+    # Advanced / Expert attack options (Level 2, 3 & Expert probes).
+    # Each is only applied when the CLI flag is explicitly supplied so all
+    # safe defaults in AuthTestingConfig are preserved for omitted flags.
+    if opts.get('otp_endpoint'):
+        auth_cfg.otp_endpoint = opts['otp_endpoint']
+    if opts.get('otp_digits') is not None:
+        auth_cfg.otp_digits = opts['otp_digits']
+    if opts.get('otp_field'):
+        auth_cfg.otp_field = opts['otp_field']
+    if opts.get('otp_session_field'):
+        auth_cfg.otp_session_field = opts['otp_session_field']
+    if opts.get('otp_session_token'):
+        auth_cfg.otp_session_token = opts['otp_session_token']
+    if opts.get('otp_race_concurrency') is not None:
+        auth_cfg.otp_race_concurrency = opts['otp_race_concurrency']
+    if opts.get('users_wordlist'):
+        auth_cfg.users_wordlist = opts['users_wordlist']
+    if opts.get('spray_password'):
+        auth_cfg.spray_password = opts['spray_password']
+    if opts.get('spray_batch_size') is not None:
+        auth_cfg.spray_batch_size = opts['spray_batch_size']
+    if opts.get('login_username_field'):
+        auth_cfg.login_username_field = opts['login_username_field']
+    if opts.get('login_password_field'):
+        auth_cfg.login_password_field = opts['login_password_field']
+    if opts.get('ip_rotation_burst') is not None:
+        auth_cfg.ip_rotation_burst = opts['ip_rotation_burst']
+    if opts.get('extra_ip_headers'):
+        auth_cfg.extra_ip_headers = list(opts['extra_ip_headers'])
+    if opts.get('timing_samples') is not None:
+        auth_cfg.timing_samples = opts['timing_samples']
+    if opts.get('timing_threshold') is not None:
+        auth_cfg.timing_threshold = opts['timing_threshold']
 
 
 # ---------------------------------------------------------------------------

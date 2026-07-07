@@ -110,6 +110,23 @@ class EndpointFuzzingConfig:
     # Per-marker wordlists in marker order (Requirement 39/43). ``None`` means no
     # marker mode is configured, preserving the wordlist/candidate_set paths.
     marker_wordlists: Optional[List[List[str]]] = None
+    # Rich SpecSchema loaded from --openapi / --postman sources. When not None,
+    # the EndpointFuzzer uses the declared per-route parameters, headers, and
+    # request body to send contextually correct requests (spec-aware mode).
+    # None (the default) preserves the existing brute-force behavior.
+    spec_schema: Optional["SpecSchema"] = None
+    # Spec-methods-only mode (--spec-methods-only). When True and a spec is
+    # supplied, each spec-seeded path is probed with ONLY the method(s) declared
+    # in the spec; the base ``methods`` set is suppressed for those paths.
+    # Paths that come from the wordlist (not from the spec) continue using the
+    # base ``methods`` set unchanged. False (the default) preserves the existing
+    # extend behavior where spec methods are added on top of the base set.
+    spec_methods_only: bool = False
+    # Live quarantine threshold: if the host returns N consecutive "interesting"
+    # (non-404) responses during scanning, discovery is halted early and the host
+    # is flagged as a wildcard. 0 disables the feature. Defaults to 10, matching
+    # the EndpointFuzzer.DEFAULT_QUARANTINE_THRESHOLD.
+    quarantine_threshold: Optional[int] = None  # None => use class default (10)
 
 
 @dataclass
@@ -333,6 +350,49 @@ class AuthTestingConfig:
     token_lifetime_threshold: int = 3600
     ecdsa_algorithms: List[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
     canary_value: Optional[str] = None
+    # -------------------------------------------------------------------
+    # OTP / MFA brute-force fields (Levels 2 & Expert).
+    # All default to None / 0 so existing configs load unchanged.
+    # -------------------------------------------------------------------
+    # URL of the OTP/MFA verification endpoint (e.g. /api/v1/auth/otp/verify).
+    # Required for OTP brute-force and OTP race-condition probes.
+    otp_endpoint: Optional[str] = None
+    # Number of digits in the OTP code (4 or 6 are the most common).
+    otp_digits: int = 6
+    # JSON field name carrying the OTP code in the verification request body.
+    otp_field: str = "otp"
+    # Session / provisional token field name sent alongside the OTP code.
+    otp_session_field: str = "session_token"
+    # Operator-supplied provisional/session token obtained before the OTP step.
+    otp_session_token: Optional[str] = None
+    # Number of parallel goroutines for the OTP race-condition probe.
+    otp_race_concurrency: int = 50
+    # -------------------------------------------------------------------
+    # Password-spraying fields (Level 3 Advanced).
+    # -------------------------------------------------------------------
+    # Path to a file containing one username / email per line.
+    users_wordlist: Optional[str] = None
+    # Single password to spray across all usernames.
+    spray_password: Optional[str] = None
+    # Maximum requests per spray batch before a pause (safety bound).
+    spray_batch_size: int = 50
+    # JSON field names for username and password in the login body.
+    login_username_field: str = "username"
+    login_password_field: str = "password"
+    # -------------------------------------------------------------------
+    # IP-rotation / header-injection fields (Level 3 Advanced).
+    # -------------------------------------------------------------------
+    # Number of requests per IP-rotation burst.
+    ip_rotation_burst: int = 15
+    # Extra override headers to test beyond the built-in list.
+    extra_ip_headers: List[str] = field(default_factory=list)
+    # -------------------------------------------------------------------
+    # Timing / Content-Length oracle fields (Expert level).
+    # -------------------------------------------------------------------
+    # Number of baseline samples per valid/invalid username for timing oracle.
+    timing_samples: int = 10
+    # Minimum timing difference (seconds) to classify as a timing leak.
+    timing_threshold: float = 0.05
 
 
 @dataclass
@@ -361,12 +421,46 @@ class ResourceTestingConfig:
 
 @dataclass
 class FunctionAuthConfig:
-    """Function level authorization testing configuration"""
+    """Function level authorization testing configuration (OWASP API5)."""
     enabled: bool = True
+    # Known administrative URL path prefixes to probe with low-privilege tokens.
     admin_endpoints: List[str] = field(default_factory=lambda: [
         "/admin", "/api/admin", "/management", "/dashboard"
     ])
+    # HTTP methods treated as privileged for verb-tampering probes.
     dangerous_methods: List[str] = field(default_factory=lambda: ["DELETE", "PUT", "PATCH"])
+    # -----------------------------------------------------------------------
+    # Multi-token / grey-box BFLA fields (Levels 1-4).
+    # -----------------------------------------------------------------------
+    # Safe_Mode: when True only read-only (GET/HEAD/OPTIONS) probes are issued.
+    safe_mode: bool = False
+    # Opt-in for state-changing (destructive) replay probes (PUT/POST/DELETE).
+    # When False only GET replays are issued against discovered admin endpoints.
+    allow_destructive: bool = False
+    # -----------------------------------------------------------------------
+    # Level 3 – Mass-assignment role injection.
+    # JSON field names and values tried as privilege-escalation payloads.
+    # -----------------------------------------------------------------------
+    role_fields: List[str] = field(default_factory=lambda: [
+        "role", "roles", "user_role", "userRole", "user_type", "userType",
+        "is_admin", "isAdmin", "admin", "privilege", "access_level",
+        "accessLevel", "permission", "permissions",
+    ])
+    role_values: List[str] = field(default_factory=lambda: [
+        "admin", "administrator", "ADMIN", "SUPER_ADMIN", "superadmin",
+        "root", "owner", "manager",
+    ])
+    # -----------------------------------------------------------------------
+    # Level 4 – API version downgrade.
+    # Version strings to try when downgrading discovered versioned endpoints.
+    # -----------------------------------------------------------------------
+    api_versions: List[str] = field(default_factory=lambda: [
+        "v1", "v2", "v3", "v4", "v0",
+    ])
+    # -----------------------------------------------------------------------
+    # Output – persist BFLA matrix to a JSON file for downstream analysis.
+    # -----------------------------------------------------------------------
+    bfla_output_file: Optional[str] = None
 
 
 @dataclass
@@ -1166,7 +1260,7 @@ class ConfigurationManager:
                 "127.0.0.1", "localhost", "169.254.169.254", "metadata.google.internal"
             ]),
             file_protocols=data.get('file_protocols', ["file://", "ftp://"]),
-            # New fields (Requirement 1.1–1.7)
+            # Safe mode and probe gating (Requirement 1.1–1.7)
             safe_mode=data.get('safe_mode', False),
             callback_url=data.get('callback_url', None),
             additional_internal_targets=data.get('additional_internal_targets', []),
@@ -1176,6 +1270,15 @@ class ConfigurationManager:
                 22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
             ]),
             bypass_encodings=data.get('bypass_encodings', True),
+            # Body injection fields (BUG-005 fix: these were silently ignored before)
+            body_injection=data.get('body_injection', False),
+            body_injection_methods=data.get('body_injection_methods', []),
+            burp_xml_path=data.get('burp_xml_path', None),
+            har_path=data.get('har_path', None),
+            extra_body_fields=data.get('extra_body_fields', []),
+            # Response filtering fields (BUG-005 fix)
+            require_signature=data.get('require_signature', False),
+            success_status_codes=data.get('success_status_codes', list(range(200, 300))),
         )
 
     def _build_auth_config(self, data: Dict[str, Any]) -> AuthConfig:

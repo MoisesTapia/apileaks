@@ -31,7 +31,7 @@ python apileaks.py scan --target https://api.example.com
 
 ### Command overview
 
-APILeak's CLI is organized into four families:
+APILeak's CLI is organized into six families:
 
 | Command | Purpose |
 |---------|---------|
@@ -40,14 +40,32 @@ APILeak's CLI is organized into four families:
 | `owasp <module>` | Run **one** OWASP API Security Top 10 module in isolation |
 | `scan` | Orchestrated scan — runs discovery + all (or selected) OWASP modules and aggregates findings |
 | `jwt <subcommand>` | Manual JWT attack & utility toolkit (13 subcommands) |
+| `replay <report>` | Re-issue requests from a prior scan report (optionally via Burp/Caido) |
+| `wordlist <list\|fetch\|cache>` | Manage Assetnote wordlists — browse, download, and cache |
 
 > **Deprecation:** the legacy `full` command (and the hidden `main`) still work but are deprecated aliases of `scan`. They emit a one-line notice to stderr and behave identically. Migrate scripts to `scan`. Selecting modules through `full --modules bola` is deprecated in favor of `apileaks owasp bola`.
 
 ### Basic Usage Examples
 
 ```bash
-# Directory fuzzing
+# Directory fuzzing — single target
 python apileaks.py dir --target https://api.example.com
+
+# Multi-target from file
+python apileaks.py dir --target-file hosts.txt --wordlist custom.txt
+
+# Spec-aware discovery: send per-route params/body from OpenAPI spec
+python apileaks.py dir --target https://api.example.com --openapi api.yaml
+
+# Spec-only methods: only probe paths with the method declared in spec
+python apileaks.py dir --target https://api.example.com --openapi api.yaml --spec-methods-only
+
+# Use Assetnote wordlists (auto-download on first use)
+python apileaks.py dir --target https://api.example.com \
+                       --wordlist assetnote:apiroutes-210328:20000
+
+# Wildcard quarantine: stop if host returns 10 consecutive hits
+python apileaks.py dir --target https://api.example.com --quarantine-threshold 10
 
 # Directory fuzzing with triage: filter by status class, save a session, export Markdown
 python apileaks.py dir --target https://api.example.com \
@@ -83,13 +101,18 @@ For comprehensive usage examples, see the [Usage Examples](docs/usage-examples.m
 
 - **🛡️ OWASP API Security Top 10 2023**: Complete coverage of all 10 categories
 - **🎯 Advanced Fuzzing**: Endpoint, parameter, and header fuzzing with intelligent discovery
+- **📋 Spec-Aware Discovery**: Send per-route query params, headers, and JSON body from OpenAPI/Postman specs; optionally restrict methods to spec-declared only (`--spec-methods-only`)
 - **🔍 Framework Detection**: Automatic identification of API frameworks (FastAPI, Express, Django, Flask, etc.)
 - **📊 Version Fuzzing**: Discovery and comparison of API versions (/v1, /v2, /api/v1, etc.)
 - **🌈 Colored HTTP Output**: Real-time colored status indicators for all HTTP requests
 - **🥷 WAF Evasion**: Multiple user agent strategies for bypassing Web Application Firewalls
+- **🔁 Request Replay**: Re-issue any request from a prior scan report, optionally through Burp/Caido (`apileaks replay`)
+- **📚 Assetnote Wordlists**: One-command download and cache of curated API route wordlists (`apileaks wordlist fetch apiroutes-210328`; use `assetnote:` prefix in `--wordlist`)
+- **🎯 Multi-Target Scanning**: Scan hundreds of hosts from a file in `dir`, `par`, and `scan` (`--target-file hosts.txt --max-hosts 50`)
+- **🚫 Wildcard Quarantine**: Automatically stop scanning hosts that accept every path (`--quarantine-threshold 10`)
 - **🔍 Property-Based Testing**: Comprehensive correctness validation using Hypothesis
 - **📊 Smart Analytics**: Automatic severity classification and OWASP categorization
-- **📈 Real-time Reporting**: Multi-format reports (XML, JSON, HTML, TXT)
+- **📈 Real-time Reporting**: Multi-format reports (XML, JSON, HTML, TXT, SARIF)
 - **⚡ High Performance**: Async HTTP client with adaptive rate limiting
 - **🐳 Container Ready**: Docker support for CI/CD integration
 - **🔧 Enterprise Grade**: Structured logging, configuration management, and monitoring

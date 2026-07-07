@@ -1,0 +1,312 @@
+# API specification / documentation file paths for brute-force discovery
+# Used by: apileaks dir --brute-spec
+# Covers: Swagger 2.x, OpenAPI 3.x, RAML, API Blueprint, AsyncAPI, Postman,
+#         Spring Boot Actuator, GraphQL introspection, and common doc frameworks.
+#
+# Sources: sj (BishopFox), ffuf, kiterunner, and manual research.
+
+# ─── Swagger / OpenAPI — root ────────────────────────────────────────────────
+swagger.json
+swagger.yaml
+swagger.yml
+openapi.json
+openapi.yaml
+openapi.yml
+api.json
+api.yaml
+api.yml
+api-docs
+api-docs.json
+api-docs.yaml
+api-docs.yml
+api_docs
+api_docs.json
+api_docs.yaml
+apidocs
+apidocs.json
+apidocs.yaml
+apidoc
+apidoc.json
+
+# ─── /swagger* paths ─────────────────────────────────────────────────────────
+swagger
+swagger/index.html
+swagger/ui
+swagger-ui
+swagger-ui.html
+swagger-ui/index.html
+swagger-ui/swagger.json
+swagger-resources
+swagger-resources/configuration/ui
+swagger-resources/configuration/security
+swaggerui
+swaggerui/index.html
+
+# ─── /v1, /v2, /v3 versioned ─────────────────────────────────────────────────
+v1/swagger.json
+v1/swagger.yaml
+v1/api-docs
+v1/api-docs.json
+v1/openapi.json
+v1/openapi.yaml
+v2/swagger.json
+v2/swagger.yaml
+v2/api-docs
+v2/api-docs.json
+v2/openapi.json
+v2/openapi.yaml
+v3/swagger.json
+v3/swagger.yaml
+v3/api-docs
+v3/openapi.json
+v3/openapi.yaml
+v4/swagger.json
+v4/api-docs.json
+
+# ─── /api/v1, /api/v2 … ──────────────────────────────────────────────────────
+api/v1/swagger.json
+api/v1/swagger.yaml
+api/v1/api-docs
+api/v1/api-docs.json
+api/v1/openapi.json
+api/v2/swagger.json
+api/v2/swagger.yaml
+api/v2/api-docs
+api/v2/api-docs.json
+api/v2/openapi.json
+api/v3/openapi.json
+api/swagger.json
+api/swagger.yaml
+api/openapi.json
+api/openapi.yaml
+api/api-docs
+api/api-docs.json
+api/apidocs
+api/apidocs.json
+api/spec
+api/spec.json
+api/spec.yaml
+api/schema
+api/schema.json
+api/definition
+api/definition.json
+api/docs
+api/docs.json
+api/documentation
+api/documentation.json
+api/swagger-ui.html
+api/swagger-ui
+api/swagger
+api/reference
+
+# ─── Spring Boot Actuator ─────────────────────────────────────────────────────
+actuator
+actuator/swagger-ui
+actuator/swagger-ui.html
+actuator/api-docs
+actuator/api-docs.json
+actuator/openapi
+actuator/openapi.json
+actuator/openapi.yaml
+v3/api-docs
+v3/api-docs.json
+v3/api-docs.yaml
+v3/api-docs/swagger-config
+v3/api-docs/openapi
+v2/api-docs
+v2/api-docs.json
+v2/api-docs.yaml
+
+# ─── /docs ────────────────────────────────────────────────────────────────────
+docs
+docs/index.html
+docs/swagger.json
+docs/swagger.yaml
+docs/openapi.json
+docs/openapi.yaml
+docs/api.json
+docs/api.yaml
+docs/api-docs.json
+docs/apidocs
+docs/apidocs.json
+documentation
+documentation/swagger.json
+documentation/openapi.json
+
+# ─── /spec ───────────────────────────────────────────────────────────────────
+spec
+spec.json
+spec.yaml
+spec.yml
+schema
+schema.json
+schema.yaml
+schema.yml
+definition
+definition.json
+definition.yaml
+
+# ─── /rest ───────────────────────────────────────────────────────────────────
+rest/swagger.json
+rest/swagger.yaml
+rest/api-docs
+rest/api-docs.json
+rest/openapi.json
+rest/v1/api-docs
+rest/v2/api-docs
+
+# ─── /internal ───────────────────────────────────────────────────────────────
+internal/swagger.json
+internal/openapi.json
+internal/api-docs
+internal/api-docs.json
+internal/v1/swagger.json
+internal/v2/swagger.json
+
+# ─── /backend, /service ──────────────────────────────────────────────────────
+backend/swagger.json
+backend/api-docs
+backend/openapi.json
+service/swagger.json
+service/api-docs
+service/openapi.json
+
+# ─── /app, /application ──────────────────────────────────────────────────────
+app/swagger.json
+app/api-docs
+app/openapi.json
+app/v1/swagger.json
+app/v2/swagger.json
+application/swagger.json
+application/api-docs
+
+# ─── /dev, /staging, /sandbox, /test ─────────────────────────────────────────
+dev/swagger.json
+dev/api-docs
+dev/openapi.json
+staging/swagger.json
+staging/api-docs
+staging/openapi.json
+sandbox/swagger.json
+sandbox/api-docs
+sandbox/openapi.json
+test/swagger.json
+test/api-docs
+test/openapi.json
+
+# ─── /help, /reference, /explorer ───────────────────────────────────────────
+help/swagger.json
+help/openapi.json
+reference
+reference/swagger.json
+reference/openapi.json
+explorer
+explorer/swagger.json
+
+# ─── Microsoft / Azure ───────────────────────────────────────────────────────
+.well-known/openapi.json
+.well-known/swagger.json
+.well-known/api-docs
+
+# ─── Redoc ───────────────────────────────────────────────────────────────────
+redoc
+redoc.html
+redoc/index.html
+redocly
+api-reference
+
+# ─── Stoplight / Spotlight ───────────────────────────────────────────────────
+openapi
+openapi/index.json
+openapi/v1.json
+openapi/v2.json
+openapi/v3.json
+openapi/latest.json
+
+# ─── HAL / JSON:API / Hydra ──────────────────────────────────────────────────
+api/contexts/entrypoint.jsonld
+api/contexts/docs.jsonld
+api/hydra
+
+# ─── RAML ────────────────────────────────────────────────────────────────────
+api.raml
+v1/api.raml
+v2/api.raml
+api/api.raml
+
+# ─── API Blueprint ───────────────────────────────────────────────────────────
+api.apib
+apiary.apib
+blueprint.apib
+
+# ─── AsyncAPI (event-driven) ─────────────────────────────────────────────────
+asyncapi.json
+asyncapi.yaml
+asyncapi.yml
+async-api.json
+async-api.yaml
+
+# ─── GraphQL introspection endpoints ─────────────────────────────────────────
+graphql
+graphql/schema
+graphiql
+playground
+graphql/console
+
+# ─── Postman / Insomnia / Bruno ──────────────────────────────────────────────
+postman_collection.json
+collection.json
+insomnia.json
+insomnia.yaml
+
+# ─── Platform-specific ───────────────────────────────────────────────────────
+# Django REST Framework
+api/?format=json
+api/schema/
+api/schema/?format=openapi
+
+# FastAPI
+openapi.json
+docs
+redoc
+
+# Ruby on Rails / Grape
+api/swagger_doc
+api/swagger_doc.json
+swagger_doc
+swagger_doc.json
+
+# Apigee / AWS API Gateway
+/apiproxy
+/apiproxy/swagger.json
+
+# IBM API Connect
+api/explorer
+api/explorer/swagger.json
+
+# Salesforce
+services/data
+services/apexrest
+
+# ─── Miscellaneous legacy / common ───────────────────────────────────────────
+swagger2.json
+swagger3.json
+oas2.json
+oas3.json
+oas.json
+oas.yaml
+openapi2.json
+openapi3.json
+api-spec.json
+api-spec.yaml
+apispec.json
+apispec.yaml
+api_specification.json
+api-specification.json
+web-api.json
+webapp.json
+json-api.json
+resources.json
+endpoints.json
+routes.json
+mapping.json

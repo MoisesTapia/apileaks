@@ -1464,6 +1464,10 @@ class SSRFTestingModule(OWASPModule):
                     if deduped is not None:
                         findings.append(deduped)
 
+                # BUG-008/010 fix: scheme_probes must be nested inside
+                # `for field_name in body_fields` — not at the same level.
+                # Previously this loop was outside field_name's scope and only
+                # used the last value of field_name from the internal_probes pass.
                 for probe in scheme_probes:
                     body = dict(imported_req.body)
                     body[field_name] = probe.payload
