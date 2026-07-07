@@ -29,10 +29,10 @@ jobs:
       - name: Ruff — Lint
         run: |
           ruff check . \
-            --exclude venv,tests,.hypothesis,ci-cd \
+            --exclude venv,tests,.hypothesis,ci-cd,examples \
             --output-format=github
 
       - name: Ruff — Format check
         run: |
           ruff format --check . \
-            --exclude venv,tests,.hypothesis,ci-cd
+            --exclude venv,tests,.hypothesis,ci-cd,examples

@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -59,7 +59,7 @@ class AuthType(str, Enum):
 class TargetConfig:
     """Target configuration"""
     base_url: str
-    api_version: Optional[str] = None
+    api_version: str | None = None
     default_method: str = "GET"
     timeout: int = 10
     verify_ssl: bool = True
@@ -94,7 +94,7 @@ class EndpointFuzzingConfig:
     # single ``wordlist`` file (Requirement 25.3/25.4). An empty list means no
     # candidates are available and discovery issues no Discovery_Request
     # (Requirement 25.7). None preserves the backward-compatible single-file path.
-    candidate_set: Optional[list[str]] = None
+    candidate_set: list[str] | None = None
     # Per-candidate HTTP methods contributed by Spec_Import seeds, keyed by the
     # normalized candidate path. These extend the per-path method set for spec
     # seeds; brute-force entries keep ``methods`` (Requirement 25.3).
@@ -108,12 +108,12 @@ class EndpointFuzzingConfig:
     fuzz_mode: str = "clusterbomb"
     # Per-marker wordlists in marker order (Requirement 39/43). ``None`` means no
     # marker mode is configured, preserving the wordlist/candidate_set paths.
-    marker_wordlists: Optional[list[list[str]]] = None
+    marker_wordlists: list[list[str]] | None = None
     # Rich SpecSchema loaded from --openapi / --postman sources. When not None,
     # the EndpointFuzzer uses the declared per-route parameters, headers, and
     # request body to send contextually correct requests (spec-aware mode).
     # None (the default) preserves the existing brute-force behavior.
-    spec_schema: Optional["SpecSchema"] = None
+    spec_schema: "SpecSchema | None" = None
     # Spec-methods-only mode (--spec-methods-only). When True and a spec is
     # supplied, each spec-seeded path is probed with ONLY the method(s) declared
     # in the spec; the base ``methods`` set is suppressed for those paths.
@@ -125,7 +125,7 @@ class EndpointFuzzingConfig:
     # (non-404) responses during scanning, discovery is halted early and the host
     # is flagged as a wildcard. 0 disables the feature. Defaults to 10, matching
     # the EndpointFuzzer.DEFAULT_QUARANTINE_THRESHOLD.
-    quarantine_threshold: Optional[int] = None  # None => use class default (10)
+    quarantine_threshold: int | None = None  # None => use class default (10)
 
 
 @dataclass
@@ -144,17 +144,17 @@ class ParameterFuzzingConfig:
     # disabled and candidates are reported immediately; >=1 => the candidate is
     # re-tested N additional times (default 2 when enabled) and only reported if
     # every retest reproduces the signal.
-    confirm_hits: Optional[int] = None
+    confirm_hits: int | None = None
     # Request_Budget upper bound (Requirement 11.1/11.5). None => unbounded; when
     # set, the total number of HTTP requests issued by the run must never exceed
     # this value.
-    max_requests: Optional[int] = None
+    max_requests: int | None = None
     # In-memory merged/deduped query candidate set (Requirement 10.1/10.2). When
     # not None, it overrides the ``query_wordlist`` file for query fuzzing.
-    query_candidates: Optional[list[str]] = None
+    query_candidates: list[str] | None = None
     # In-memory merged/deduped body candidate set (Requirement 10.1/10.2). When
     # not None, it overrides the ``body_wordlist`` file for body fuzzing.
-    body_candidates: Optional[list[str]] = None
+    body_candidates: list[str] | None = None
     # Marker_Mode fields (identical shape to EndpointFuzzingConfig, Requirements
     # 1.1, 5.1, 7.1). All three are optional/defaulted so existing construction
     # calls are unaffected. ``marker_wordlists is None`` is the
@@ -162,7 +162,7 @@ class ParameterFuzzingConfig:
     # path untouched (R2.1).
     fuzz_keyword: str = "FUZZ"
     fuzz_mode: str = "clusterbomb"
-    marker_wordlists: Optional[list[list[str]]] = None
+    marker_wordlists: list[list[str]] | None = None
 
 
 @dataclass
@@ -172,7 +172,7 @@ class HeaderFuzzingConfig:
     wordlist: str = "wordlists/headers.txt"
     custom_headers: dict[str, str] = field(default_factory=dict)
     random_user_agent: bool = False
-    user_agent_list: Optional[list[str]] = None
+    user_agent_list: list[str] | None = None
     user_agent_rotation: bool = False
 
 
@@ -200,7 +200,7 @@ class FuzzingConfig:
     recursive: bool = True
     max_depth: int = 3
     response_filter: list[int] = field(default_factory=list)
-    max_requests: Optional[int] = None  # Request_Budget; None = unbounded
+    max_requests: int | None = None  # Request_Budget; None = unbounded
     concurrency: int = 50  # Concurrency_Limit; matches the prior hardcoded batch size
     # Retry_Limit (Requirement 28). The number of automatic retries for a single
     # failed Discovery_Request. RetryConfig counts total attempts, so the engine
@@ -214,14 +214,14 @@ class FuzzingConfig:
     #   path_scope: Path_Scope include/exclude regex selection (33.1-33.4).
     #   storage_status: Storage_Status_Selection include/exclude status selection
     #     applied at storage time (33.5, 33.6).
-    path_scope: "Optional[PathScope]" = None
-    storage_status: "Optional[StorageStatusSelection]" = None
+    path_scope: "PathScope | None" = None
+    storage_status: "StorageStatusSelection | None" = None
     # Recursion_Scope selection (Requirement 34). Optional runtime selection
     # object compiled from CLI flags (--recursion-status/--recursion-type) that
     # only ever narrows recursion eligibility, never relaxes it (34.3, 34.4).
     # Defaults to None so the key always exists on the config object and recursion
     # uses its default eligibility when no scope is supplied.
-    recursion_scope: "Optional[RecursionScope]" = None
+    recursion_scope: "RecursionScope | None" = None
     # Hit_Confirmation selection (Requirement 35). Off by default so discovery
     # keeps its existing single-request behavior (35.1); when enabled, interesting
     # candidates are re-requested ``count`` times and only recorded when the
@@ -248,8 +248,8 @@ class FuzzingConfig:
     # when no machine output is requested (and for dir/scan/full, which never
     # thread them here), no file is written and behavior is unchanged
     # (Requirement 2 preservation).
-    output_format: Optional[str] = None
-    output_file: Optional[str] = None
+    output_format: str | None = None
+    output_file: str | None = None
 
 
 @dataclass
@@ -296,14 +296,14 @@ class AuthTestingConfig:
     # Operator-supplied public key material used for the JWT algorithm-confusion
     # attack (Requirement 6.1). When provided, it is preferred over fetching a
     # JWKS. Defaults to None so no placeholder key is ever used.
-    public_key_material: Optional[str] = None
+    public_key_material: str | None = None
     # JWKS endpoint URL used to fetch RSA public key material for algorithm
     # confusion when no key material is supplied directly (Requirement 6.2).
-    jwks_url: Optional[str] = None
+    jwks_url: str | None = None
     # Known signing secret used to construct a validly-signed-but-expired token
     # for expiration testing (Requirement 8.1). Defaults to None so the test is
     # skipped (and logged) when no signing key is known.
-    signing_secret: Optional[str] = None
+    signing_secret: str | None = None
     # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
     # the global safe_mode setting (subtask 4.2). Defaults to False.
     safe_mode: bool = False
@@ -331,11 +331,11 @@ class AuthTestingConfig:
     allow_destructive: bool = False
     rate_limit_attempts: int = 10
     revocation_race_requests: int = 8
-    benign_username: Optional[str] = None
-    mfa_flow_inputs: Optional[dict] = None
-    oauth_flow_inputs: Optional[dict] = None
-    reset_token_samples: Optional[list[str]] = None
-    reset_token_known_inputs: Optional[list[str]] = None
+    benign_username: str | None = None
+    mfa_flow_inputs: dict | None = None
+    oauth_flow_inputs: dict | None = None
+    reset_token_samples: list[str] | None = None
+    reset_token_known_inputs: list[str] | None = None
     # JWT-complement hardening options (Requirements 59.1, 62.1, 67.3, 26.3).
     # All defaults preserve existing behavior so YAML configs that omit these
     # fields load unchanged and resolve to these safe, opt-in defaults.
@@ -348,14 +348,14 @@ class AuthTestingConfig:
     #     probes; None means no canary-based probe runs (Requirement 67.3, 26.3).
     token_lifetime_threshold: int = 3600
     ecdsa_algorithms: list[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
-    canary_value: Optional[str] = None
+    canary_value: str | None = None
     # -------------------------------------------------------------------
     # OTP / MFA brute-force fields (Levels 2 & Expert).
     # All default to None / 0 so existing configs load unchanged.
     # -------------------------------------------------------------------
     # URL of the OTP/MFA verification endpoint (e.g. /api/v1/auth/otp/verify).
     # Required for OTP brute-force and OTP race-condition probes.
-    otp_endpoint: Optional[str] = None
+    otp_endpoint: str | None = None
     # Number of digits in the OTP code (4 or 6 are the most common).
     otp_digits: int = 6
     # JSON field name carrying the OTP code in the verification request body.
@@ -363,16 +363,16 @@ class AuthTestingConfig:
     # Session / provisional token field name sent alongside the OTP code.
     otp_session_field: str = "session_token"
     # Operator-supplied provisional/session token obtained before the OTP step.
-    otp_session_token: Optional[str] = None
+    otp_session_token: str | None = None
     # Number of parallel goroutines for the OTP race-condition probe.
     otp_race_concurrency: int = 50
     # -------------------------------------------------------------------
     # Password-spraying fields (Level 3 Advanced).
     # -------------------------------------------------------------------
     # Path to a file containing one username / email per line.
-    users_wordlist: Optional[str] = None
+    users_wordlist: str | None = None
     # Single password to spray across all usernames.
-    spray_password: Optional[str] = None
+    spray_password: str | None = None
     # Maximum requests per spray batch before a pause (safety bound).
     spray_batch_size: int = 50
     # JSON field names for username and password in the login body.
@@ -459,7 +459,7 @@ class FunctionAuthConfig:
     # -----------------------------------------------------------------------
     # Output – persist BFLA matrix to a JSON file for downstream analysis.
     # -----------------------------------------------------------------------
-    bfla_output_file: Optional[str] = None
+    bfla_output_file: str | None = None
 
 
 @dataclass
@@ -475,7 +475,7 @@ class SSRFConfig:
     # Authoritative safe-mode flag — replaces getattr fallbacks (Req 1.1, 10.6).
     safe_mode: bool = False
     # OOB callback listener URL for blind SSRF detection (Req 1.2).
-    callback_url: Optional[str] = None
+    callback_url: str | None = None
     # Extra internal hosts/IPs to probe in addition to internal_targets (Req 1.3).
     additional_internal_targets: list[str] = field(default_factory=list)
     # Extra URL schemes to test in addition to file_protocols (Req 1.4).
@@ -500,9 +500,9 @@ class SSRFConfig:
     body_injection_methods: list[str] = field(default_factory=list)
     # --- Import source fields (--burp-xml / --har / --ssrf-body-field) ----
     # Path to a Burp Suite XML Proxy-History export file.
-    burp_xml_path: Optional[str] = None
+    burp_xml_path: str | None = None
     # Path to a HAR (HTTP Archive) JSON file.
-    har_path: Optional[str] = None
+    har_path: str | None = None
     # Explicit body field names to always probe (merged with auto-detection).
     extra_body_fields: list[str] = field(default_factory=list)
     # --- Response filtering -----------------------------------------------
@@ -574,7 +574,7 @@ class OWASPConfig:
     # existing configuration files load unchanged (Requirement 49.3). The CLI
     # attaches the merged schema post-load so the OWASP modules can test the
     # declared Spec_Operations in addition to discovered endpoints.
-    spec_schema: Optional["SpecSchema"] = None
+    spec_schema: "SpecSchema | None" = None
 
 
 @dataclass
@@ -829,19 +829,19 @@ class AuthContext:
     name: str
     type: AuthType
     token: str
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     privilege_level: int = 1
-    actor_profile: Optional["ActorProfile"] = None
-    unauthorized_patterns: Optional[list["re.Pattern"]] = None
+    actor_profile: "ActorProfile | None" = None
+    unauthorized_patterns: list["re.Pattern"] | None = None
 
 
 @dataclass
 class AuthConfig:
     """Authentication configuration"""
     contexts: list[AuthContext] = field(default_factory=list)
-    default_context: Optional[str] = None
+    default_context: str | None = None
 
 
 @dataclass
@@ -859,7 +859,7 @@ class ReportConfig:
     """Report generation configuration"""
     formats: list[str] = field(default_factory=lambda: ["json", "html", "txt"])
     output_dir: str = "reports"
-    output_filename: Optional[str] = None
+    output_filename: str | None = None
     include_screenshots: bool = False
     template_dir: str = "templates"
 
@@ -944,7 +944,7 @@ class CICDIntegrationConfig:
 @dataclass
 class HTTPOutputConfig:
     """HTTP output configuration"""
-    status_code_filter: Optional[list[int]] = None
+    status_code_filter: list[int] | None = None
 
 
 @dataclass
@@ -977,7 +977,7 @@ class APILeakConfig:
     ci_cd_integration: CICDIntegrationConfig = field(default_factory=CICDIntegrationConfig)
     secret_scan: SecretScanConfig = field(default_factory=SecretScanConfig)
     safe_mode: bool = False
-    proxy: Optional[str] = None
+    proxy: str | None = None
     proxy_verify_ssl: bool = False
     # Transport/TLS options for discovery (Requirement 29). These are threaded
     # into the discovery HTTPRequestEngine construction.
@@ -987,9 +987,9 @@ class APILeakConfig:
     #     overrides the boolean verify only when supplied (29.2).
     #   resolve: a (host, ip) DNS override applied to every Discovery_Request
     #     for the named host (29.4).
-    client_cert: Optional[str | tuple[str, str]] = None
-    ca_bundle: Optional[str] = None
-    resolve: Optional[tuple[str, str]] = None
+    client_cert: str | tuple[str, str] | None = None
+    ca_bundle: str | None = None
+    resolve: tuple[str, str] | None = None
 
 
 class ConfigurationManager:
@@ -998,7 +998,7 @@ class ConfigurationManager:
     """
 
     def __init__(self):
-        self.config: Optional[APILeakConfig] = None
+        self.config: APILeakConfig | None = None
         self.logger = get_logger(__name__)
 
     def load_config_from_dict(self, config_data: dict[str, Any]) -> APILeakConfig:

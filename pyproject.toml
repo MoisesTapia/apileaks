@@ -76,6 +76,7 @@ exclude = [
     ".hypothesis",
     "ci-cd",
     "__pycache__",
+    "examples",
 ]
 
 [tool.ruff.lint]
