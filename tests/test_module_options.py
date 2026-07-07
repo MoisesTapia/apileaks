@@ -63,6 +63,22 @@ EXPECTED_AUTH_OPTIONS = [
     # Repeatable options: Click reports default () for multiple flags.
     ("reset_token_sample", "--reset-token-sample", False, True, ()),
     ("reset_token_known_input", "--reset-token-known-input", False, True, ()),
+    # Advanced / Expert attack options (Level 2, 3 & Expert).
+    ("otp_endpoint", "--otp-endpoint", False, False, None),
+    ("otp_digits", "--otp-digits", False, False, None),
+    ("otp_field", "--otp-field", False, False, None),
+    ("otp_session_field", "--otp-session-field", False, False, None),
+    ("otp_session_token", "--otp-session-token", False, False, None),
+    ("otp_race_concurrency", "--otp-race-concurrency", False, False, None),
+    ("users_wordlist", "--users-wordlist", False, False, None),
+    ("spray_password", "--spray-password", False, False, None),
+    ("spray_batch_size", "--spray-batch-size", False, False, None),
+    ("login_username_field", "--login-username-field", False, False, None),
+    ("login_password_field", "--login-password-field", False, False, None),
+    ("ip_rotation_burst", "--ip-rotation-burst", False, False, None),
+    ("extra_ip_headers", "--extra-ip-headers", False, True, ()),
+    ("timing_samples", "--timing-samples", False, False, None),
+    ("timing_threshold", "--timing-threshold", False, False, None),
 ]
 
 # Options that Click parses as integers (``type=int``).

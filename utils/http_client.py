@@ -745,26 +745,29 @@ class HTTPRequestEngine:
     def _apply_authentication(self, request: Request, auth_context: AuthContext) -> None:
         """Apply authentication to request based on auth context"""
         if auth_context.type == AuthType.BEARER:
-            request.headers['Authorization'] = f'Bearer {auth_context.token}'
-        
+            # Skip header when token is empty — avoids "Illegal header value b'Bearer '"
+            if auth_context.token:
+                request.headers['Authorization'] = f'Bearer {auth_context.token}'
+
         elif auth_context.type == AuthType.BASIC:
             if auth_context.username and auth_context.password:
                 import base64
                 credentials = f"{auth_context.username}:{auth_context.password}"
                 encoded = base64.b64encode(credentials.encode()).decode()
                 request.headers['Authorization'] = f'Basic {encoded}'
-        
+
         elif auth_context.type == AuthType.API_KEY:
             # API key can be in header or query param
             if 'X-API-Key' not in request.headers:
                 request.headers['X-API-Key'] = auth_context.token
-        
+
         elif auth_context.type == AuthType.JWT:
-            request.headers['Authorization'] = f'Bearer {auth_context.token}'
-        
+            if auth_context.token:
+                request.headers['Authorization'] = f'Bearer {auth_context.token}'
+
         # Add any additional headers from auth context
         request.headers.update(auth_context.headers)
-        
+
         self.logger.debug("Authentication applied",
                          auth_type=auth_context.type.value,
                          auth_name=auth_context.name)

@@ -39,6 +39,8 @@ from cli.shared_options import (
 # ``TRANSVERSAL_OPTIONS`` (Click derives ``recursive`` from ``--recursive/--no-recursive``).
 EXPECTED_PARAM_NAMES = [
     "target",
+    "target_file",
+    "max_hosts",
     "output",
     "log_level",
     "log_file",

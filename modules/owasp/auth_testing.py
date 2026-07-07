@@ -282,6 +282,15 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
                               findings=len(assertion_findings))
 
+            # Step 6: Advanced auth attack probes (Levels 2, 3 & Expert).
+            # Gated by allow_aggressive + Safe_Mode; no-op when either gate is
+            # closed. Runs OTP brute-force, OTP race, IP-header bypass, password
+            # spraying, and timing/Content-Length oracle probes.
+            advanced_findings = await self._run_advanced_auth_probes(endpoints)
+            findings.extend(advanced_findings)
+            self.logger.debug("Advanced auth probes completed",
+                              findings=len(advanced_findings))
+
         except Exception as e:
             self.logger.error("Authentication testing failed during execution", error=str(e))
             raise
@@ -2795,5 +2804,915 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         state_finding = self._check_missing_state(inputs)
         if state_finding is not None:
             findings.append(state_finding)
+
+        return findings
+
+    # ==================================================================
+    # NIVEL 2 – OTP / MFA Brute-Force (Flujo Secuencial)
+    # Detecta ausencia de rate limiting o lockout en endpoints OTP.
+    # Requiere: allow_aggressive + otp_endpoint + otp_session_token
+    # Finding: AUTH_OTP_NO_RATE_LIMITING (HIGH), AUTH_OTP_BRUTEFORCE_SUCCESS (CRITICAL)
+    # ==================================================================
+
+    def _generate_otp_codes(self, digits: int) -> List[str]:
+        """Generate all possible OTP codes for ``digits``-digit space (0…10^digits-1)."""
+        total = 10 ** digits
+        return [str(i).zfill(digits) for i in range(total)]
+
+    async def _test_otp_brute_force(self) -> List[Finding]:
+        """Sequential OTP / MFA brute-force probe (Level 2, CWE-307).
+
+        Iterates through the full OTP code space for the configured digit count
+        (default: 6 digits = 1,000,000 combinations; typically a 4-digit OTP is
+        probed: 10,000 combinations). The probe stops on the FIRST throttling
+        signal (429 / 403-lockout) or on discovering a successful OTP. A bounded
+        maximum of ``rate_limit_attempts`` (default 10) is used when the full
+        space is larger than that bound, so the probe stays safe even against a
+        real OTP space.
+
+        Gated by ``_aggressive_allowed()`` (opt-in AND Safe_Mode off). Requires
+        ``config.otp_endpoint`` and ``config.otp_session_token``; skipped when
+        either is absent.
+
+        Findings emitted:
+        - ``AUTH_OTP_NO_RATE_LIMITING`` (HIGH): no throttling observed after the
+          configured number of attempts.
+        - ``AUTH_OTP_BRUTEFORCE_SUCCESS`` (CRITICAL): a specific OTP code was
+          accepted (server returned 2xx).
+        """
+        findings: List[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info("Skipping OTP brute-force probe",
+                             reason="opt-in absent or safe mode")
+            return findings
+
+        otp_endpoint = getattr(self.config, "otp_endpoint", None)
+        session_token = getattr(self.config, "otp_session_token", None)
+        if not otp_endpoint:
+            self.logger.info("OTP brute-force probe skipped; no otp_endpoint configured")
+            return findings
+        if not session_token:
+            self.logger.info("OTP brute-force probe skipped; no otp_session_token configured")
+            return findings
+
+        digits = max(4, int(getattr(self.config, "otp_digits", 6)))
+        otp_field = getattr(self.config, "otp_field", "otp")
+        session_field = getattr(self.config, "otp_session_field", "session_token")
+        max_attempts = max(1, int(getattr(self.config, "rate_limit_attempts", 10)))
+
+        codes = self._generate_otp_codes(digits)
+        probe_codes = codes[:max_attempts]
+
+        self.logger.info("Starting OTP brute-force probe",
+                         endpoint=otp_endpoint,
+                         digits=digits,
+                         max_attempts=len(probe_codes))
+
+        responses: List[Response] = []
+        successful_code: Optional[str] = None
+
+        for code in probe_codes:
+            try:
+                resp = await self.http_client.request(
+                    "POST", otp_endpoint,
+                    json={otp_field: code, session_field: session_token},
+                    headers={"Content-Type": "application/json"},
+                )
+            except Exception as e:
+                self.logger.debug("OTP probe request failed", code=code, error=str(e))
+                continue
+
+            responses.append(resp)
+
+            if resp.is_success:
+                successful_code = code
+                break
+
+            classification = self._classify_throttling(responses)
+            signals = classification["evidence"]["signals"]
+            if signals["http_429"] or signals["account_lockout"]:
+                self.logger.info("OTP endpoint throttled; stopping probe",
+                                 code=code, status=resp.status_code)
+                break
+
+        if not responses:
+            return findings
+
+        if successful_code is not None:
+            last = responses[-1]
+            findings.append(Finding(
+                id=str(uuid.uuid4()),
+                scan_id='',
+                category='AUTH_OTP_BRUTEFORCE_SUCCESS',
+                owasp_category='API2',
+                severity=Severity.CRITICAL,
+                endpoint=otp_endpoint,
+                method='POST',
+                status_code=last.status_code,
+                response_size=len(last.content),
+                response_time=last.elapsed,
+                evidence=(
+                    f"OTP code '{successful_code}' was accepted by the endpoint "
+                    f"after sequential enumeration. No lockout or rate limiting was "
+                    f"triggered after {len(responses)} attempt(s). The "
+                    f"{digits}-digit OTP space ({10**digits:,} combinations) is "
+                    f"trivially exhausted without protection."
+                ),
+                recommendation=(
+                    "Destroy the OTP code after 3 failed attempts and invalidate "
+                    "the session. Enforce a hard rate limit (e.g. 3 req/min) on the "
+                    "OTP verification endpoint independently of the main login endpoint."
+                ),
+                payload=f"{otp_field}={successful_code}",
+            ))
+            self.logger.warning("OTP brute-force successful",
+                                endpoint=otp_endpoint, code=successful_code)
+            return findings
+
+        classification = self._classify_throttling(responses)
+        if not classification["throttled"]:
+            last = responses[-1]
+            status_codes = classification["evidence"]["status_codes"]
+            findings.append(Finding(
+                id=str(uuid.uuid4()),
+                scan_id='',
+                category='AUTH_OTP_NO_RATE_LIMITING',
+                owasp_category='API2',
+                severity=Severity.HIGH,
+                endpoint=otp_endpoint,
+                method='POST',
+                status_code=last.status_code,
+                response_size=len(last.content),
+                response_time=last.elapsed,
+                evidence=(
+                    f"The OTP verification endpoint did not throttle or lock the "
+                    f"session after {len(responses)} sequential attempt(s). "
+                    f"Observed status codes: {status_codes}. A {digits}-digit OTP "
+                    f"space ({10**digits:,} combinations) can be exhausted before "
+                    f"a typical OTP expiry window."
+                ),
+                recommendation=(
+                    "Apply strict rate limiting (≤3 attempts) AND session invalidation "
+                    "on the OTP endpoint. Do NOT rely solely on rate limiting the main "
+                    "login endpoint."
+                ),
+            ))
+            self.logger.warning("OTP endpoint lacks rate limiting",
+                                endpoint=otp_endpoint, attempts=len(responses))
+
+        return findings
+
+    # ==================================================================
+    # NIVEL EXPERTO – OTP Race Condition (Bypass por concurrencia)
+    # Envía N peticiones OTP idénticas en paralelo para ganarle al
+    # contador atómico de la base de datos antes de que registre el
+    # primer intento fallido.
+    # Gated por _aggressive_allowed(). Requiere otp_endpoint + otp_session_token.
+    # Finding: AUTH_OTP_RACE_CONDITION (CRITICAL)
+    # ==================================================================
+
+    async def _test_otp_race_condition(self) -> List[Finding]:
+        """OTP race-condition probe (Expert Level, CWE-307 + race hazard).
+
+        Sends ``otp_race_concurrency`` (default 50) identical OTP requests for
+        a single fixed code at EXACTLY the same moment via ``asyncio.gather``.
+        If the server processes them before the first write increments the
+        failed-attempt counter, multiple requests pass the limit check and a
+        subset are accepted.
+
+        A single accepted response proves that the counter check is non-atomic
+        (TOCTOU). An ``AUTH_OTP_RACE_CONDITION`` (CRITICAL) finding is emitted.
+        """
+        findings: List[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info("Skipping OTP race-condition probe",
+                             reason="opt-in absent or safe mode")
+            return findings
+
+        otp_endpoint = getattr(self.config, "otp_endpoint", None)
+        session_token = getattr(self.config, "otp_session_token", None)
+        if not otp_endpoint or not session_token:
+            self.logger.info("OTP race-condition probe skipped; missing otp_endpoint or token")
+            return findings
+
+        digits = max(4, int(getattr(self.config, "otp_digits", 6)))
+        otp_field = getattr(self.config, "otp_field", "otp")
+        session_field = getattr(self.config, "otp_session_field", "session_token")
+        concurrency = max(2, int(getattr(self.config, "otp_race_concurrency", 50)))
+
+        # Use a fixed candidate code (e.g. "000000"). The goal is not to guess
+        # the right code but to confirm whether the counter is atomic.
+        probe_code = "0" * digits
+
+        self.logger.info("Starting OTP race-condition probe",
+                         endpoint=otp_endpoint,
+                         concurrency=concurrency,
+                         probe_code=probe_code)
+
+        async def _send_one() -> Response:
+            return await self.http_client.request(
+                "POST", otp_endpoint,
+                json={otp_field: probe_code, session_field: session_token},
+                headers={"Content-Type": "application/json"},
+            )
+
+        try:
+            race_responses = await asyncio.gather(
+                *[_send_one() for _ in range(concurrency)],
+                return_exceptions=True,
+            )
+        except Exception as e:
+            self.logger.error("OTP race-condition gather failed", error=str(e))
+            return findings
+
+        valid_responses = [r for r in race_responses if isinstance(r, Response)]
+        accepted = [r for r in valid_responses if r.is_success]
+        status_codes = [r.status_code for r in valid_responses]
+
+        if not accepted:
+            self.logger.info("OTP race-condition probe: no accepted responses",
+                             concurrency=concurrency, status_codes=status_codes)
+            return findings
+
+        first_accepted = accepted[0]
+        findings.append(Finding(
+            id=str(uuid.uuid4()),
+            scan_id='',
+            category='AUTH_OTP_RACE_CONDITION',
+            owasp_category='API2',
+            severity=Severity.CRITICAL,
+            endpoint=otp_endpoint,
+            method='POST',
+            status_code=first_accepted.status_code,
+            response_size=len(first_accepted.content),
+            response_time=first_accepted.elapsed,
+            evidence=(
+                f"OTP race condition confirmed: {len(accepted)} of {len(valid_responses)} "
+                f"concurrent requests for OTP code '{probe_code}' were accepted (HTTP "
+                f"{first_accepted.status_code}). The attempt counter is non-atomic "
+                f"(TOCTOU): multiple threads read 'counter=0' before any write "
+                f"committed. All {concurrency} requests were dispatched simultaneously "
+                f"via asyncio.gather. Status codes observed: {status_codes}."
+            ),
+            recommendation=(
+                "Use a database-level atomic increment (e.g. UPDATE … SET attempts = "
+                "attempts + 1 WHERE attempts < 3 RETURNING id) or a distributed lock "
+                "(Redis INCR + TTL) so concurrent requests see the same counter state. "
+                "Do not use read-then-write patterns for attempt counting."
+            ),
+            payload=f"concurrency={concurrency}, {otp_field}={probe_code}",
+        ))
+        self.logger.warning("OTP race condition detected",
+                            endpoint=otp_endpoint,
+                            accepted=len(accepted),
+                            total=len(valid_responses))
+
+        return findings
+
+    # ==================================================================
+    # NIVEL 3 AVANZADO – IP Rotation via HTTP Header Injection
+    # Detecta si el rate limiting se basa en cabeceras manipulables
+    # (X-Forwarded-For, X-Real-IP, etc.) en lugar de la IP real.
+    # Finding: AUTH_RATE_LIMIT_IP_BYPASS (HIGH)
+    # ==================================================================
+
+    # Standard IP-origin-override headers ordered by prevalence. Rotating these
+    # simulates each request appearing to come from a distinct client to a
+    # poorly-configured WAF / API Gateway that trusts them blindly.
+    _IP_SPOOF_HEADERS: List[str] = [
+        "X-Forwarded-For",
+        "X-Real-IP",
+        "X-Originating-IP",
+        "X-Remote-IP",
+        "X-Remote-Addr",
+        "X-Client-IP",
+        "CF-Connecting-IP",
+        "True-Client-IP",
+        "Forwarded",
+        "X-Cluster-Client-IP",
+    ]
+
+    def _build_ip_spoof_header(self, header_name: str, index: int) -> Dict[str, str]:
+        """Return a headers dict spoofing ``header_name`` with a unique internal IP."""
+        # Use RFC-5737 documentation addresses (192.0.2.x) to avoid hitting real IPs.
+        ip = f"192.0.2.{(index % 254) + 1}"
+        if header_name == "Forwarded":
+            return {header_name: f"for={ip};proto=https"}
+        return {header_name: ip}
+
+    async def _test_ip_header_rate_limit_bypass(self, login_endpoint: str) -> List[Finding]:
+        """IP-header rate-limit bypass probe (Level 3, Requirement 37-advanced).
+
+        After confirming that the endpoint has some form of rate limiting (or
+        regardless, per ``allow_aggressive``), issues a second burst in which
+        each request injects a DIFFERENT value in each of the common IP-origin
+        headers. If the burst succeeds (no 429/lockout) while an un-spoofed
+        burst would be blocked, the rate limiting is cosmetic and header-based.
+
+        Gated by ``_aggressive_allowed()``. The burst size is bounded by
+        ``ip_rotation_burst`` (default 15). Requires ``allow_aggressive``.
+
+        Finding: ``AUTH_RATE_LIMIT_IP_BYPASS`` (HIGH) when spoofed requests
+        are NOT throttled after the configured burst size, mapped to API2.
+        """
+        findings: List[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info("Skipping IP-header rate-limit bypass probe",
+                             reason="opt-in absent or safe mode")
+            return findings
+
+        username = getattr(self.config, "benign_username", None) or "apileaks_benign_probe"
+        username_field = getattr(self.config, "login_username_field", "username")
+        password_field = getattr(self.config, "login_password_field", "password")
+        burst_size = max(1, int(getattr(self.config, "ip_rotation_burst", 15)))
+
+        extra_headers_names = list(getattr(self.config, "extra_ip_headers", []) or [])
+        all_header_names = self._IP_SPOOF_HEADERS + extra_headers_names
+
+        responses_by_header: Dict[str, List[Response]] = {}
+
+        for header_name in all_header_names:
+            spoofed_responses: List[Response] = []
+            for i in range(burst_size):
+                spoof_headers = self._build_ip_spoof_header(header_name, i)
+                spoof_headers["Content-Type"] = "application/json"
+                try:
+                    resp = await self.http_client.request(
+                        "POST", login_endpoint,
+                        json={username_field: username,
+                              password_field: f"IpRotationProbe-{i}!"},
+                        headers=spoof_headers,
+                    )
+                except Exception as e:
+                    self.logger.debug("IP-spoof probe request failed",
+                                      header=header_name, error=str(e))
+                    continue
+
+                spoofed_responses.append(resp)
+                classification = self._classify_throttling(spoofed_responses)
+                signals = classification["evidence"]["signals"]
+                if signals["http_429"] or signals["account_lockout"]:
+                    # Header rotation did not help – endpoint throttled anyway.
+                    break
+
+            if spoofed_responses:
+                responses_by_header[header_name] = spoofed_responses
+
+        # Identify headers for which the full burst completed without throttling.
+        bypassed_headers = []
+        for hdr, resps in responses_by_header.items():
+            cls = self._classify_throttling(resps)
+            if not cls["throttled"] and len(resps) >= burst_size:
+                bypassed_headers.append(hdr)
+
+        if not bypassed_headers:
+            self.logger.info("IP-header rotation did not bypass rate limiting",
+                             login_endpoint=login_endpoint)
+            return findings
+
+        status_sample = [
+            r.status_code
+            for r in responses_by_header[bypassed_headers[0]]
+        ]
+        findings.append(Finding(
+            id=str(uuid.uuid4()),
+            scan_id='',
+            category='AUTH_RATE_LIMIT_IP_BYPASS',
+            owasp_category='API2',
+            severity=Severity.HIGH,
+            endpoint=login_endpoint,
+            method='POST',
+            status_code=status_sample[-1] if status_sample else 0,
+            response_size=0,
+            response_time=0.0,
+            evidence=(
+                f"Rate limiting was bypassed by rotating the following IP-origin "
+                f"HTTP headers: {bypassed_headers}. A burst of {burst_size} "
+                f"requests completed with no 429 / account-lockout response when "
+                f"each request carried a different spoofed IP in these headers. "
+                f"Status codes observed: {status_sample}. The rate-limit counter "
+                f"trusts the client-supplied header instead of the connection's "
+                f"real IP address."
+            ),
+            recommendation=(
+                "Base rate limiting on the TCP layer's real remote IP address, "
+                "NOT on X-Forwarded-For or similar client-supplied headers. If "
+                "you MUST trust a proxy header, allowlist only known upstream "
+                "proxy IPs and reject or ignore the header from any other source."
+            ),
+            payload=f"bypassed_headers={bypassed_headers}",
+        ))
+        self.logger.warning("IP-header rate-limit bypass confirmed",
+                            endpoint=login_endpoint,
+                            headers=bypassed_headers)
+
+        return findings
+
+    # ==================================================================
+    # NIVEL 3 AVANZADO – Password Spraying (1 password × N users)
+    # Evade el lockout por cuenta porque cada cuenta solo recibe 1 intento.
+    # Requiere: allow_aggressive + users_wordlist + spray_password + login_endpoint
+    # Finding: AUTH_PASSWORD_SPRAY_NO_DETECTION (HIGH)
+    #          AUTH_PASSWORD_SPRAY_VALID_CREDENTIAL (CRITICAL)
+    # ==================================================================
+
+    def _load_users_wordlist(self) -> List[str]:
+        """Load a newline-separated users/emails wordlist from ``config.users_wordlist``."""
+        path_str = getattr(self.config, "users_wordlist", None)
+        if not path_str:
+            return []
+        path = Path(path_str)
+        if not path.exists():
+            self.logger.warning("Users wordlist not found", path=str(path))
+            return []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            users = [l.strip() for l in lines if l.strip() and not l.startswith("#")]
+            self.logger.info("Users wordlist loaded", count=len(users), path=str(path))
+            return users
+        except OSError as e:
+            self.logger.error("Failed to read users wordlist", error=str(e))
+            return []
+
+    async def _test_password_spraying(self, login_endpoint: str) -> List[Finding]:
+        """Password-spraying probe (Level 3 Advanced).
+
+        Tries ONE fixed password (``config.spray_password``) against UP TO
+        ``spray_batch_size`` (default 50) usernames loaded from
+        ``config.users_wordlist``. Because each account receives at most ONE
+        attempt the per-account lockout counter is never incremented enough to
+        trigger a lockout, evading threshold-based account-level protection.
+
+        The probe reports:
+        - ``AUTH_PASSWORD_SPRAY_VALID_CREDENTIAL`` (CRITICAL) when a 2xx
+          response is observed for a specific username (valid credential found).
+        - ``AUTH_PASSWORD_SPRAY_NO_DETECTION`` (HIGH) when the full batch
+          completes without any throttling or rate-limit signal, meaning the API
+          cannot detect the spray pattern.
+
+        Gated by ``_aggressive_allowed()``. Requires ``spray_password``,
+        ``users_wordlist``, and a resolved ``login_endpoint``.
+        """
+        findings: List[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info("Skipping password-spray probe",
+                             reason="opt-in absent or safe mode")
+            return findings
+
+        spray_password = getattr(self.config, "spray_password", None)
+        if not spray_password:
+            self.logger.info("Password-spray probe skipped; no spray_password configured")
+            return findings
+
+        users = self._load_users_wordlist()
+        if not users:
+            self.logger.info("Password-spray probe skipped; no users loaded from wordlist")
+            return findings
+
+        username_field = getattr(self.config, "login_username_field", "username")
+        password_field = getattr(self.config, "login_password_field", "password")
+        batch_size = max(1, int(getattr(self.config, "spray_batch_size", 50)))
+        batch = users[:batch_size]
+
+        self.logger.info("Starting password-spray probe",
+                         endpoint=login_endpoint,
+                         users=len(batch),
+                         password="<redacted>")
+
+        responses: List[Response] = []
+        valid_username: Optional[str] = None
+
+        for username in batch:
+            try:
+                resp = await self.http_client.request(
+                    "POST", login_endpoint,
+                    json={username_field: username, password_field: spray_password},
+                    headers={"Content-Type": "application/json"},
+                )
+            except Exception as e:
+                self.logger.debug("Spray probe request failed",
+                                  username=username, error=str(e))
+                continue
+
+            responses.append(resp)
+
+            if resp.is_success:
+                valid_username = username
+                break
+
+            # Early stop only on global throttling (not per-account, since that
+            # is exactly what spraying is designed to evade).
+            cls = self._classify_throttling(responses)
+            signals = cls["evidence"]["signals"]
+            if signals["http_429"]:
+                self.logger.info("Global rate limit hit during password spray",
+                                 username=username)
+                break
+
+        if not responses:
+            return findings
+
+        if valid_username is not None:
+            last = responses[-1]
+            evidence = (
+                f"Password-spray attack found a valid credential: username "
+                f"'{valid_username}' accepted the sprayed password after "
+                f"{len(responses)} attempt(s) across distinct accounts. No "
+                f"per-account lockout was triggered."
+            )
+            evidence = self._redact_secret(evidence, spray_password)
+            findings.append(Finding(
+                id=str(uuid.uuid4()),
+                scan_id='',
+                category='AUTH_PASSWORD_SPRAY_VALID_CREDENTIAL',
+                owasp_category='API2',
+                severity=Severity.CRITICAL,
+                endpoint=login_endpoint,
+                method='POST',
+                status_code=last.status_code,
+                response_size=len(last.content),
+                response_time=last.elapsed,
+                evidence=evidence,
+                recommendation=(
+                    "Enforce MFA for all accounts. Implement global rate limiting "
+                    "across all usernames (not just per-account). Consider "
+                    "behavioral anomaly detection for distributed credential attacks."
+                ),
+                payload=f"{username_field}={valid_username}",
+            ))
+            self.logger.warning("Password spray found valid credential",
+                                endpoint=login_endpoint, username=valid_username)
+            return findings
+
+        cls = self._classify_throttling(responses)
+        if not cls["throttled"]:
+            last = responses[-1]
+            status_codes = cls["evidence"]["status_codes"]
+            findings.append(Finding(
+                id=str(uuid.uuid4()),
+                scan_id='',
+                category='AUTH_PASSWORD_SPRAY_NO_DETECTION',
+                owasp_category='API2',
+                severity=Severity.HIGH,
+                endpoint=login_endpoint,
+                method='POST',
+                status_code=last.status_code,
+                response_size=len(last.content),
+                response_time=last.elapsed,
+                evidence=(
+                    f"A password-spray pattern ({len(responses)} requests across "
+                    f"distinct accounts, one attempt each) completed without "
+                    f"triggering any global rate limit or anomaly detection. "
+                    f"Status codes: {status_codes}. Per-account lockout is "
+                    f"ineffective against this technique."
+                ),
+                recommendation=(
+                    "Implement global rate limiting keyed on the originating IP "
+                    "(not per-account). Deploy behavioral anomaly detection that "
+                    "flags many different accounts attempted from one source in a "
+                    "short window. Enforce MFA."
+                ),
+            ))
+            self.logger.warning("Password spray not detected by API",
+                                endpoint=login_endpoint, attempts=len(responses))
+
+        return findings
+
+    # ==================================================================
+    # NIVEL EXPERTO – Timing Oracle Attack
+    # Mide diferencias de tiempo de respuesta (y Content-Length) para
+    # distinguir usuarios válidos de inválidos → enumeración de cuentas.
+    # Finding: AUTH_TIMING_ORACLE (MEDIUM/HIGH)
+    #          AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH (MEDIUM)
+    # ==================================================================
+
+    def _compute_timing_stats(self, samples: List[float]) -> Dict[str, float]:
+        """Compute mean and standard deviation of a list of response times."""
+        if not samples:
+            return {"mean": 0.0, "stddev": 0.0, "min": 0.0, "max": 0.0}
+        n = len(samples)
+        mean = sum(samples) / n
+        variance = sum((x - mean) ** 2 for x in samples) / n
+        return {
+            "mean": mean,
+            "stddev": variance ** 0.5,
+            "min": min(samples),
+            "max": max(samples),
+        }
+
+    async def _collect_timing_samples(
+        self,
+        endpoint: str,
+        username: str,
+        password: str,
+        n_samples: int,
+        username_field: str,
+        password_field: str,
+    ) -> Tuple[List[float], List[int]]:
+        """Collect ``n_samples`` response times and Content-Lengths for one credential pair."""
+        times: List[float] = []
+        sizes: List[int] = []
+        for _ in range(n_samples):
+            try:
+                t0 = time.monotonic()
+                resp = await self.http_client.request(
+                    "POST", endpoint,
+                    json={username_field: username, password_field: password},
+                    headers={"Content-Type": "application/json"},
+                )
+                elapsed = time.monotonic() - t0
+                times.append(elapsed)
+                sizes.append(len(resp.content))
+            except Exception:
+                continue
+        return times, sizes
+
+    async def _test_timing_oracle(self, login_endpoint: str) -> List[Finding]:
+        """Timing-attack / username-enumeration probe (Expert Level).
+
+        Measures the MEAN response time for:
+        - A known-benign (possibly valid) username with a wrong password.
+        - A likely-invalid username (random UUID) with the same wrong password.
+
+        A statistically significant timing difference (> ``timing_threshold``
+        seconds, default 50ms) between the two populations indicates that the
+        server performs more work for valid usernames (e.g. password hashing
+        only when the account exists), leaking user existence.
+
+        A Content-Length difference in the responses is reported separately as
+        ``AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH`` (MEDIUM) because differing
+        body sizes alone reveal account existence even without timing data.
+
+        Findings:
+        - ``AUTH_TIMING_ORACLE`` (HIGH if delta > 2×threshold, else MEDIUM).
+        - ``AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH`` (MEDIUM) when Content-
+          Length differs for valid vs invalid username responses.
+
+        Requires ``benign_username`` (or falls back to a fixed placeholder).
+        Gated by ``allow_aggressive``.
+        """
+        findings: List[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info("Skipping timing-oracle probe",
+                             reason="opt-in absent or safe mode")
+            return findings
+
+        username_field = getattr(self.config, "login_username_field", "username")
+        password_field = getattr(self.config, "login_password_field", "password")
+        n_samples = max(3, int(getattr(self.config, "timing_samples", 10)))
+        threshold = float(getattr(self.config, "timing_threshold", 0.05))
+
+        # Use the benign username (plausibly valid account) vs a UUID placeholder.
+        benign = getattr(self.config, "benign_username", None) or "apileaks_benign_probe"
+        invalid = f"nonexistent-{uuid.uuid4().hex[:12]}@apileaks.invalid"
+        wrong_password = f"WrongPw-{uuid.uuid4().hex[:8]}!"
+
+        self.logger.info("Collecting timing samples",
+                         endpoint=login_endpoint,
+                         samples=n_samples,
+                         benign_user=benign,
+                         invalid_user=invalid)
+
+        benign_times, benign_sizes = await self._collect_timing_samples(
+            login_endpoint, benign, wrong_password, n_samples,
+            username_field, password_field,
+        )
+        invalid_times, invalid_sizes = await self._collect_timing_samples(
+            login_endpoint, invalid, wrong_password, n_samples,
+            username_field, password_field,
+        )
+
+        if not benign_times or not invalid_times:
+            self.logger.info("Timing oracle probe: insufficient samples collected")
+            return findings
+
+        benign_stats = self._compute_timing_stats(benign_times)
+        invalid_stats = self._compute_timing_stats(invalid_times)
+        delta = abs(benign_stats["mean"] - invalid_stats["mean"])
+
+        self.logger.info("Timing oracle stats",
+                         benign_mean=round(benign_stats["mean"], 4),
+                         invalid_mean=round(invalid_stats["mean"], 4),
+                         delta=round(delta, 4),
+                         threshold=threshold)
+
+        if delta >= threshold:
+            severity = Severity.HIGH if delta >= 2 * threshold else Severity.MEDIUM
+            findings.append(Finding(
+                id=str(uuid.uuid4()),
+                scan_id='',
+                category='AUTH_TIMING_ORACLE',
+                owasp_category='API2',
+                severity=severity,
+                endpoint=login_endpoint,
+                method='POST',
+                status_code=0,
+                response_size=0,
+                response_time=delta,
+                evidence=(
+                    f"Timing difference of {delta:.4f}s (>{threshold}s threshold) "
+                    f"detected between valid-user responses "
+                    f"(mean={benign_stats['mean']:.4f}s, "
+                    f"stddev={benign_stats['stddev']:.4f}s, n={len(benign_times)}) "
+                    f"and invalid-user responses "
+                    f"(mean={invalid_stats['mean']:.4f}s, "
+                    f"stddev={invalid_stats['stddev']:.4f}s, n={len(invalid_times)}). "
+                    f"The server likely performs additional work (e.g. bcrypt hashing) "
+                    f"only when the account exists, enabling username enumeration."
+                ),
+                recommendation=(
+                    "Use constant-time password comparison for ALL usernames, including "
+                    "non-existent ones (e.g. hash a dummy password to preserve timing "
+                    "parity). Return the same generic error message and response body "
+                    "for both invalid-username and wrong-password scenarios."
+                ),
+            ))
+            self.logger.warning("Timing oracle detected",
+                                endpoint=login_endpoint, delta=round(delta, 4))
+
+        # Content-Length oracle: same logic, different signal.
+        if benign_sizes and invalid_sizes:
+            avg_benign_size = sum(benign_sizes) / len(benign_sizes)
+            avg_invalid_size = sum(invalid_sizes) / len(invalid_sizes)
+            size_delta = abs(avg_benign_size - avg_invalid_size)
+            if size_delta >= 5:  # >5-byte difference is meaningful
+                findings.append(Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id='',
+                    category='AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH',
+                    owasp_category='API2',
+                    severity=Severity.MEDIUM,
+                    endpoint=login_endpoint,
+                    method='POST',
+                    status_code=0,
+                    response_size=int(size_delta),
+                    response_time=0.0,
+                    evidence=(
+                        f"Response Content-Length differs by {size_delta:.1f} bytes "
+                        f"between a valid-username request (avg {avg_benign_size:.1f}B) "
+                        f"and an invalid-username request (avg {avg_invalid_size:.1f}B). "
+                        f"Body-size variations leak account existence independently of "
+                        f"timing differences."
+                    ),
+                    recommendation=(
+                        "Return a single generic error message with the same body "
+                        "structure (and padding if necessary) for both 'user not found' "
+                        "and 'wrong password' scenarios."
+                    ),
+                ))
+                self.logger.warning("Content-Length username enumeration detected",
+                                    endpoint=login_endpoint,
+                                    size_delta=round(size_delta, 1))
+
+        return findings
+
+    # ==================================================================
+    # Orquestador de probes avanzados (Niveles 2, 3 y Experto)
+    # Se invoca desde execute_tests cuando allow_aggressive es True.
+    # Detecta automáticamente endpoints de login/OTP del conjunto
+    # descubierto y ejecuta los nuevos probes.
+    # ==================================================================
+
+    # URL path fragments that identify login/authentication endpoints.
+    _LOGIN_PATH_PATTERNS: List[str] = [
+        "/login", "/signin", "/sign-in", "/auth/login", "/auth/signin",
+        "/api/login", "/api/signin", "/api/v1/auth/login",
+        "/api/v1/users/signin", "/api/v1/login", "/api/v2/auth/login",
+        "/api/auth/token", "/token", "/api/token", "/oauth/token",
+        "/session", "/api/session",
+    ]
+
+    def _detect_login_endpoints(self, endpoints: List[Any]) -> List[str]:
+        """Return discovered endpoint URLs that look like login/auth endpoints."""
+        login_urls: List[str] = []
+        for ep in endpoints:
+            url = ep.url if hasattr(ep, "url") else str(ep)
+            method = (ep.method if hasattr(ep, "method") else "GET").upper()
+            if method not in ("POST", "PUT"):
+                continue
+            url_lower = url.lower()
+            if any(pat in url_lower for pat in self._LOGIN_PATH_PATTERNS):
+                login_urls.append(url)
+        return login_urls
+
+    async def _run_advanced_auth_probes(self, endpoints: List[Any]) -> List[Finding]:
+        """Orchestrate Level 2/3/Expert auth probes against discovered endpoints.
+
+        This method is the single integration point for all new attack techniques.
+        It is called from ``execute_tests`` ONLY when ``allow_aggressive`` is set
+        AND Safe_Mode is off (the ``_aggressive_allowed`` gate is re-checked inside
+        each sub-probe for defence-in-depth; this call skips the work entirely if
+        neither condition is met, saving the endpoint-scan overhead).
+
+        Sub-probes executed (in order):
+        1. OTP sequential brute-force (Level 2).
+        2. OTP race condition (Expert).
+        3. Rate-limiting / anti-automation detection on login endpoints (Req 37).
+        4. IP-header rate-limit bypass (Level 3).
+        5. Password spraying (Level 3).
+        6. Timing / Content-Length oracle (Expert).
+        7. Secret-in-URL credential leakage (Req 38) — per endpoint × auth context.
+        8. MFA bypass with provisional token (Req 39) — when inputs configured.
+        9. Password-reset token predictability analysis (Req 40) — when samples supplied.
+        10. OAuth / OpenID flow abuse (Req 41) — when flow inputs configured.
+        """
+        findings: List[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info("Advanced auth probes skipped",
+                             reason="opt-in absent or safe mode")
+            return findings
+
+        # -- OTP probes (endpoint comes from config) -----------------------
+        otp_findings = await self._test_otp_brute_force()
+        findings.extend(otp_findings)
+        self.logger.debug("OTP brute-force probe completed",
+                          findings=len(otp_findings))
+
+        otp_race_findings = await self._test_otp_race_condition()
+        findings.extend(otp_race_findings)
+        self.logger.debug("OTP race-condition probe completed",
+                          findings=len(otp_race_findings))
+
+        # -- Login-endpoint probes (auto-detected from discovered set) ------
+        login_endpoints = self._detect_login_endpoints(endpoints)
+        if not login_endpoints:
+            self.logger.info("No login endpoints detected; skipping login-based probes")
+        else:
+            for login_url in login_endpoints:
+                # Req 37: anti-automation / rate-limiting burst
+                rate_findings = await self._test_rate_limiting(login_url)
+                findings.extend(rate_findings)
+
+                # Req 37 (Level 3): IP-header rotation bypass
+                ip_findings = await self._test_ip_header_rate_limit_bypass(login_url)
+                findings.extend(ip_findings)
+
+                # Req 37 (Level 3): password spraying (1 password × N users)
+                spray_findings = await self._test_password_spraying(login_url)
+                findings.extend(spray_findings)
+
+                # Expert: timing / Content-Length oracle (username enumeration)
+                timing_findings = await self._test_timing_oracle(login_url)
+                findings.extend(timing_findings)
+
+            self.logger.debug("Login-endpoint probes completed",
+                              login_endpoints=len(login_endpoints))
+
+        # -- Per-endpoint × auth-context probes ----------------------------
+        # Req 38: secret-in-URL (credential leakage via query parameters).
+        # Runs for every discovered endpoint against every configured auth context
+        # that carries a non-empty token — gating is inside the method itself.
+        valid_auth_contexts = [
+            ctx for ctx in self.auth_contexts
+            if getattr(ctx, 'token', None)
+        ]
+        for endpoint in endpoints:
+            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
+            for auth_ctx in valid_auth_contexts:
+                secret_url_findings = await self._test_secret_in_url(
+                    endpoint_url, auth_ctx
+                )
+                findings.extend(secret_url_findings)
+
+        if valid_auth_contexts:
+            self.logger.debug("Secret-in-URL probes completed",
+                              endpoints=len(endpoints),
+                              auth_contexts=len(valid_auth_contexts))
+
+        # -- Config-input-driven probes (only run when operator supplies inputs) --
+        # Req 39: MFA bypass with a provisional (pre-MFA) token.
+        mfa_inputs = getattr(self.config, 'mfa_flow_inputs', None) or {}
+        provisional_token = mfa_inputs.get('provisional_token', '')
+        protected_endpoint = mfa_inputs.get('protected_endpoint', '')
+        mfa_findings = await self._test_mfa_bypass(provisional_token, protected_endpoint)
+        findings.extend(mfa_findings)
+        self.logger.debug("MFA-bypass probe completed", findings=len(mfa_findings))
+
+        # Req 40: password-reset token predictability analysis.
+        reset_token_samples = getattr(self.config, 'reset_token_samples', None) or []
+        reset_known_inputs = getattr(self.config, 'reset_token_known_inputs', None)
+        reset_findings = await self._test_reset_token_predictability(
+            reset_token_samples, reset_known_inputs
+        )
+        findings.extend(reset_findings)
+        self.logger.debug("Reset-token predictability probe completed",
+                          findings=len(reset_findings))
+
+        # Req 41: OAuth / OpenID flow abuse (redirect_uri, audience confusion,
+        # missing state).
+        oauth_inputs = getattr(self.config, 'oauth_flow_inputs', None)
+        oauth_findings = await self._test_oauth_flow(oauth_inputs)
+        findings.extend(oauth_findings)
+        self.logger.debug("OAuth-flow probe completed", findings=len(oauth_findings))
+
+        self.logger.debug("Advanced auth probes completed",
+                          login_endpoints=len(login_endpoints) if login_endpoints else 0,
+                          findings=len(findings))
 
         return findings

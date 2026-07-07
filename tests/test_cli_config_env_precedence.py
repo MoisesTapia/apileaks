@@ -40,7 +40,7 @@ CLI_TARGET = "http://cli-target.example"
 ENV_TARGET = "http://env-target.example"
 CONFIG_TARGET = "http://config-target.example"
 
-DEFAULT_USER_AGENT = "APILeak/0.2.0"
+DEFAULT_USER_AGENT = "APILeak/0.2.1"
 DEFAULT_TIMEOUT = 10
 
 

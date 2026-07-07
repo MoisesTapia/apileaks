@@ -222,7 +222,16 @@ class FindingsCollector:
         "READONLY_PROPERTY_MODIFICATION": Severity.HIGH,
         # NOTE: "UNDOCUMENTED_FIELD" maps to MEDIUM below via default in the
         # legacy rules; it is added explicitly here for strict resolution.
-        "UNDOCUMENTED_FIELD": Severity.MEDIUM
+        "UNDOCUMENTED_FIELD": Severity.MEDIUM,
+
+        # API5 - Broken Function Level Authorization (all four attack levels)
+        "BFLA_ADMIN_ENDPOINT_EXPOSED": Severity.MEDIUM,
+        "BFLA_LOW_PRIV_ACCESS": Severity.CRITICAL,
+        "BFLA_ANONYMOUS_ADMIN_ACCESS": Severity.CRITICAL,
+        "BFLA_VERB_TAMPERING": Severity.HIGH,
+        "BFLA_METHOD_OVERRIDE": Severity.HIGH,
+        "BFLA_MASS_ASSIGNMENT_ROLE": Severity.CRITICAL,
+        "BFLA_VERSION_DOWNGRADE": Severity.HIGH,
     }
     
     # Category to OWASP mapping
@@ -331,13 +340,22 @@ class FindingsCollector:
         # API3 - Property-Level (SENSITIVE_DATA_EXPOSURE / MASS_ASSIGNMENT /
         # UNDOCUMENTED_FIELD mapped above)
         "MASS_ASSIGNMENT_PRIVILEGE": "API3",
-        "READONLY_PROPERTY_MODIFICATION": "API3"
+        "READONLY_PROPERTY_MODIFICATION": "API3",
+
+        # API5 - Broken Function Level Authorization (all four levels)
+        "BFLA_ADMIN_ENDPOINT_EXPOSED": "API5",
+        "BFLA_LOW_PRIV_ACCESS": "API5",
+        "BFLA_ANONYMOUS_ADMIN_ACCESS": "API5",
+        "BFLA_VERB_TAMPERING": "API5",
+        "BFLA_METHOD_OVERRIDE": "API5",
+        "BFLA_MASS_ASSIGNMENT_ROLE": "API5",
+        "BFLA_VERSION_DOWNGRADE": "API5",
     }
 
     # OWASP categories that the four hardened capabilities are restricted to
     # (Req 22.2, 26.1). Any emitted category resolving outside this set is a
     # detectable error.
-    IN_SCOPE_OWASP_CATEGORIES = frozenset({"API1", "API2", "API3"})
+    IN_SCOPE_OWASP_CATEGORIES = frozenset({"API1", "API2", "API3", "API5"})
 
     # Canonical list of every Finding_Category emitted by the four hardened
     # capabilities (BOLA_Module, Auth_Module, Property_Module, and the
@@ -413,6 +431,14 @@ class FindingsCollector:
         # API3 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
         "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS",
         "UNDOCUMENTED_FIELD",
+        # API5 - Broken Function Level Authorization (all four attack levels)
+        "BFLA_ADMIN_ENDPOINT_EXPOSED",
+        "BFLA_LOW_PRIV_ACCESS",
+        "BFLA_ANONYMOUS_ADMIN_ACCESS",
+        "BFLA_VERB_TAMPERING",
+        "BFLA_METHOD_OVERRIDE",
+        "BFLA_MASS_ASSIGNMENT_ROLE",
+        "BFLA_VERSION_DOWNGRADE",
     })
     
     def __init__(self, scan_id: str):

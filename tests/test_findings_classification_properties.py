@@ -37,8 +37,9 @@ EMITTED_CATEGORIES = sorted(FindingsCollector.EMITTED_CATEGORIES)
 # return None for an emitted category).
 DEFINED_SEVERITIES = frozenset(Severity)
 
-# OWASP categories the four hardened capabilities are restricted to.
-IN_SCOPE_OWASP = frozenset({"API1", "API2", "API3"})
+# OWASP categories the hardened capabilities are restricted to.
+# API1-API3 for BOLA/Auth/Property; API5 for Function Level Authorization (BFLA).
+IN_SCOPE_OWASP = frozenset({"API1", "API2", "API3", "API5"})
 
 
 def _collector():

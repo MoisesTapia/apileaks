@@ -25,6 +25,14 @@ from utils.findings import Finding, FindingsCollector
 from utils.secret_scanner import SecretFinding, scan_for_secrets
 from utils.spec_import import normalize_candidate_path
 from utils.url_normalize import normalize_url
+
+# Lazy import guard for typed payload builders — only used when a SpecSchema is
+# present so the import does not pull extra dependencies on every discovery run.
+try:
+    from utils.typed_payload import build_typed_payload, build_typed_params
+    _TYPED_PAYLOAD_AVAILABLE = True
+except ImportError:  # pragma: no cover — defensive
+    _TYPED_PAYLOAD_AVAILABLE = False
 from modules.fuzzing.markers import (
     find_markers,
     generate_marker_candidates,
@@ -213,6 +221,13 @@ class EndpointFuzzer:
     # Number of randomly generated non-existent paths probed to detect
     # Catch_All_Response behavior (Requirement 19.1).
     CATCH_ALL_PROBES = 3
+
+    # Default quarantine threshold: if a host returns N consecutive "interesting"
+    # responses (non-404) in the live scan, it is quarantined as a wildcard host
+    # and discovery stops early. 0 disables quarantine (default — opt-in via
+    # --quarantine-threshold N). Enable with a positive value to match
+    # Kiterunner's --quarantine-threshold 10 behavior.
+    DEFAULT_QUARANTINE_THRESHOLD = 0
     
     # Relative tolerance applied when comparing confirmation response body sizes
     # for Hit_Confirmation consistency (Requirement 35.3). Two body sizes are
@@ -312,6 +327,20 @@ class EndpointFuzzer:
         # base URL answers random non-existent paths with 2xx responses.
         self.catch_all_detected = False
         self.catch_all_signature: Optional[Tuple[int, int]] = None
+
+        # Live quarantine counter. Tracks consecutive "interesting" (non-404)
+        # responses during the scan so we can quarantine a host that accepts every
+        # path (wildcard host not caught by the initial catch-all probes).
+        # threshold=0 disables the feature; threshold>0 halts discovery after N
+        # consecutive hits. Initialized from config or the class default.
+        _cfg_threshold = getattr(self.config.endpoints, "quarantine_threshold", None)
+        self.quarantine_threshold: int = (
+            _cfg_threshold
+            if _cfg_threshold is not None
+            else self.DEFAULT_QUARANTINE_THRESHOLD
+        )
+        self._consecutive_hits: int = 0
+        self.quarantine_triggered: bool = False
         
         # Soft-404 baseline signature (Soft_404_Baseline, Requirement 22.5/22.6).
         # The (status_code, response_size, word_count) signature of the responses
@@ -330,6 +359,14 @@ class EndpointFuzzer:
         # it (27.4). It stays None when GraphQL probing is disabled, no GraphQL
         # endpoint is found, or introspection is not enabled (27.6).
         self.graphql_introspection_endpoint: Optional[str] = None
+
+        # Streaming JSONL output (Streaming_Hit_Output). When set, each newly
+        # discovered endpoint is written to this open file handle immediately —
+        # one JSON object per line — so consumers can tail the file and see hits
+        # as they arrive rather than waiting for discovery to finish. The caller
+        # is responsible for opening the handle before discovery starts and
+        # closing it afterwards. None disables streaming (no extra I/O).
+        self.streaming_output_handle = None
         
         self.logger.info("Endpoint Fuzzer initialized",
                         recursive=config.recursive,
@@ -537,9 +574,23 @@ class EndpointFuzzer:
         return discovered
     
     async def _load_wordlist(self, wordlist_path: str) -> List[str]:
-        """Load wordlist from file with caching"""
+        """Load wordlist from file with caching.
+
+        Supports the ``assetnote:<name>`` prefix: if the path starts with that
+        prefix the wordlist is resolved (and auto-downloaded) via
+        :func:`utils.wordlist_manager.resolve_wordlist` before reading.
+        """
         if wordlist_path in self.wordlist_cache:
             return self.wordlist_cache[wordlist_path]
+
+        # Resolve Assetnote wordlist references
+        try:
+            from utils.wordlist_manager import ASSETNOTE_PREFIX, resolve_wordlist
+            if wordlist_path.startswith(ASSETNOTE_PREFIX):
+                wordlist_path = resolve_wordlist(wordlist_path, show_progress=True)
+        except Exception as exc:
+            self.logger.warning("Could not resolve Assetnote wordlist",
+                                path=wordlist_path, error=str(exc))
         
         try:
             wordlist_file = Path(wordlist_path)
@@ -575,6 +626,30 @@ class EndpointFuzzer:
         # Request_Budget and bounded by the Concurrency_Limit.
         requests = []
         seed_methods = getattr(self.config.endpoints, "seed_methods", None) or {}
+
+        # Spec-aware mode: when a SpecSchema is attached to the endpoints config,
+        # build a per-route lookup of typed query params, extra headers, and a
+        # JSON body so each request carries exactly what the spec declares.
+        # The lookup key is the normalized candidate path (matching the seed_methods
+        # key format) paired with the HTTP method: (normalized_path, METHOD).
+        spec_schema = getattr(self.config.endpoints, "spec_schema", None)
+        _spec_params: "Dict[tuple, Dict[str, Any]]" = {}
+        if spec_schema is not None and _TYPED_PAYLOAD_AVAILABLE:
+            for operation in getattr(spec_schema, "operations", []):
+                key = (normalize_candidate_path(operation.path), operation.method.upper())
+                typed = build_typed_params(operation)  # {"query": {...}, "header": {...}}
+                body = build_typed_payload(operation)   # {} when no request body
+                _spec_params[key] = {
+                    "query": typed.get("query") or {},
+                    "headers": typed.get("header") or {},
+                    "body": body or {},
+                }
+            if _spec_params:
+                self.logger.debug(
+                    "Spec-aware mode active",
+                    operations=len(_spec_params),
+                )
+
         # Path_Scope selection (Requirement 33.1-33.4). When configured, a
         # candidate excluded by the scope is dropped here, BEFORE it is added to
         # tested_urls, dispatched, or counted toward the Request_Budget below, so
@@ -626,21 +701,33 @@ class EndpointFuzzer:
                 for cand in expand_candidates(word, self.config.endpoints.extensions)
             )
 
+        spec_methods_only = getattr(self.config.endpoints, "spec_methods_only", False)
+
         for word, candidate in candidate_source:
-            # Brute-force entries keep config.endpoints.methods; Spec_Import seeds
-            # extend that per-path method set with the methods declared for the
-            # seed's path (Requirement 25.3). Marker candidates carry no wordlist
-            # word (``word is None``) so they use the base method set. The dedup
-            # below is keyed by URL, so this preserves the existing per-path
-            # dispatch behavior for brute-force entries while making the
-            # spec-derived methods part of the candidate's method set.
+            # Build the method set for this candidate.
+            #
+            # Default (extend) mode: brute-force entries use config.endpoints.methods;
+            # spec seeds add their declared methods ON TOP of the base set
+            # (Requirement 25.3).
+            #
+            # Spec-methods-only mode (--spec-methods-only): when the candidate
+            # was seeded from a spec (i.e. seed_methods has an entry for this
+            # normalized path), the base ``methods`` set is SUPPRESSED for that
+            # path and ONLY the spec-declared methods are used. Paths that are
+            # not in the spec (pure brute-force entries) continue using the base
+            # set regardless of the flag.
             methods = list(self.config.endpoints.methods)
             if seed_methods and word is not None:
                 extra = seed_methods.get(normalize_candidate_path(word))
                 if extra:
-                    for method in extra:
-                        if method not in methods:
-                            methods.append(method)
+                    if spec_methods_only:
+                        # Replace the base set entirely with the spec methods.
+                        methods = list(extra)
+                    else:
+                        # Extend: add spec methods that are not already in base.
+                        for method in extra:
+                            if method not in methods:
+                                methods.append(method)
             for method in methods:
                 # Marker candidates are full URLs; legacy candidates are joined to
                 # the base path. Canonicalize the candidate URL with normalize_url
@@ -658,7 +745,13 @@ class EndpointFuzzer:
                 if path_scope is not None and not path_scope.admits(candidate, url):
                     continue
                 if url not in self.tested_urls:
-                    requests.append((method, url, candidate, depth))
+                    # Look up spec-declared params for this (path, method) pair.
+                    # Falls back to empty dicts for brute-force (non-spec) candidates
+                    # so _test_endpoint behavior is unchanged when no spec is loaded.
+                    _npath = normalize_candidate_path(word) if word is not None else ""
+                    _skey = (_npath, method.upper())
+                    _route_ctx = _spec_params.get(_skey, {})
+                    requests.append((method, url, candidate, depth, _route_ctx))
                     self.tested_urls.add(url)
                     # Record the method that first caused this URL to be tested so
                     # the checkpoint can carry (url, method) pairs (Requirement
@@ -706,11 +799,20 @@ class EndpointFuzzer:
         
         return discovered_endpoints
     
-    async def _execute_batch(self, batch: List[Tuple[str, str, str, int]]) -> List[Endpoint]:
+    async def _execute_batch(self, batch: List[Tuple]) -> List[Endpoint]:
         """Execute a batch of requests"""
         tasks = []
-        for method, url, word, depth in batch:
-            task = self._test_endpoint(method, url, word, depth)
+        for item in batch:
+            # Unpack supporting both the legacy 4-tuple and the new 5-tuple with
+            # per-route spec context. The 5th element (route_ctx) carries query
+            # params, extra headers, and a JSON body derived from the SpecSchema;
+            # it defaults to {} for brute-force candidates (no spec context).
+            if len(item) == 5:
+                method, url, word, depth, route_ctx = item
+            else:
+                method, url, word, depth = item
+                route_ctx = {}
+            task = self._test_endpoint(method, url, word, depth, route_ctx=route_ctx)
             tasks.append(task)
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -724,8 +826,24 @@ class EndpointFuzzer:
         
         return endpoints
     
-    async def _test_endpoint(self, method: str, url: str, word: str, depth: int) -> Optional[Endpoint]:
-        """Test a single endpoint"""
+    async def _test_endpoint(self, method: str, url: str, word: str, depth: int,
+                             route_ctx: Optional[Dict[str, Any]] = None) -> Optional[Endpoint]:
+        """Test a single endpoint.
+
+        ``route_ctx`` carries spec-derived per-route request context when the
+        discovery run was seeded from an OpenAPI / Postman document:
+
+        * ``query``   — dict of typed query-parameter values declared for the route
+        * ``headers`` — dict of extra request headers declared for the route
+        * ``body``    — dict JSON body derived from the route's request body schema
+
+        All three default to empty dicts so brute-force (non-spec) candidates are
+        completely unaffected by this extension.
+        """
+        _route_ctx = route_ctx or {}
+        _spec_query = _route_ctx.get("query") or {}
+        _spec_headers = _route_ctx.get("headers") or {}
+        _spec_body = _route_ctx.get("body") or {}
         try:
             # Canonicalize the URL used for storage and dedup. _fuzz_wordlist
             # already passes a normalized URL, but redirect targets routed
@@ -738,7 +856,18 @@ class EndpointFuzzer:
             # request still flows through HTTPRequestEngine.request, so the rate
             # limiter continues to apply to each Discovery_Request.
             async with self._semaphore:
-                response = await self.http_client.request(method, url)
+                # Build keyword arguments for the HTTP request. Spec-derived query
+                # params and extra headers are merged in when present; a non-empty
+                # body is sent as JSON. Empty dicts are intentionally omitted so the
+                # HTTP client keeps its default behavior for brute-force candidates.
+                req_kwargs: Dict[str, Any] = {}
+                if _spec_query:
+                    req_kwargs["params"] = _spec_query
+                if _spec_headers:
+                    req_kwargs["headers"] = _spec_headers
+                if _spec_body:
+                    req_kwargs["json"] = _spec_body
+                response = await self.http_client.request(method, url, **req_kwargs)
             
             # Create endpoint object
             endpoint = Endpoint(
@@ -775,31 +904,60 @@ class EndpointFuzzer:
                     return None
             
             # Store interesting endpoints. Only true 404 (NOT_FOUND) responses are
-            # discarded. A 405 (Method Not Allowed) is intentionally kept: it is
-            # evidence of a valid path served by a different allowed method, so it
-            # is recorded as a Discovery_Result (Method_Enumeration, Requirement
-            # 26.3) rather than discarded like a 404.
-            #
-            # Storage-time scope selection (Requirement 33). A record is persisted
-            # only when both the Path_Scope admits the candidate path/URL
-            # (33.2-33.4) AND the Storage_Status_Selection admits the response
-            # status code (33.5). A record dropped here never enters
-            # discovered_endpoints, so it is absent from the discovery session,
-            # CSV/JSONL output, and triage table regardless of any later
-            # display-only --status-code filter (Requirements 33.6, 33.7).
+            # discarded.
             path_scope = self.config.path_scope
             storage_status = self.config.storage_status
-            if (
+            is_interesting = (
                 endpoint.status != EndpointStatus.NOT_FOUND
                 and (path_scope is None or path_scope.admits(word, endpoint.url))
                 and (storage_status is None or storage_status.admits(endpoint.status_code))
-            ):
+            )
+            if is_interesting:
                 self.discovered_endpoints[canonical_url] = endpoint
                 self.logger.debug("Endpoint discovered",
                                 url=canonical_url,
                                 method=method,
                                 status=endpoint.status_code,
                                 size=endpoint.response_size)
+
+                # Streaming JSONL output: write the hit immediately so consumers
+                # can tail the file and see results as they arrive (no buffering).
+                if self.streaming_output_handle is not None:
+                    try:
+                        record = {
+                            "url": canonical_url,
+                            "method": method,
+                            "status_code": endpoint.status_code,
+                            "endpoint_status": endpoint.status.value,
+                            "response_size": endpoint.response_size,
+                            "response_time": round(endpoint.response_time, 4),
+                            "endpoint_type": endpoint.endpoint_type,
+                        }
+                        self.streaming_output_handle.write(
+                            __import__("json").dumps(record, ensure_ascii=False) + "\n"
+                        )
+                        self.streaming_output_handle.flush()
+                    except Exception as _stream_exc:
+                        self.logger.debug(
+                            "Streaming output write failed",
+                            error=str(_stream_exc),
+                        )
+
+                # Live quarantine tracking: count consecutive "interesting" hits.
+                # A host that returns a hit for every path is likely a wildcard.
+                # When the threshold is reached we set budget_reached so the
+                # _fuzz_wordlist loop stops issuing further candidates.
+                if self.quarantine_threshold > 0 and not self.quarantine_triggered:
+                    self._consecutive_hits += 1
+                    if self._consecutive_hits >= self.quarantine_threshold:
+                        self.quarantine_triggered = True
+                        self.budget_reached = True
+                        self.logger.warning(
+                            "Quarantine threshold reached — host responds to "
+                            "every path (wildcard). Stopping discovery early.",
+                            consecutive_hits=self._consecutive_hits,
+                            threshold=self.quarantine_threshold,
+                        )
                 
                 # Secret/leak detection (Requirement 30). When enabled, scan the
                 # already-received response body and headers against the
@@ -818,6 +976,11 @@ class EndpointFuzzer:
                     await self._enumerate_methods(endpoint)
                 
                 return endpoint
+            else:
+                # Non-interesting (404 / scoped-out): reset the consecutive hit
+                # counter so transient bursts don't trigger quarantine unfairly.
+                if self.quarantine_threshold > 0:
+                    self._consecutive_hits = 0
             
         except Exception as e:
             self.logger.debug("Endpoint test failed", url=url, method=method, error=str(e))
@@ -1074,7 +1237,10 @@ class EndpointFuzzer:
                     # Record the method used for the redirect target so the
                     # checkpoint carries it as a (url, method) pair (Req 37.1).
                     self._tested_methods[normalized_location] = endpoint.method
-                    redirect_endpoint = await self._test_endpoint(endpoint.method, location, "redirect", 0)
+                    # Redirect targets are not spec-seeded; pass empty route_ctx.
+                    redirect_endpoint = await self._test_endpoint(
+                        endpoint.method, location, "redirect", 0, route_ctx={}
+                    )
                     if redirect_endpoint:
                         redirect_endpoint.discovered_via = "redirect"
                         
@@ -1627,15 +1793,29 @@ class ParameterFuzzer:
                 findings.extend(await self._fuzz_markers(endpoint, markers))
                 continue
 
-            # Query parameter fuzzing
+            # Query parameter fuzzing — runs when GET/DELETE are in the configured methods.
             if 'query' in injection_points and endpoint.method in ['GET', 'DELETE']:
                 query_findings = await self._fuzz_query_parameters(endpoint)
                 findings.extend(query_findings)
             
-            # Body parameter fuzzing
-            if 'body' in injection_points and endpoint.method in ['POST', 'PUT', 'PATCH']:
-                body_findings = await self._fuzz_body_parameters(endpoint)
-                findings.extend(body_findings)
+            # Body parameter fuzzing — injection_points already guarantees that
+            # 'body' is only present when POST/PUT/PATCH are in the configured
+            # methods. For par targets the synthetic endpoint always carries
+            # method='GET', so we cannot gate on endpoint.method; instead we
+            # check injection_points (derived from the operator-configured methods)
+            # and only skip when the endpoint's OWN method is query-only (GET/DELETE)
+            # and query fuzzing already ran.  If the endpoint method is not
+            # GET/DELETE and 'body' is enabled, body fuzzing also runs.
+            if 'body' in injection_points:
+                # For real discovered endpoints: run body fuzzing only when the
+                # endpoint's own method is POST/PUT/PATCH OR when it is a
+                # synthetic par target (method='GET' but body candidates configured).
+                if endpoint.method in ['POST', 'PUT', 'PATCH'] or (
+                    endpoint.endpoint_type in ('parameter_target', 'scope_seed')
+                    and getattr(self.config.parameters, 'body_candidates', None) is not None
+                ):
+                    body_findings = await self._fuzz_body_parameters(endpoint)
+                    findings.extend(body_findings)
         
         self.logger.info("Parameter fuzzing completed",
                         parameters_tested=self.parameters_tested,
@@ -1904,20 +2084,53 @@ class ParameterFuzzer:
                     response_difference=True
                 )
                 self.discovered_parameters.append(parameter)
-                
+
+                # Escalate severity when the discovered parameter name suggests
+                # a URL-carrying field — a common SSRF attack surface.
+                _SSRF_PARAM_KEYWORDS = {
+                    "url", "uri", "host", "endpoint", "target", "webhook",
+                    "callback", "redirect", "link", "href", "src", "source",
+                    "dest", "destination", "fetch", "feed", "import",
+                    "imageurl", "avatarurl", "feedurl", "importurl",
+                }
+                _param_lower = param_name.lower()
+                _is_ssrf_candidate = any(kw in _param_lower for kw in _SSRF_PARAM_KEYWORDS)
+
+                if _is_ssrf_candidate:
+                    _severity = Severity.MEDIUM
+                    _category = "PARAMETER_FOUND"
+                    _owasp_category = "API7"
+                    _evidence = (
+                        f"Query parameter '{param_name}' discovered - response differs from baseline. "
+                        f"Parameter name suggests a URL-carrying field — potential SSRF attack surface. "
+                        f"Test manually with internal target payloads (e.g. ?{param_name}=http://127.0.0.1/)."
+                    )
+                    _recommendation = (
+                        f"The '{param_name}' parameter likely accepts a URL for server-side fetching. "
+                        "Verify that outbound requests are restricted to an explicit allow-list of "
+                        "permitted hosts and schemes. Test with: "
+                        f"?{param_name}=http://169.254.169.254/latest/meta-data/"
+                    )
+                else:
+                    _severity = Severity.INFO
+                    _category = "PARAMETER_FOUND"
+                    _owasp_category = None
+                    _evidence = f"Query parameter '{param_name}' discovered - response differs from baseline"
+                    _recommendation = "Review parameter usage and ensure proper validation"
+
                 finding = Finding(
                     id=str(uuid4()),
                     scan_id="",  # Will be set by findings collector
-                    category="PARAMETER_FOUND",
-                    owasp_category=None,
-                    severity=Severity.INFO,
+                    category=_category,
+                    owasp_category=_owasp_category,
+                    severity=_severity,
                     endpoint=endpoint.url,
                     method=endpoint.method,
                     status_code=test_response.status_code,
                     response_size=len(test_response.content),
                     response_time=test_response.elapsed,
-                    evidence=f"Query parameter '{param_name}' discovered - response differs from baseline",
-                    recommendation="Review parameter usage and ensure proper validation",
+                    evidence=_evidence,
+                    recommendation=_recommendation,
                     payload=f"?{param_name}={sentinel}",
                     headers=dict(test_response.headers),
                     detection_signal=self._primary_signal(diff),

@@ -604,6 +604,40 @@ Each finding represents a candidate parameter that produced a detectable respons
 2. **Medium confidence** — New JSON field findings: the parameter unlocks additional response data, suggesting it is processed server-side.
 3. **Lower confidence** — Status code or body size changes without confirmation: may indicate a real parameter but can also be transient noise (use `--confirm-hits` to filter).
 
+### SSRF-Candidate Escalation
+
+When `par` discovers a query parameter whose name contains a URL-carrying keyword — `url`, `uri`, `host`, `endpoint`, `target`, `webhook`, `callback`, `redirect`, `src`, `feed`, `imageUrl`, etc. — the finding is automatically escalated:
+
+| Without keyword match | With keyword match (`url`, `callback`, `webhook`, …) |
+|----------------------|------------------------------------------------------|
+| Severity: **INFO** | Severity: **MEDIUM** |
+| OWASP: — | OWASP: **API7** (SSRF) |
+| Generic recommendation | Recommendation includes SSRF test payload |
+
+This means `par` acts as a **first-phase SSRF reconnaissance step**: it discovers which URL-accepting parameters exist, and marks them for follow-up with `owasp ssrf`.
+
+**Example finding evidence for an escalated parameter:**
+```
+Query parameter 'url' discovered - response differs from baseline.
+Parameter name suggests a URL-carrying field — potential SSRF attack surface.
+Test manually with internal target payloads (e.g. ?url=http://127.0.0.1/).
+```
+
+**Recommended follow-up workflow:**
+```bash
+# Step 1: discover URL-accepting parameters
+python apileaks.py par \
+  --target https://api.example.com/v1/proxy \
+  --methods GET
+
+# Step 2: exploit confirmed URL params with SSRF probes
+python apileaks.py owasp ssrf \
+  --target https://api.example.com \
+  --openapi /tmp/spec.json \
+  --ssrf-internal-targets 169.254.169.254 \
+  --ssrf-body-methods POST
+```
+
 ### Example JSONL Output
 
 ```json

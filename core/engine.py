@@ -500,6 +500,27 @@ class APILeakCore:
                     resume_checkpoint
                 )
 
+            # Streaming JSONL output (Streaming_Hit_Output). When the dir command
+            # stashed a path on the core via ``discovery_streaming_output_path``,
+            # open the file now and attach the handle to the EndpointFuzzer so
+            # each hit is written immediately as it is discovered.
+            streaming_path = getattr(self, 'discovery_streaming_output_path', None)
+            if streaming_path:
+                try:
+                    import os as _os
+                    _os.makedirs(
+                        _os.path.dirname(_os.path.abspath(streaming_path)),
+                        exist_ok=True,
+                    )
+                    self.fuzzing_orchestrator.endpoint_fuzzer.streaming_output_handle = open(
+                        streaming_path, "w", encoding="utf-8"
+                    )
+                except OSError as exc:
+                    self.logger.warning(
+                        "Could not open streaming output file",
+                        path=streaming_path, error=str(exc),
+                    )
+
     def _prepare_parameter_target(self, target: str) -> None:
         """Seed ``self.discovered_endpoints`` with a synthetic parameter target.
 

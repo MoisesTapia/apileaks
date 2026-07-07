@@ -99,6 +99,16 @@ def _validate_retries(ctx, param, value):
 TRANSVERSAL_OPTIONS = [
     # --- target -----------------------------------------------------------
     click.option('--target', '-t', help='Target URL to scan (overrides config)'),
+    click.option('--target-file', 'target_file', default=None,
+                 type=click.Path(exists=True, readable=True,
+                                 file_okay=True, dir_okay=False),
+                 metavar='FILE',
+                 help='Plain-text file with one target URL per line (# comments and blank '
+                      'lines are skipped). Lines without a scheme are auto-prefixed with '
+                      'https://. When supplied, --target is optional; both can be given '
+                      'together (--target becomes an implicit first entry).'),
+    click.option('--max-hosts', 'max_hosts', type=int, default=None, metavar='N',
+                 help='Maximum number of hosts to scan from --target-file (scans the first N).'),
     # --- output / logging -------------------------------------------------
     click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)'),
     click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),

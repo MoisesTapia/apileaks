@@ -9,8 +9,8 @@ APILeak Enhanced Scan Completed Successfully
 Target: https://api.example.test
 Scan ID: <SCAN_ID>
 Duration: <DURATION>
-📊 Discovery stats: 0 endpoint(s) tested, 0 discovered, 353 request(s), 100.0% success rate, recursion depth 0
-Total Parameters Tested: 352
+📊 Discovery stats: 0 endpoint(s) tested, 0 discovered, 1068 request(s), 100.0% success rate, recursion depth 0
+Total Parameters Tested: 1066
 Total Findings: 0
 Critical: 0
 High: 0

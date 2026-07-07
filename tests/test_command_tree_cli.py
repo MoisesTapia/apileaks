@@ -26,7 +26,7 @@ from click.testing import CliRunner
 from apileaks import cli
 
 
-# The exact thirteen JWT_CLI_Group subcommands (R7.1). Order-independent set.
+# The exact fourteen JWT_CLI_Group subcommands (R7.1). Order-independent set.
 EXPECTED_JWT_SUBCOMMANDS = {
     "decode",
     "encode",
@@ -41,6 +41,7 @@ EXPECTED_JWT_SUBCOMMANDS = {
     "test-jwks-spoof",
     "test-inline-jwks",
     "attack-test",
+    "login",
 }
 
 
@@ -154,7 +155,7 @@ def test_owasp_dir_and_owasp_par_error_nonzero():
 # --------------------------------------------------------------------------- #
 
 def test_jwt_group_has_exactly_the_twelve_named_subcommands():
-    """The ``jwt`` group exposes exactly the thirteen named subcommands (R7.1).
+    """The ``jwt`` group exposes exactly the fourteen named subcommands (R7.1).
 
     No subcommand is added to or removed from the set.
 
@@ -162,7 +163,7 @@ def test_jwt_group_has_exactly_the_twelve_named_subcommands():
     """
     jwt_group = _jwt_group()
     assert set(jwt_group.commands) == EXPECTED_JWT_SUBCOMMANDS
-    assert len(jwt_group.commands) == 13
+    assert len(jwt_group.commands) == 14
 
 
 def test_jwt_subcommand_names_match_character_for_character():
