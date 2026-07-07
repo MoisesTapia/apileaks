@@ -21,7 +21,6 @@ This module contains no OWASP detection logic; it only declares CLI options.
 
 import click
 
-
 # ---------------------------------------------------------------------------
 # Validation callbacks (copied verbatim from apileaks.py so validation behavior
 # on every command that accepts Transversal_Options is byte-identical to the

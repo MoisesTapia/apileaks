@@ -5,38 +5,62 @@ Enterprise-grade API fuzzing and OWASP testing tool
 """
 
 import asyncio
-import sys
-import json
 import copy
-import re
-from datetime import datetime, timezone
-from pathlib import Path
-import click
+import json
 import os
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Optional
 
+import click
+
+from cli.module_options import auth_options, bola_options
+from cli.owasp_descriptors import (
+    OWASP_MODULE_DESCRIPTORS,
+    OwaspModuleDescriptor,
+    all_keys,
+    get_descriptor,
+)
+from cli.shared_options import (
+    _validate_concurrency,
+    _validate_depth,
+    _validate_max_requests,
+    _validate_retries,
+    _validate_timeout,
+    transversal_options,
+)
 from core import APILeakCore, ConfigurationManager, setup_logging
 from core import __version__ as APILEAK_VERSION
 from core.config import AuthContext, AuthType, load_actor_profiles, load_unauthorized_assertions
 from core.logging import get_logger
-from utils.jwt_utils import (
-    decode_jwt,
-    encode_jwt,
-    print_jwt_info,
-    colorize_jwt,
-    JWT_HEADER_COLOR,
-    JWT_PAYLOAD_COLOR,
-    JWT_SIGNATURE_COLOR,
-    verify_hmac_secret,
-    verify_token,
-    generate_rsa_keypair,
-    generate_ec_keypair,
-    reconstruct_public_key_from_jwks,
-    read_vector_file,
-    parse_raw_request,
+from modules.fuzzing.markers import (
+    FuzzMode,
+    associate_wordlists,
+    find_markers,
+    parse_fuzz_mode,
+    validate_fuzz_keyword,
 )
-from utils.jwt_attack_engine import JWTAttackEngine
-from utils.jwt_attack_models import AttackType
+from modules.fuzzing.orchestrator import normalize_extensions
+from utils.discovery_checkpoint import (
+    DiscoveryCheckpoint,
+    DiscoveryCheckpointError,
+)
+from utils.discovery_export import DiscoveryExportError, write_discovery_export
+from utils.discovery_output import (
+    DiscoveryOutputError,
+    write_discovery_output,
+)
+from utils.discovery_progress import DiscoveryProgress
+from utils.discovery_scope import (
+    PathScopeError,
+    RecursionScopeError,
+    StorageStatusError,
+    parse_path_scope,
+    parse_recursion_scope,
+    parse_storage_status_selection,
+)
 from utils.discovery_session import (
     DiscoveryResult,
     DiscoverySession,
@@ -46,34 +70,24 @@ from utils.discovery_session import (
     parse_status_filter,
     status_code_class,
 )
-from utils.discovery_checkpoint import (
-    DiscoveryCheckpoint,
-    DiscoveryCheckpointError,
-)
-from modules.fuzzing.orchestrator import normalize_extensions
-from modules.fuzzing.markers import (
-    FuzzMode,
-    associate_wordlists,
-    find_markers,
-    parse_fuzz_mode,
-    validate_fuzz_keyword,
-)
 from utils.http_client import parse_resolve
-from utils.discovery_export import DiscoveryExportError, write_discovery_export
-from utils.discovery_output import (
-    DiscoveryOutputError,
-    UnsupportedOutputFormatError,
-    write_discovery_output,
-)
-from utils.triage_table import render_triage_table
-from utils.discovery_progress import DiscoveryProgress
-from utils.discovery_scope import (
-    PathScopeError,
-    RecursionScopeError,
-    StorageStatusError,
-    parse_path_scope,
-    parse_recursion_scope,
-    parse_storage_status_selection,
+from utils.jwt_attack_engine import JWTAttackEngine
+from utils.jwt_attack_models import AttackType
+from utils.jwt_utils import (
+    JWT_HEADER_COLOR,
+    JWT_PAYLOAD_COLOR,
+    JWT_SIGNATURE_COLOR,
+    colorize_jwt,
+    decode_jwt,
+    encode_jwt,
+    generate_ec_keypair,
+    generate_rsa_keypair,
+    parse_raw_request,
+    print_jwt_info,
+    read_vector_file,
+    reconstruct_public_key_from_jwks,
+    verify_hmac_secret,
+    verify_token,
 )
 from utils.response_selector import (
     DiscoveryResultEx,
@@ -87,30 +101,14 @@ from utils.spec_import import (
     SpecSchema,
     import_openapi,
     import_postman,
-    import_schema,
     import_postman_schema,
+    import_schema,
     load_schema,
     merge_candidates,
     normalize_candidate_path,
 )
 from utils.spec_import import _parse_document as _parse_spec_document
-
-from cli.owasp_descriptors import (
-    OWASP_MODULE_DESCRIPTORS,
-    OwaspModuleDescriptor,
-    all_keys,
-    get_descriptor,
-    iter_descriptors,
-)
-from cli.shared_options import transversal_options
-from cli.shared_options import (
-    _validate_depth,
-    _validate_max_requests,
-    _validate_concurrency,
-    _validate_timeout,
-    _validate_retries,
-)
-from cli.module_options import auth_options, bola_options
+from utils.triage_table import render_triage_table
 
 
 def parse_response_codes(response_filter: str) -> list:
@@ -137,7 +135,7 @@ def parse_response_codes(response_filter: str) -> list:
             except ValueError:
                 click.echo(f"Warning: Invalid response code '{part}', ignoring", err=True)
 
-    return sorted(list(set(codes)))  # Remove duplicates and sort
+    return sorted(set(codes))  # Remove duplicates and sort
 
 
 def parse_status_codes(status_filter: str) -> list:
@@ -164,7 +162,7 @@ def parse_status_codes(status_filter: str) -> list:
             except ValueError:
                 click.echo(f"Warning: Invalid status code '{part}', ignoring", err=True)
 
-    return sorted(list(set(codes)))  # Remove duplicates and sort
+    return sorted(set(codes))  # Remove duplicates and sort
 
 
 
@@ -278,7 +276,7 @@ def _validate_resolve(ctx, param, value):
     try:
         return parse_resolve(value)
     except ValueError as exc:
-        raise click.BadParameter(str(exc))
+        raise click.BadParameter(str(exc)) from exc
 
 
 def _validate_secret_patterns(ctx, param, value):
@@ -295,16 +293,16 @@ def _validate_secret_patterns(ctx, param, value):
         return None
     _assert_readable(value, "--secret-patterns")
     try:
-        with open(value, "r", encoding="utf-8") as handle:
+        with open(value, encoding="utf-8") as handle:
             data = json.load(handle)
     except json.JSONDecodeError as exc:
         raise click.BadParameter(
             f"--secret-patterns file is not valid JSON: {value} ({exc})"
-        )
+        ) from exc
     except OSError as exc:
         raise click.BadParameter(
             f"--secret-patterns file cannot be read: {value} ({exc})"
-        )
+        ) from exc
 
     if not isinstance(data, dict) or not data:
         raise click.BadParameter(
@@ -324,7 +322,7 @@ def _validate_secret_patterns(ctx, param, value):
         except re.error as exc:
             raise click.BadParameter(
                 f"--secret-patterns regex for '{name}' is invalid: {exc}"
-            )
+            ) from exc
         patterns[name] = pattern
     return patterns
 
@@ -429,7 +427,7 @@ def parse_auth_context_option(values):
                 raise click.BadParameter(
                     f"--auth-context privilege suffix must be an integer "
                     f"(got {parts[2]!r} in {value!r})."
-                )
+                ) from None
         contexts.append(AuthContext(
             name=name,
             type=AuthType.BEARER,
@@ -495,7 +493,7 @@ def load_user_agents_from_file(file_path):
     """Load user agents from file, filtering out empty lines and comments"""
     try:
         user_agents = []
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#'):
@@ -522,12 +520,12 @@ def parse_target_file(path: str) -> list:
     Raises :class:`click.BadParameter` when the file cannot be read.
     """
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             raw_lines = fh.readlines()
     except OSError as exc:
-        raise click.BadParameter(f"--target-file cannot be read: {path} ({exc})")
+        raise click.BadParameter(f"--target-file cannot be read: {path} ({exc})") from exc
 
-    targets: List[str] = []
+    targets: list[str] = []
     for line in raw_lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -555,10 +553,10 @@ def _read_wordlist_entries(source):
     elif source.startswith(ASSETNOTE_PREFIX):
         # Resolve (and auto-download) the Assetnote wordlist; then read it.
         resolved = resolve_wordlist(source, show_progress=True)
-        with open(resolved, 'r', encoding='utf-8', errors='replace') as handle:
+        with open(resolved, encoding='utf-8', errors='replace') as handle:
             lines = handle.readlines()
     else:
-        with open(source, 'r', encoding='utf-8') as handle:
+        with open(source, encoding='utf-8') as handle:
             lines = handle.readlines()
 
     entries = []
@@ -1753,7 +1751,7 @@ def _load_spec_brute_wordlist(wordlist_path: str) -> list:
     """Load and normalise the brute-force wordlist, stripping blanks/comments."""
     entries = []
     try:
-        with open(wordlist_path, "r", encoding="utf-8") as fh:
+        with open(wordlist_path, encoding="utf-8") as fh:
             for line in fh:
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#"):
@@ -1762,7 +1760,7 @@ def _load_spec_brute_wordlist(wordlist_path: str) -> list:
     except OSError as exc:
         raise click.BadParameter(
             f"--brute-spec-wordlist cannot be read: {wordlist_path} ({exc})"
-        )
+        ) from exc
     return entries
 
 
@@ -1806,8 +1804,9 @@ async def _brute_spec_async(
     Returns a list of dicts with keys: url, status, content_type, size, spec.
     ``spec`` is True when _looks_like_spec() matched.
     """
-    import httpx
     import asyncio as _asyncio
+
+    import httpx
 
     base = target.rstrip("/")
     hits = []
@@ -2168,7 +2167,7 @@ def _select_records(
                 elapsed=getattr(endpoint, "response_time", 0.0) or 0.0,
                 text="",
             )
-            for record, endpoint in zip(records, endpoints)
+            for record, endpoint in zip(records, endpoints, strict=False)
         ]
     else:
         views = [DiscoveryResultEx(result=record) for record in records]
@@ -2430,7 +2429,7 @@ def _run_dir_triage(
         if save_session:
             session = DiscoverySession(
                 target=target,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 tool_version=APILEAK_VERSION,
                 results=records,
             )
@@ -3149,7 +3148,7 @@ def _run_dir_core(*, target, ctx,
                         f"unreadable wordlist source '{assoc[0]}': {exc2}"
                     ) from exc2
             if resolved_fuzz_mode == FuzzMode.PITCHFORK:
-                for marker, entries in zip(markers, marker_wordlists):
+                for marker, entries in zip(markers, marker_wordlists, strict=False):
                     if not entries:
                         raise ValueError(
                             f"Pitchfork_Mode requires a non-empty wordlist for "
@@ -3355,8 +3354,8 @@ def _run_dir_multi_target(*, targets, ctx, **kwargs):
     behaviour exactly.
     """
     import concurrent.futures
-    from urllib.parse import urlparse as _urlparse
     import threading
+    from urllib.parse import urlparse as _urlparse
 
     _RESET  = "\033[0m"
     _BOLD   = "\033[1m"
@@ -3626,23 +3625,23 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
         sys.exit(1)
 
     # Forward shared kwargs so the multi-target helper can call par_core per host.
-    _par_kwargs = dict(
-        wordlist=wordlist, output=output, log_level=log_level, log_file=log_file,
-        json_logs=json_logs, rate_limit=rate_limit, methods=methods,
-        fuzz_keyword=fuzz_keyword, fuzz_mode=fuzz_mode,
-        user_agent_random=user_agent_random, user_agent_custom=user_agent_custom,
-        user_agent_file=user_agent_file, jwt=jwt, response=response,
-        status_code=status_code, detect_framework=detect_framework,
-        proxy=proxy, proxy_verify_ssl=proxy_verify_ssl, concurrency=concurrency,
-        confirm_hits=confirm_hits, max_requests=max_requests, timeout=timeout,
-        retries=retries, header=header, cookie=cookie, basic_auth=basic_auth,
-        match_size=match_size, match_words=match_words, match_lines=match_lines,
-        match_regex=match_regex, match_time=match_time, filter_size=filter_size,
-        filter_words=filter_words, filter_lines=filter_lines,
-        filter_regex=filter_regex, filter_time=filter_time,
-        output_format=output_format, output_file=output_file,
-        client_cert=client_cert, ca_bundle=ca_bundle, resolve=resolve,
-    )
+    _par_kwargs = {
+        'wordlist': wordlist, 'output': output, 'log_level': log_level, 'log_file': log_file,
+        'json_logs': json_logs, 'rate_limit': rate_limit, 'methods': methods,
+        'fuzz_keyword': fuzz_keyword, 'fuzz_mode': fuzz_mode,
+        'user_agent_random': user_agent_random, 'user_agent_custom': user_agent_custom,
+        'user_agent_file': user_agent_file, 'jwt': jwt, 'response': response,
+        'status_code': status_code, 'detect_framework': detect_framework,
+        'proxy': proxy, 'proxy_verify_ssl': proxy_verify_ssl, 'concurrency': concurrency,
+        'confirm_hits': confirm_hits, 'max_requests': max_requests, 'timeout': timeout,
+        'retries': retries, 'header': header, 'cookie': cookie, 'basic_auth': basic_auth,
+        'match_size': match_size, 'match_words': match_words, 'match_lines': match_lines,
+        'match_regex': match_regex, 'match_time': match_time, 'filter_size': filter_size,
+        'filter_words': filter_words, 'filter_lines': filter_lines,
+        'filter_regex': filter_regex, 'filter_time': filter_time,
+        'output_format': output_format, 'output_file': output_file,
+        'client_cert': client_cert, 'ca_bundle': ca_bundle, 'resolve': resolve,
+    }
 
     if len(all_targets) > 1:
         _run_par_multi_target(all_targets, ctx=ctx, **_par_kwargs)
@@ -3808,7 +3807,7 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
 
                 # 6. Pitchfork empty-wordlist check (R7.5 / R10.5).
                 if resolved_fuzz_mode == FuzzMode.PITCHFORK:
-                    for marker, entries in zip(markers, marker_wordlists):
+                    for marker, entries in zip(markers, marker_wordlists, strict=False):
                         if not entries:
                             raise ValueError(
                                 "Pitchfork_Mode requires a non-empty wordlist for "
@@ -4010,7 +4009,7 @@ def _validate_baseline_readable(baseline):
         # this is documented behavior and NOT the malformed/unreadable case.
         return
     try:
-        with open(baseline, "r", encoding="utf-8") as handle:
+        with open(baseline, encoding="utf-8") as handle:
             json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
         click.echo(
@@ -4206,7 +4205,6 @@ def _run_scan_multi_target(ctx, *, targets, selected_keys, descriptors,
             per_opts["output"] = f"scan_{safe}"
 
         error_msg = None
-        findings_count = 0
         try:
             _build_and_run(
                 ctx,
@@ -4376,7 +4374,7 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
         try:
             actor_profiles = load_actor_profiles(opts['actor_profile'])
         except ValueError as exc:
-            raise click.BadParameter(str(exc))
+            raise click.BadParameter(str(exc)) from exc
 
     # 1f. Parse the --unauthorized-assertions source up front (like
     #     --actor-profile) so a missing/unreadable/unparseable source, or a
@@ -4389,7 +4387,7 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
             unauthorized_endpoint_assertions = load_unauthorized_assertions(
                 opts['unauthorized_assertions'])
         except ValueError as exc:
-            raise click.BadParameter(str(exc))
+            raise click.BadParameter(str(exc)) from exc
 
     # 1g. Parse the repeatable --openapi / --postman Spec_Sources into one merged
     #     Spec_Schema up front so an unreadable or unparseable source is surfaced
@@ -4940,8 +4938,8 @@ def _build_jwt_http_engine(timeout=30, verify_ssl=True):
     proxy, User-Agent rotation, and TLS controls as the rest of the tool
     (Requirement 17.1).
     """
-    from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
     from core.config import RateLimitConfig
+    from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
 
     rate_limiter = RateLimiter(RateLimitConfig())
     retry_config = RetryConfig(max_attempts=3)
@@ -5031,7 +5029,7 @@ def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
         engine = _make_jwt_engine(token, url, custom_headers, data,
                                   public_key_material=public_key_material)
         _display_generated_tokens(engine, attack_type)
-        click.echo(f"\n⚠️  Manual Testing Required (no --url provided):")
+        click.echo("\n⚠️  Manual Testing Required (no --url provided):")
         click.echo("• Test each generated token against your API endpoints")
         click.echo("• If a token is accepted, the server is vulnerable to this attack")
         return
@@ -5166,10 +5164,12 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         # --public-key: key confusion attack — sign with raw DER bytes of the
         # public key as the HMAC secret, exactly as vulnerable libraries do.
         if public_key_file:
-            from cryptography.hazmat.primitives.serialization import (
-                load_pem_public_key, Encoding, PublicFormat
-            )
             from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives.serialization import (
+                Encoding,
+                PublicFormat,
+                load_pem_public_key,
+            )
             try:
                 pem_data = Path(public_key_file).read_bytes()
                 pub_key = load_pem_public_key(pem_data, backend=default_backend())
@@ -5181,13 +5181,15 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
 
             # Build token manually using raw DER bytes as HMAC key
             import base64 as _b64
+            import hashlib as _hashlib
+            import hmac as _hmac
             def _b64url(data: bytes) -> str:
                 return _b64.urlsafe_b64encode(data).rstrip(b'=').decode()
 
             h_enc = _b64url(json.dumps(header_dict, separators=(',', ':')).encode())
             p_enc = _b64url(json.dumps(payload_dict, separators=(',', ':')).encode())
             msg = f"{h_enc}.{p_enc}".encode()
-            sig = hmac.new(der_bytes, msg, hashlib.sha256).digest()
+            sig = _hmac.new(der_bytes, msg, _hashlib.sha256).digest()
             token = f"{h_enc}.{p_enc}.{_b64url(sig)}"
             secret_label = f"<DER bytes of {public_key_file}>"
         else:
@@ -5222,7 +5224,7 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
 
         click.echo("📋 Header: " + click.style(json.dumps(header_dict), fg=JWT_HEADER_COLOR))
         click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
-        click.echo(f"\n🎫 Generated Token:")
+        click.echo("\n🎫 Generated Token:")
         click.echo("-" * 20)
         if is_none_alg:
             # colorize_jwt would fail on an empty/absent signature — print raw token.
@@ -5274,14 +5276,14 @@ def jwt_verify_cmd(ctx, token, secret, key_file, pem, jwks_file):
         jwks_dict = None
         if jwks_file is not None:
             try:
-                with open(jwks_file, 'r') as fh:
+                with open(jwks_file) as fh:
                     jwks_dict = json.loads(fh.read())
             except FileNotFoundError:
-                raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found")
+                raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found") from None
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}")
+                raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}") from exc
             except OSError as exc:
-                raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}")
+                raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}") from exc
 
         result = verify_token(
             token,
@@ -5378,14 +5380,14 @@ def jwt_jwks_to_key_cmd(ctx, jwks_file):
         # The JWKS file is read locally (no network, Req 66.4). A read/parse
         # failure names the offending source (Req 66.5).
         try:
-            with open(jwks_file, 'r') as fh:
+            with open(jwks_file) as fh:
                 jwks_data = json.loads(fh.read())
         except FileNotFoundError:
-            raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found")
+            raise ValueError(f"Could not read JWKS file '{jwks_file}': file not found") from None
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}")
+            raise ValueError(f"Could not parse JWKS file '{jwks_file}': {exc}") from exc
         except OSError as exc:
-            raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}")
+            raise ValueError(f"Could not read JWKS file '{jwks_file}': {exc}") from exc
 
         # Accept either a full JWKS ({"keys": [...]}) or a single JWK entry.
         if isinstance(jwks_data, dict) and 'keys' in jwks_data:
@@ -5480,7 +5482,7 @@ def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
         _run_jwt_vector(base_token, AttackType.ALG_NONE, url, custom_headers,
                         data, timeout)
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• Configure JWT library to REJECT alg:none tokens")
         click.echo("• Implement algorithm whitelist (e.g., only allow HS256, RS256)")
         click.echo("• Never trust the algorithm specified in JWT header")
@@ -5553,7 +5555,7 @@ def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
         _run_jwt_vector(base_token, AttackType.NULL_SIGNATURE, url, custom_headers,
                         data, timeout)
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• Implement proper signature validation - never accept empty signatures")
         click.echo("• Validate signature length and format before verification")
         click.echo("• Use established JWT libraries with proper validation")
@@ -5645,7 +5647,7 @@ def jwt_test_alg_confusion(ctx, token, public_key, payload, url, header, data, t
                         custom_headers, data, timeout,
                         public_key_material=public_key_material)
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• Bind each key to a single algorithm; never share keys across alg families")
         click.echo("• Enforce an algorithm allowlist (e.g. only RS256) during verification")
         click.echo("• Never let the token header dictate the verification algorithm")
@@ -5728,7 +5730,7 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
             click.echo(f"✅ Created default wordlist: {wordlist}")
 
         # Load secrets from wordlist
-        with open(wordlist, 'r') as f:
+        with open(wordlist) as f:
             secrets = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
         # Decode token to get header and payload
@@ -5767,19 +5769,19 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
                 continue
 
         if found_secret is None:
-            click.echo(f"\n❌ Secret not found in wordlist")
-            click.echo(f"💡 Try a larger wordlist or the secret may be strong")
+            click.echo("\n❌ Secret not found in wordlist")
+            click.echo("💡 Try a larger wordlist or the secret may be strong")
             return
 
         # 🎉 SECRET RECOVERED! Report the recovered secret AND the matching
         # algorithm (Req 16.4). The matching algorithm is the header ``alg`` that
         # verify_hmac_secret validated the signature against.
-        click.echo(f"\n" + "="*60)
+        click.echo("\n" + "="*60)
         click.echo("🎉 SUCCESS! HMAC SECRET RECOVERED!")
         click.echo("="*60)
         click.echo(f"🔑 Recovered Secret: '{found_secret}'")
         click.echo(f"🧮 Matching Algorithm: {algorithm}")
-        click.echo(f"⚠️  This JWT uses a weak secret that can be brute-forced!")
+        click.echo("⚠️  This JWT uses a weak secret that can be brute-forced!")
         click.echo("")
 
         # 4️⃣ & 5️⃣ Forge and exploit through the single-source-of-truth engine.
@@ -5821,14 +5823,14 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
             click.echo("\n⚠️  Provide --url to test the forged tokens against an endpoint")
 
         # Summary and recommendations
-        click.echo(f"\n" + "="*60)
+        click.echo("\n" + "="*60)
         click.echo("🔥 ATTACK SUMMARY")
         click.echo("="*60)
         click.echo(f"✅ Secret recovered: '{found_secret}' (alg: {algorithm})")
         if url:
-            click.echo(f"✅ Endpoint testing completed")
+            click.echo("✅ Endpoint testing completed")
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• Use a strong, randomly generated HMAC secret (32+ characters)")
         click.echo("• Consider switching to RS256 (asymmetric) algorithm")
         click.echo("• Implement proper secret rotation policies")
@@ -5923,7 +5925,7 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
         _run_jwt_vector(base_token, AttackType.KID_INJECTION, url, custom_headers,
                         data, timeout)
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• Validate and sanitize kid parameter before use")
         click.echo("• Use allowlist of permitted key identifiers")
         click.echo("• Never use kid parameter directly in file paths or URLs")
@@ -5995,7 +5997,7 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
         _run_jwt_vector(token, AttackType.JWKS_SPOOF, url, custom_headers,
                         data, timeout)
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• Implement JWKS URL allowlist - only trust known, legitimate URLs")
         click.echo("• Validate JWKS URLs against strict patterns")
         click.echo("• Use certificate pinning for JWKS endpoints")
@@ -6066,7 +6068,7 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
         _run_jwt_vector(token, AttackType.INLINE_JWKS, url, custom_headers,
                         data, timeout)
 
-        click.echo(f"\n💡 REMEDIATION:")
+        click.echo("\n💡 REMEDIATION:")
         click.echo("• NEVER trust inline JWK parameters in JWT headers")
         click.echo("• Implement strict JWK source validation")
         click.echo("• Use static key stores with predefined keys only")
@@ -6355,8 +6357,8 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
         # through the shared HTTPRequestEngine (Requirement 17.1). Success is
         # decided by the engine's response analyzer, not keyword presence
         # (Requirements 19.1, 19.2).
-        from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
         from core.config import RateLimitConfig
+        from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
 
         async def run_attack_test():
             rate_limiter = RateLimiter(RateLimitConfig())
@@ -6871,7 +6873,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
             click.echo(f"Low: {results.statistics.low_findings}")
             click.echo(f"Info: {results.statistics.info_findings}")
 
-        click.echo(f"\nReports generated:")
+        click.echo("\nReports generated:")
         for report_file in report_files:
             click.echo(f"  - {report_file}")
 
@@ -7016,10 +7018,11 @@ def replay_cmd(ctx, report, url_filter, method_filter, source_filter, index,
       apileaks replay reports/scan.json --url /admin --all
     """
     import asyncio
+
     from utils.replay import (
-        load_report,
         _extract_requests_from_report,
         filter_requests,
+        load_report,
         print_request_list,
         replay_request,
     )

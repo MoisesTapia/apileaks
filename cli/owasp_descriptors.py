@@ -15,13 +15,9 @@ the engine's default ``enabled_modules`` set, so drift between the engine and th
 CLI fails fast at import rather than silently omitting a subcommand.
 """
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Optional
-
-# Match the package-relative import style used across ``apileaks/`` (e.g.
-# ``from core.config import ...`` in modules/owasp/*), so this module imports
-# cleanly when the ``apileaks`` directory is the import root.
-from core.config import OWASPConfig
+from typing import Optional
 
 from cli.module_options import (
     apply_auth_options,
@@ -31,6 +27,11 @@ from cli.module_options import (
     bola_options,
     ssrf_options,
 )
+
+# Match the package-relative import style used across ``apileaks/`` (e.g.
+# ``from core.config import ...`` in modules/owasp/*), so this module imports
+# cleanly when the ``apileaks`` directory is the import root.
+from core.config import OWASPConfig
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class OwaspModuleDescriptor:
 # Descriptors in OWASP category order (API1..API10). NOTE: this order differs
 # from the engine's default ``enabled_modules`` list order (ssrf/business_flow
 # are swapped there); the consistency guard below compares sets, not order.
-OWASP_MODULE_DESCRIPTORS: List[OwaspModuleDescriptor] = [
+OWASP_MODULE_DESCRIPTORS: list[OwaspModuleDescriptor] = [
     OwaspModuleDescriptor(
         key="bola",
         owasp_category="API1",
@@ -155,7 +156,7 @@ def get_descriptor(key: str) -> OwaspModuleDescriptor:
     )
 
 
-def all_keys() -> List[str]:
+def all_keys() -> list[str]:
     """Return the descriptor keys in OWASP category order (API1..API10)."""
     return [descriptor.key for descriptor in OWASP_MODULE_DESCRIPTORS]
 
