@@ -4,21 +4,20 @@ Implements OWASP API9 - Improper Inventory Management testing
 """
 
 import re
-from typing import List, Dict, Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
-from .registry import OWASPModule
-from utils.findings import Finding
-from utils.http_client import HTTPRequestEngine
-from core.config import InventoryConfig, AuthContext, Severity
+from core.config import AuthContext, InventoryConfig, Severity
 from core.logging import get_logger
-
 from modules.advanced.version_fuzzer import (
+    APIVersion,
     VersionFuzzer,
     VersionFuzzingConfig,
-    APIVersion,
 )
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine
 
+from .registry import OWASPModule
 
 # HTTP methods that change server state. This module only issues read/GET
 # probes (via the version fuzzer) so it is inherently safe-mode compatible;
@@ -48,7 +47,7 @@ class InventoryManagementModule(OWASPModule):
     """
 
     def __init__(self, config: InventoryConfig, http_client: HTTPRequestEngine,
-                 auth_contexts: List[AuthContext]):
+                 auth_contexts: list[AuthContext]):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -69,7 +68,7 @@ class InventoryManagementModule(OWASPModule):
         """Get module name"""
         return "inventory"
 
-    async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
         """
         Execute inventory management tests on discovered endpoints.
 
@@ -93,7 +92,7 @@ class InventoryManagementModule(OWASPModule):
         if self.auth_contexts:
             self.http_client.set_auth_context(self.auth_contexts[0])
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         # Derive the distinct base URLs (scheme://host[:port]) from endpoints so
         # we fuzz each host once rather than per endpoint path.
@@ -114,9 +113,9 @@ class InventoryManagementModule(OWASPModule):
 
         return findings
 
-    def _collect_base_urls(self, endpoints: List[Any]) -> List[str]:
+    def _collect_base_urls(self, endpoints: list[Any]) -> list[str]:
         """Extract a de-duplicated list of base URLs from the endpoints."""
-        base_urls: List[str] = []
+        base_urls: list[str] = []
         seen = set()
 
         for endpoint in endpoints:
@@ -136,7 +135,7 @@ class InventoryManagementModule(OWASPModule):
 
         return base_urls
 
-    async def _discover_versions(self, base_url: str) -> List[APIVersion]:
+    async def _discover_versions(self, base_url: str) -> list[APIVersion]:
         """
         Enumerate API versions for a base URL by composing VersionFuzzer.
 
@@ -151,14 +150,14 @@ class InventoryManagementModule(OWASPModule):
         return versions or []
 
     def _classify_versions(self, base_url: str,
-                           versions: List[APIVersion]) -> List[Finding]:
+                           versions: list[APIVersion]) -> list[Finding]:
         """
         Classify discovered versions into findings:
           - deprecated -> DEPRECATED_API_VERSION
           - development/shadow -> UNDOCUMENTED_API_VERSION
           - active but not the current (highest) version -> NON_CURRENT_API_VERSION
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not versions:
             return findings
@@ -221,13 +220,13 @@ class InventoryManagementModule(OWASPModule):
         return findings
 
     def _determine_current_version(self,
-                                   versions: List[APIVersion]) -> Optional[str]:
+                                   versions: list[APIVersion]) -> str | None:
         """
         Determine the current version as the one with the highest numeric
         component. Returns the version string, or None when no numeric version
         can be derived.
         """
-        best_version: Optional[str] = None
+        best_version: str | None = None
         best_number = -1
 
         for version in versions:
@@ -239,7 +238,7 @@ class InventoryManagementModule(OWASPModule):
         return best_version
 
     @staticmethod
-    def _extract_version_number(version_str: str) -> Optional[int]:
+    def _extract_version_number(version_str: str) -> int | None:
         """Extract the leading numeric component of a version string."""
         if not version_str:
             return None
