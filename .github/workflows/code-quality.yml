@@ -1,0 +1,38 @@
+name: Code Quality — Ruff
+
+on:
+  push:
+    branches: [main, develop, v0.2.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ruff:
+    name: Ruff Lint & Format Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ruff
+        run: pip install ruff==0.9.10
+
+      - name: Ruff — Lint
+        run: |
+          ruff check . \
+            --exclude venv,tests,.hypothesis,ci-cd \
+            --output-format=github
+
+      - name: Ruff — Format check
+        run: |
+          ruff format --check . \
+            --exclude venv,tests,.hypothesis,ci-cd

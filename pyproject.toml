@@ -53,8 +53,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-mock>=3.11.0",
     "hypothesis>=6.82.0",
-    "black>=23.7.0",
-    "flake8>=6.0.0",
+    "ruff==0.9.10",
     "mypy>=1.5.0",
 ]
 
@@ -66,6 +65,40 @@ apileaks = "apileaks:cli"
 Homepage = "https://github.com/apileak/owasp-enhancement"
 Repository = "https://github.com/apileak/owasp-enhancement"
 "Bug Tracker" = "https://github.com/apileak/owasp-enhancement/issues"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = [
+    "venv",
+    "tests",
+    ".hypothesis",
+    "ci-cd",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long — manejado por formatter
+    "B008",  # function calls in default args (común en Click)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["apileaks", "cli", "core", "modules", "utils"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
 
 [tool.setuptools.packages.find]
 # Incluye los paquetes Python (cli, core, modules, utils)
