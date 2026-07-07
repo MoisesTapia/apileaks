@@ -55,7 +55,6 @@ COPY --chown=apileak:apileak wordlists/ ./wordlists/
 COPY --chown=apileak:apileak config/ ./config/
 COPY --chown=apileak:apileak apileaks.py .
 COPY --chown=apileak:apileak setup.py .
-COPY --chown=apileak:apileak README.md .
 
 # Create directories for reports and logs with proper permissions
 RUN mkdir -p /app/reports /app/logs /app/output && \
@@ -76,7 +75,6 @@ ENV PYTHONPATH=/app \
     APILEAK_OUTPUT_FILE="" \
     APILEAK_RATE_LIMIT="10" \
     APILEAK_MODULES="" \
-    APILEAK_JWT_TOKEN="" \
     APILEAK_USER_AGENT="" \
     APILEAK_TIMEOUT="10" \
     APILEAK_MAX_DEPTH="3" \

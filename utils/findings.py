@@ -3,14 +3,14 @@ Findings Collector
 Aggregates and manages security findings from all modules
 """
 
-from typing import List, Dict, Any, Optional, Set, Tuple
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
-import hashlib
 
-from core.logging import get_logger
 from core.config import Severity
+from core.logging import get_logger
 
 
 class FindingClassificationError(ValueError):
@@ -30,7 +30,7 @@ class Finding:
     id: str
     scan_id: str
     category: str
-    owasp_category: Optional[str]
+    owasp_category: str | None
     severity: Severity
     endpoint: str
     method: str
@@ -39,26 +39,26 @@ class Finding:
     response_time: float
     evidence: str
     recommendation: str
-    payload: Optional[str] = None
-    response_snippet: Optional[str] = None
+    payload: str | None = None
+    response_snippet: str | None = None
     # Advanced BOLA findings (Reqs 27, 29-32) attach a structured Evidence_Chain
     # and a Confidence_Score (Req 33.1, 33.2). Typed as Any to avoid a circular
     # import of the EvidenceChain dataclass (defined in the BOLA module); the
     # attached object is an ``EvidenceChain`` whose response snippet is always
     # passed through ``redact_secrets`` before storage (Req 33.3).
-    evidence_chain: Optional[Any] = None
-    confidence: Optional[str] = None
-    headers: Dict[str, str] = None
+    evidence_chain: Any | None = None
+    confidence: str | None = None
+    headers: dict[str, str] = None
     timestamp: datetime = None
     # Parameter-fuzzing detection-signal fields (R3.5/R4.2/R5). All defaulted
     # so existing Finding construction sites and other commands are unaffected
     # (behavior preservation, R2).
-    detection_signal: Optional[str] = None            # R3.5/R4.2: e.g. "reflection", "new_json_field", "status_code"
-    detection_signals: List[str] = field(default_factory=list)  # all signals that fired
-    reflection_location: Optional[str] = None         # R3.5: "body" | "header"
-    new_json_fields: Optional[List[str]] = None        # R4.2: absent-in-baseline keys detected
-    confirmation_status: Optional[str] = None          # R5: "confirmed" | "excluded_failed_retest" | None
-    
+    detection_signal: str | None = None            # R3.5/R4.2: e.g. "reflection", "new_json_field", "status_code"
+    detection_signals: list[str] = field(default_factory=list)  # all signals that fired
+    reflection_location: str | None = None         # R3.5: "body" | "header"
+    new_json_fields: list[str] | None = None        # R4.2: absent-in-baseline keys detected
+    confirmation_status: str | None = None          # R5: "confirmed" | "excluded_failed_retest" | None
+
     def __post_init__(self):
         if self.headers is None:
             self.headers = {}
@@ -69,16 +69,16 @@ class Finding:
 class FindingsCollector:
     """
     Findings Collector for aggregating security findings
-    
+
     Manages collection, deduplication, and classification of findings
     from fuzzing and OWASP testing modules with advanced classification
     and prioritization based on OWASP API Security Top 10
     """
-    
+
     # OWASP API Security Top 10 2023 mapping
     OWASP_CATEGORIES = {
         "API1": "Broken Object Level Authorization",
-        "API2": "Broken Authentication", 
+        "API2": "Broken Authentication",
         "API3": "Broken Object Property Level Authorization",
         "API4": "Unrestricted Resource Consumption",
         "API5": "Broken Function Level Authorization",
@@ -88,7 +88,7 @@ class FindingsCollector:
         "API9": "Improper Inventory Management",
         "API10": "Unsafe Consumption of APIs"
     }
-    
+
     # Severity classification rules based on vulnerability types
     SEVERITY_RULES = {
         # Critical vulnerabilities - immediate security risk
@@ -99,7 +99,7 @@ class FindingsCollector:
         "ADMIN_ACCESS_ANONYMOUS": Severity.CRITICAL,
         "SENSITIVE_DATA_EXPOSURE": Severity.CRITICAL,
         "FILE_PROTOCOL_ACCESS": Severity.CRITICAL,
-        
+
         # High severity - significant security risk
         "WEAK_JWT_ALGORITHM": Severity.HIGH,
         "TOKEN_NOT_EXPIRED": Severity.HIGH,
@@ -108,20 +108,20 @@ class FindingsCollector:
         "CORS_MISCONFIGURATION": Severity.HIGH,
         "BUSINESS_FLOW_NO_LIMIT": Severity.HIGH,
         "UNSAFE_UPSTREAM_DATA": Severity.HIGH,
-        
+
         # Medium severity - moderate security risk
         "MISSING_RATE_LIMITING": Severity.MEDIUM,
         "LARGE_PAYLOAD_ACCEPTED": Severity.MEDIUM,
         "MISSING_SECURITY_HEADERS": Severity.MEDIUM,
         "UNDOCUMENTED_ENDPOINT": Severity.MEDIUM,
         "PARAMETER_POLLUTION": Severity.MEDIUM,
-        
+
         # Low severity - minor security concerns
         "INFORMATION_DISCLOSURE": Severity.LOW,
         "VERBOSE_ERROR_MESSAGES": Severity.LOW,
         "DEPRECATED_API_VERSION": Severity.LOW,
         "UNDOCUMENTED_API_VERSION": Severity.LOW,
-        
+
         # Info - informational findings
         "ENDPOINT_DISCOVERED": Severity.INFO,
         "FRAMEWORK_DETECTED": Severity.INFO,
@@ -233,11 +233,11 @@ class FindingsCollector:
         "BFLA_MASS_ASSIGNMENT_ROLE": Severity.CRITICAL,
         "BFLA_VERSION_DOWNGRADE": Severity.HIGH,
     }
-    
+
     # Category to OWASP mapping
     CATEGORY_TO_OWASP = {
         "BOLA_ANONYMOUS_ACCESS": "API1",
-        "BOLA_HORIZONTAL_ESCALATION": "API1", 
+        "BOLA_HORIZONTAL_ESCALATION": "API1",
         "BOLA_OBJECT_ACCESS": "API1",
         "AUTH_BYPASS": "API2",
         "WEAK_JWT_ALGORITHM": "API2",
@@ -440,24 +440,24 @@ class FindingsCollector:
         "BFLA_MASS_ASSIGNMENT_ROLE",
         "BFLA_VERSION_DOWNGRADE",
     })
-    
+
     def __init__(self, scan_id: str):
         """
         Initialize Findings Collector
-        
+
         Args:
             scan_id: Unique scan identifier
         """
         self.scan_id = scan_id
-        self.findings: List[Finding] = []
+        self.findings: list[Finding] = []
         self.logger = get_logger(__name__).bind(scan_id=scan_id)
-        self._deduplication_cache: Set[str] = set()
-        
+        self._deduplication_cache: set[str] = set()
+
         self.logger.info("Findings Collector initialized with enhanced classification")
-    
-    def add_finding(self, 
+
+    def add_finding(self,
                    category: str,
-                   severity: Optional[Severity],
+                   severity: Severity | None,
                    endpoint: str,
                    method: str,
                    evidence: str,
@@ -465,7 +465,7 @@ class FindingsCollector:
                    **kwargs) -> Finding:
         """
         Add a new finding with automatic classification
-        
+
         Args:
             category: Finding category
             severity: Finding severity (if None, will be auto-classified)
@@ -474,17 +474,17 @@ class FindingsCollector:
             evidence: Evidence of the finding
             recommendation: Remediation recommendation
             **kwargs: Additional finding attributes
-            
+
         Returns:
             Created finding
         """
         # Auto-classify severity if not provided
         if severity is None:
             severity = self._classify_severity(category)
-        
+
         # Auto-assign OWASP category
         owasp_category = self._get_owasp_category(category)
-        
+
         finding = Finding(
             id=str(uuid4()),
             scan_id=self.scan_id,
@@ -502,12 +502,12 @@ class FindingsCollector:
             response_snippet=kwargs.get('response_snippet'),
             headers=kwargs.get('headers', {})
         )
-        
+
         # Check for duplicates before adding
         if not self._is_duplicate(finding):
             self.findings.append(finding)
             self._add_to_deduplication_cache(finding)
-            
+
             self.logger.info("Finding added",
                             category=category,
                             severity=severity.value,
@@ -517,44 +517,44 @@ class FindingsCollector:
             self.logger.debug("Duplicate finding ignored",
                              category=category,
                              endpoint=endpoint)
-        
+
         return finding
-    
-    def add_findings(self, findings: List[Finding]) -> int:
+
+    def add_findings(self, findings: list[Finding]) -> int:
         """
         Add multiple findings with deduplication
-        
+
         Args:
             findings: List of findings to add
-            
+
         Returns:
             Number of unique findings added
         """
         added_count = 0
-        
+
         for finding in findings:
             finding.scan_id = self.scan_id
-            
+
             # Auto-classify if needed
             if not finding.severity:
                 finding.severity = self._classify_severity(finding.category)
-            
+
             if not finding.owasp_category:
                 finding.owasp_category = self._get_owasp_category(finding.category)
-            
+
             # Check for duplicates
             if not self._is_duplicate(finding):
                 self.findings.append(finding)
                 self._add_to_deduplication_cache(finding)
                 added_count += 1
-        
-        self.logger.info("Multiple findings processed", 
+
+        self.logger.info("Multiple findings processed",
                         total_submitted=len(findings),
                         unique_added=added_count,
                         duplicates_ignored=len(findings) - added_count)
-        
+
         return added_count
-    
+
     def _classify_severity(self, category: str) -> Severity:
         """
         Automatically classify finding severity based on category
@@ -585,7 +585,7 @@ class FindingsCollector:
             return Severity.MEDIUM
         return severity
 
-    def _get_owasp_category(self, category: str) -> Optional[str]:
+    def _get_owasp_category(self, category: str) -> str | None:
         """
         Get OWASP API Security Top 10 category for finding
 
@@ -622,14 +622,14 @@ class FindingsCollector:
                 )
 
         return owasp_category
-    
+
     def _is_duplicate(self, finding: Finding) -> bool:
         """
         Check if finding is a duplicate
-        
+
         Args:
             finding: Finding to check
-            
+
         Returns:
             True if duplicate, False otherwise
         """
@@ -640,50 +640,50 @@ class FindingsCollector:
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
 
         return dedup_key in self._deduplication_cache
-    
+
     def _add_to_deduplication_cache(self, finding: Finding) -> None:
         """
         Add finding to deduplication cache
-        
+
         Args:
             finding: Finding to add to cache
         """
         evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
         self._deduplication_cache.add(dedup_key)
-    
-    def get_findings(self, 
-                    severity: Optional[Severity] = None,
-                    category: Optional[str] = None,
-                    owasp_category: Optional[str] = None) -> List[Finding]:
+
+    def get_findings(self,
+                    severity: Severity | None = None,
+                    category: str | None = None,
+                    owasp_category: str | None = None) -> list[Finding]:
         """
         Get findings with optional filtering
-        
+
         Args:
             severity: Filter by severity
             category: Filter by category
             owasp_category: Filter by OWASP category
-            
+
         Returns:
             Filtered list of findings
         """
         filtered_findings = self.findings
-        
+
         if severity:
             filtered_findings = [f for f in filtered_findings if f.severity == severity]
-        
+
         if category:
             filtered_findings = [f for f in filtered_findings if f.category == category]
-        
+
         if owasp_category:
             filtered_findings = [f for f in filtered_findings if f.owasp_category == owasp_category]
-        
+
         return filtered_findings
-    
-    def get_findings_by_severity(self) -> Dict[str, List[Finding]]:
+
+    def get_findings_by_severity(self) -> dict[str, list[Finding]]:
         """
         Get findings grouped by severity with prioritization
-        
+
         Returns:
             Dictionary mapping severity to findings (ordered by priority)
         """
@@ -694,65 +694,65 @@ class FindingsCollector:
             Severity.LOW.value: [],
             Severity.INFO.value: []
         }
-        
+
         for finding in self.findings:
             findings_by_severity[finding.severity.value].append(finding)
-        
+
         # Sort findings within each severity by OWASP category priority
         for severity_level in findings_by_severity:
             findings_by_severity[severity_level].sort(
                 key=lambda f: self._get_owasp_priority(f.owasp_category)
             )
-        
+
         return findings_by_severity
-    
-    def get_findings_by_owasp_category(self) -> Dict[str, List[Finding]]:
+
+    def get_findings_by_owasp_category(self) -> dict[str, list[Finding]]:
         """
         Get findings grouped by OWASP API Security Top 10 category
-        
+
         Returns:
             Dictionary mapping OWASP category to findings
         """
         findings_by_owasp = {}
-        
+
         for finding in self.findings:
             if finding.owasp_category:
                 if finding.owasp_category not in findings_by_owasp:
                     findings_by_owasp[finding.owasp_category] = []
                 findings_by_owasp[finding.owasp_category].append(finding)
-        
+
         # Sort by OWASP category priority (API1 first, API10 last)
         sorted_owasp = {}
         for category in sorted(findings_by_owasp.keys(), key=self._get_owasp_priority):
             sorted_owasp[category] = findings_by_owasp[category]
-        
+
         return sorted_owasp
-    
-    def _get_owasp_priority(self, owasp_category: Optional[str]) -> int:
+
+    def _get_owasp_priority(self, owasp_category: str | None) -> int:
         """
         Get priority order for OWASP categories (lower number = higher priority)
-        
+
         Args:
             owasp_category: OWASP category (API1-API10)
-            
+
         Returns:
             Priority number (1-10, or 99 for unknown)
         """
         if not owasp_category:
             return 99
-        
+
         try:
             return int(owasp_category.replace("API", ""))
         except (ValueError, AttributeError):
             return 99
-    
-    def get_prioritized_findings(self, limit: Optional[int] = None) -> List[Finding]:
+
+    def get_prioritized_findings(self, limit: int | None = None) -> list[Finding]:
         """
         Get findings prioritized by severity and OWASP category
-        
+
         Args:
             limit: Maximum number of findings to return
-            
+
         Returns:
             List of findings ordered by priority (most critical first)
         """
@@ -764,7 +764,7 @@ class FindingsCollector:
             Severity.LOW: 4,
             Severity.INFO: 5
         }
-        
+
         # Sort findings by severity priority, then OWASP priority
         prioritized = sorted(
             self.findings,
@@ -773,16 +773,16 @@ class FindingsCollector:
                 self._get_owasp_priority(f.owasp_category)
             )
         )
-        
+
         if limit:
             prioritized = prioritized[:limit]
-        
+
         return prioritized
-    
+
     def deduplicate_findings(self) -> int:
         """
         Remove duplicate findings (legacy method for compatibility)
-        
+
         Returns:
             Number of duplicates removed (always 0 since deduplication is automatic)
         """
@@ -790,24 +790,24 @@ class FindingsCollector:
         # This method is kept for backward compatibility
         self.logger.debug("Deduplication called - automatic deduplication already active")
         return 0
-    
-    def get_owasp_coverage(self) -> Dict[str, Any]:
+
+    def get_owasp_coverage(self) -> dict[str, Any]:
         """
         Get OWASP API Security Top 10 coverage analysis
-        
+
         Returns:
             Dictionary with coverage statistics and gaps
         """
         findings_by_owasp = self.get_findings_by_owasp_category()
-        
+
         coverage = {}
         for category, description in self.OWASP_CATEGORIES.items():
             findings_count = len(findings_by_owasp.get(category, []))
-            critical_count = len([f for f in findings_by_owasp.get(category, []) 
+            critical_count = len([f for f in findings_by_owasp.get(category, [])
                                 if f.severity == Severity.CRITICAL])
-            high_count = len([f for f in findings_by_owasp.get(category, []) 
+            high_count = len([f for f in findings_by_owasp.get(category, [])
                             if f.severity == Severity.HIGH])
-            
+
             coverage[category] = {
                 "description": description,
                 "findings_count": findings_count,
@@ -816,11 +816,11 @@ class FindingsCollector:
                 "tested": findings_count > 0,
                 "risk_level": self._calculate_risk_level(critical_count, high_count, findings_count)
             }
-        
+
         # Calculate overall coverage
         tested_categories = sum(1 for cat in coverage.values() if cat["tested"])
         coverage_percentage = (tested_categories / len(self.OWASP_CATEGORIES)) * 100
-        
+
         return {
             "categories": coverage,
             "total_categories": len(self.OWASP_CATEGORIES),
@@ -828,16 +828,16 @@ class FindingsCollector:
             "coverage_percentage": coverage_percentage,
             "untested_categories": [cat for cat, data in coverage.items() if not data["tested"]]
         }
-    
+
     def _calculate_risk_level(self, critical: int, high: int, total: int) -> str:
         """
         Calculate risk level for an OWASP category
-        
+
         Args:
             critical: Number of critical findings
             high: Number of high findings
             total: Total findings
-            
+
         Returns:
             Risk level string
         """
@@ -849,17 +849,17 @@ class FindingsCollector:
             return "MEDIUM"
         else:
             return "NONE"
-    
-    def get_statistics(self) -> Dict[str, Any]:
+
+    def get_statistics(self) -> dict[str, Any]:
         """
         Get comprehensive findings statistics
-        
+
         Returns:
             Enhanced statistics dictionary
         """
         findings_by_severity = self.get_findings_by_severity()
         owasp_coverage = self.get_owasp_coverage()
-        
+
         return {
             "total_findings": len(self.findings),
             "critical_findings": len(findings_by_severity[Severity.CRITICAL.value]),
@@ -867,45 +867,45 @@ class FindingsCollector:
             "medium_findings": len(findings_by_severity[Severity.MEDIUM.value]),
             "low_findings": len(findings_by_severity[Severity.LOW.value]),
             "info_findings": len(findings_by_severity[Severity.INFO.value]),
-            "unique_endpoints": len(set(f.endpoint for f in self.findings)),
-            "unique_categories": len(set(f.category for f in self.findings)),
+            "unique_endpoints": len({f.endpoint for f in self.findings}),
+            "unique_categories": len({f.category for f in self.findings}),
             "owasp_categories_tested": owasp_coverage["tested_categories"],
             "owasp_coverage_percentage": owasp_coverage["coverage_percentage"],
             "most_critical_category": self._get_most_critical_category(),
             "deduplication_cache_size": len(self._deduplication_cache)
         }
-    
-    def _get_most_critical_category(self) -> Optional[str]:
+
+    def _get_most_critical_category(self) -> str | None:
         """
         Get the OWASP category with the most critical findings
-        
+
         Returns:
             OWASP category with highest risk or None
         """
         findings_by_owasp = self.get_findings_by_owasp_category()
-        
+
         max_critical = 0
         most_critical = None
-        
+
         for category, findings in findings_by_owasp.items():
             critical_count = len([f for f in findings if f.severity == Severity.CRITICAL])
             if critical_count > max_critical:
                 max_critical = critical_count
                 most_critical = category
-        
+
         return most_critical
-    
-    def export_findings_summary(self) -> Dict[str, Any]:
+
+    def export_findings_summary(self) -> dict[str, Any]:
         """
         Export a comprehensive findings summary for reporting
-        
+
         Returns:
             Dictionary suitable for report generation
         """
         statistics = self.get_statistics()
         owasp_coverage = self.get_owasp_coverage()
         prioritized_findings = self.get_prioritized_findings(limit=10)
-        
+
         return {
             "scan_id": self.scan_id,
             "timestamp": datetime.now().isoformat(),
@@ -913,7 +913,7 @@ class FindingsCollector:
                 "total_findings": statistics["total_findings"],
                 "risk_distribution": {
                     "critical": statistics["critical_findings"],
-                    "high": statistics["high_findings"], 
+                    "high": statistics["high_findings"],
                     "medium": statistics["medium_findings"],
                     "low": statistics["low_findings"],
                     "info": statistics["info_findings"]

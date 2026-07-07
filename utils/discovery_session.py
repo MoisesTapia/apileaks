@@ -19,7 +19,6 @@ import json
 import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import FrozenSet, List, Optional
 
 from core.logging import get_logger
 
@@ -157,7 +156,7 @@ class DiscoverySession:
     target: str
     timestamp: str
     tool_version: str
-    results: List[DiscoveryResult] = field(default_factory=list)
+    results: list[DiscoveryResult] = field(default_factory=list)
 
     def save(self, path: str) -> None:
         """Atomically write the session to ``path`` as JSON.
@@ -237,7 +236,7 @@ class DiscoverySession:
             )
 
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             raise InvalidSessionFileError(
@@ -274,7 +273,7 @@ class DiscoverySession:
         return session
 
 
-def status_code_class(code: int) -> Optional[str]:
+def status_code_class(code: int) -> str | None:
     """Return the :data:`STATUS_CLASSES` token for an HTTP status code.
 
     Assignment uses the leading digit of ``code`` (Requirement 13.2): a leading
@@ -294,8 +293,8 @@ def status_code_class(code: int) -> Optional[str]:
 
 
 def group_by_status_class(
-    records: List[DiscoveryResult],
-) -> "OrderedDict[str, List[DiscoveryResult]]":
+    records: list[DiscoveryResult],
+) -> "OrderedDict[str, list[DiscoveryResult]]":
     """Group discovery records into the four status classes in ascending order.
 
     The returned mapping always contains exactly the four keys in
@@ -312,7 +311,7 @@ def group_by_status_class(
         An :class:`~collections.OrderedDict` keyed by status class, preserving
         the relative order of ``records`` within each group.
     """
-    grouped: "OrderedDict[str, List[DiscoveryResult]]" = OrderedDict(
+    grouped: OrderedDict[str, list[DiscoveryResult]] = OrderedDict(
         (status_class, []) for status_class in STATUS_CLASSES
     )
     for record in records:
@@ -332,11 +331,11 @@ class StatusFilter:
     Requirement 13.8).
     """
 
-    status_class: Optional[str] = None
-    codes: Optional[FrozenSet[int]] = None
+    status_class: str | None = None
+    codes: frozenset[int] | None = None
 
 
-def parse_status_filter(raw: str) -> Optional[StatusFilter]:
+def parse_status_filter(raw: str) -> StatusFilter | None:
     """Parse a raw status-filter string into a :class:`StatusFilter`.
 
     A value equal to one of the :data:`STATUS_CLASSES` tokens (case-insensitive,
@@ -379,9 +378,9 @@ def parse_status_filter(raw: str) -> Optional[StatusFilter]:
 
 
 def apply_status_filter(
-    records: List[DiscoveryResult],
-    status_filter: Optional[StatusFilter],
-) -> List[DiscoveryResult]:
+    records: list[DiscoveryResult],
+    status_filter: StatusFilter | None,
+) -> list[DiscoveryResult]:
     """Retain only the records matching ``status_filter``.
 
     A class filter retains records whose status code shares the leading digit of
