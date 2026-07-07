@@ -117,10 +117,10 @@ def parse_response_codes(response_filter: str) -> list:
     """Parse response code filter string into list of integers"""
     if not response_filter:
         return []
-    
+
     codes = []
     parts = response_filter.split(',')
-    
+
     for part in parts:
         part = part.strip()
         if '-' in part:
@@ -136,7 +136,7 @@ def parse_response_codes(response_filter: str) -> list:
                 codes.append(int(part))
             except ValueError:
                 click.echo(f"Warning: Invalid response code '{part}', ignoring", err=True)
-    
+
     return sorted(list(set(codes)))  # Remove duplicates and sort
 
 
@@ -144,10 +144,10 @@ def parse_status_codes(status_filter: str) -> list:
     """Parse status code filter string into list of integers for HTTP output filtering"""
     if not status_filter:
         return []
-    
+
     codes = []
     parts = status_filter.split(',')
-    
+
     for part in parts:
         part = part.strip()
         if '-' in part:
@@ -163,7 +163,7 @@ def parse_status_codes(status_filter: str) -> list:
                 codes.append(int(part))
             except ValueError:
                 click.echo(f"Warning: Invalid status code '{part}', ignoring", err=True)
-    
+
     return sorted(list(set(codes)))  # Remove duplicates and sort
 
 
@@ -476,14 +476,14 @@ def validate_basic_auth_options(basic_auth, jwt):
 def validate_user_agent_options(user_agent_random, user_agent_custom, user_agent_file):
     """Validate that only one user agent option is specified"""
     options_count = sum([bool(user_agent_random), bool(user_agent_custom), bool(user_agent_file)])
-    
+
     if options_count > 1:
         click.echo("Error: Only one user agent option can be specified at a time:", err=True)
         click.echo("  --user-agent-random", err=True)
         click.echo("  --user-agent-custom", err=True)
         click.echo("  --user-agent-file", err=True)
         sys.exit(1)
-    
+
     # Validate user agent file exists if specified
     if user_agent_file:
         if not Path(user_agent_file).exists():
@@ -500,11 +500,11 @@ def load_user_agents_from_file(file_path):
                 line = line.strip()
                 if line and not line.startswith('#'):
                     user_agents.append(line)
-        
+
         if not user_agents:
             click.echo(f"Error: No valid user agents found in file: {file_path}", err=True)
             sys.exit(1)
-        
+
         return user_agents
     except Exception as e:
         click.echo(f"Error reading user agent file {file_path}: {e}", err=True)
@@ -771,27 +771,27 @@ def prepare_output_filename(output_param):
     """Prepare output filename, ensuring it goes to reports directory"""
     if not output_param:
         return None
-    
+
     # Extract just the filename, ignore any path components
     filename = Path(output_param).name
-    
+
     # Remove any extension as the system will add appropriate extensions
     if '.' in filename:
         filename = filename.rsplit('.', 1)[0]
-    
+
     return filename
 
 
 def print_banner():
     """Print APILeak banner"""
     banner = r"""
-      .o.       ooooooooo.   ooooo ooooo                            oooo                 
-     .888.      `888   `Y88. `888' `888'                            `888                 
-    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o 
-   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8 
-  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.  
- .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b 
-o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P' 
+      .o.       ooooooooo.   ooooo ooooo                            oooo
+     .888.      `888   `Y88. `888' `888'                            `888
+    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o
+   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8
+  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
+ .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
+o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
 """ + f"\nAPILeak v{APILEAK_VERSION} - Enterprise API Fuzzing Tool - by Cl0wnR3v\n"
     click.echo(banner, color=True)
 
@@ -810,21 +810,21 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     """
     # Support environment variable overrides for CI/CD integration
     target_url = target_url or os.getenv('APILEAK_TARGET', '')
-    
+
     default_wordlists = {
         'endpoints': 'wordlists/endpoints.txt',
         'parameters': 'wordlists/parameters.txt',
         'headers': 'wordlists/headers.txt',
         'jwt_secrets': 'wordlists/jwt_secrets.txt'
     }
-    
+
     # Use provided wordlist or default
     if wordlist_path:
         if scan_type == "dir":
             default_wordlists['endpoints'] = wordlist_path
         elif scan_type == "par":
             default_wordlists['parameters'] = wordlist_path
-    
+
     # Configure user agent settings with environment variable support
     user_agent_settings = {
         'User-Agent': os.getenv('APILEAK_USER_AGENT', f'APILeak/{APILEAK_VERSION}'),
@@ -833,7 +833,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     random_user_agent = False
     user_agent_list = None
     user_agent_rotation = False
-    
+
     if user_agent_config:
         if user_agent_config.get('random'):
             random_user_agent = True
@@ -844,14 +844,14 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
             user_agent_rotation = True
             # Use first user agent as default
             user_agent_settings['User-Agent'] = user_agent_list[0]
-    
+
     # Merge operator-supplied discovery headers (and the --cookie string, which
     # the caller places under the 'Cookie' key) into the header-fuzzing
     # custom_headers dict so they exist on the engine config and are applied to
     # every Discovery_Request (Requirements 24.2, 24.3).
     if extra_headers:
         user_agent_settings.update(extra_headers)
-    
+
     # Configure enhanced advanced discovery settings
     advanced_discovery_config = {
         'enabled': True,  # Always enable for full integration
@@ -1033,7 +1033,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         },
         'safe_mode': safe_mode
     }
-    
+
     # Map --basic-auth onto the anonymous auth context as an HTTP Basic context
     # (type='basic' with username/password) so the existing
     # HTTPRequestEngine._apply_authentication branch emits a Basic Authorization
@@ -1043,7 +1043,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
         config['authentication']['contexts'][0]['type'] = 'basic'
         config['authentication']['contexts'][0]['username'] = username
         config['authentication']['contexts'][0]['password'] = password
-    
+
     # Thread the transversal transport/TLS options into the config here so both
     # `dir` and `par` centralize this wiring in config creation rather than
     # patching the returned dict inline in each command body. The CLI validators
@@ -1094,7 +1094,7 @@ def create_enhanced_config(target_url, wordlist_path=None, scan_type="full", use
     # For parameter fuzzing, disable endpoint discovery and use the target directly
     if scan_type == "par":
         config['fuzzing']['endpoints']['enabled'] = False
-    
+
     return config
 
 
@@ -1213,11 +1213,11 @@ def machine_output_options(f):
 @click.pass_context
 def cli(ctx, no_banner):
     """APILeak v0.2.1 - Enterprise API Fuzzing Tool
-    
+
     \b
     Performs comprehensive security testing of APIs including:
     • Traditional endpoint and parameter fuzzing
-    • OWASP API Security Top 10 testing  
+    • OWASP API Security Top 10 testing
     • Advanced vulnerability detection with framework detection
     • Version fuzzing and subdomain discovery
     • WAF detection and evasion techniques
@@ -1225,12 +1225,12 @@ def cli(ctx, no_banner):
     • CORS analysis and security headers testing
     • Multi-format reporting with CI/CD integration
     • JWT token manipulation and analysis
-    
+
     \b
     Discovery & fuzzing:
       python apileaks.py dir --target URL              # Directory/endpoint fuzzing
       python apileaks.py par --target URL              # Parameter fuzzing
-    
+
     \b
     OWASP API Security Top 10:
       python apileaks.py owasp                          # List every OWASP module
@@ -1238,17 +1238,17 @@ def cli(ctx, no_banner):
       python apileaks.py owasp auth --target URL        # Run only the Auth module
       python apileaks.py scan --target URL              # Orchestrated scan (all modules)
       python apileaks.py scan --target URL --modules bola,auth   # Selected modules
-    
+
     \b
     Advanced examples:
       python apileaks.py scan --target URL --enable-advanced
       python apileaks.py scan --target URL --detect-framework --fuzz-versions
       python apileaks.py scan --target URL --user-agent-random --enable-waf-evasion
-    
+
     \b
     CI/CD integration (severity gate, SARIF, baseline):
       python apileaks.py scan --target URL --ci-mode --fail-on high --sarif
-    
+
     \b
     JWT utilities (manual toolkit):
       python apileaks.py jwt decode TOKEN
@@ -1257,7 +1257,7 @@ def cli(ctx, no_banner):
     """
     ctx.ensure_object(dict)
     ctx.obj['no_banner'] = no_banner
-    
+
     # Print banner unless suppressed or showing help
     if not no_banner and ctx.info_name != 'help':
         print_banner()
@@ -1274,12 +1274,12 @@ def cli(ctx, no_banner):
 @click.option('--postman', 'postman', multiple=True, type=click.Path(),
               help='Postman collection to seed discovery from. Repeatable.')
 @click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
-@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
+@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
               default='WARNING', help='Logging level')
 @click.option('--log-file', help='Log file path (optional)')
 @click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
 @click.option('--rate-limit', type=int, help='Requests per second limit')
-@click.option('--methods', default='GET,POST,PUT,DELETE,PATCH', 
+@click.option('--methods', default='GET,POST,PUT,DELETE,PATCH',
               help='HTTP methods to test (comma-separated)')
 @click.option('--fuzz-keyword', 'fuzz_keyword', default='FUZZ', show_default=True,
               metavar='KEYWORD',
@@ -3546,7 +3546,7 @@ def _run_par_multi_target(targets, *, ctx, **kwargs):
                    'values. Use "-" to read entries from stdin. Defaults to '
                    'wordlists/parameters.txt when omitted.')
 @click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)')
-@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
+@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
               default='WARNING', help='Logging level')
 @click.option('--log-file', help='Log file path (optional)')
 @click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
@@ -3585,7 +3585,7 @@ def _run_par_multi_target(targets, *, ctx, **kwargs):
 @click.pass_context
 def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_file, json_logs, rate_limit, methods, fuzz_keyword, fuzz_mode, user_agent_random, user_agent_custom, user_agent_file, jwt, response, status_code, detect_framework, proxy, proxy_verify_ssl, concurrency, confirm_hits, max_requests, timeout, retries, header, cookie, basic_auth, match_size, match_words, match_lines, match_regex, match_time, filter_size, filter_words, filter_lines, filter_regex, filter_time, output_format, output_file, client_cert, ca_bundle, resolve):
     """Parameter fuzzing - discover hidden parameters in API endpoints
-    
+
     \b
     Examples:
       python apileaks.py par --target https://api.example.com/users/123
@@ -3689,7 +3689,7 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
     # Setup logging
     setup_logging(level=log_level, json_logs=json_logs, log_file=log_file)
     logger = get_logger("par")
-    
+
     logger.info("APILeak parameter fuzzing starting", version=APILEAK_VERSION, target=target)
 
     # Build --match-*/--filter-* expressions into the '<attribute>:<expression>'
@@ -3733,17 +3733,17 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
         elif user_agent_file:
             user_agents = load_user_agents_from_file(user_agent_file)
             user_agent_config = {'file_list': user_agents}
-        
+
         # Prepare output filename
         output_filename = prepare_output_filename(output)
-        
+
         # Prepare advanced configuration for parameter fuzzing
         advanced_config = {
             'detect_framework': detect_framework,
             'fuzz_versions': False,  # Version fuzzing not typically useful for parameter mode
             'framework_confidence': 0.6  # Default confidence for par mode
         }
-        
+
         # Parse status code filter for HTTP output
         status_code_filter = parse_status_codes(status_code) if status_code else None
 
@@ -3926,7 +3926,7 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
         # Load configuration through ConfigurationManager
         config_manager = ConfigurationManager()
         apileak_config = config_manager.load_config_from_dict(config_dict)
-        
+
         # Validate configuration
         validation_errors = config_manager.validate_configuration()
         if validation_errors:
@@ -3934,10 +3934,10 @@ def par(ctx, target, target_file, max_hosts, wordlist, output, log_level, log_fi
             for error in validation_errors:
                 click.echo(f"Error: {error}", err=True)
             sys.exit(1)
-        
+
         # Run the scan
         asyncio.run(run_enhanced_apileak(apileak_config))
-        
+
     except Exception as e:
         logger.error("Parameter fuzzing failed", error=str(e))
         click.echo(f"Error: {e}", err=True)
@@ -5102,7 +5102,7 @@ def jwt(ctx):
 @click.pass_context
 def jwt_decode_cmd(ctx, token):
     """Decode and analyze a JWT token
-    
+
     \b
     Example:
       python apileaks.py jwt decode eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
@@ -5110,7 +5110,7 @@ def jwt_decode_cmd(ctx, token):
     try:
         decoded = decode_jwt(token)
         print_jwt_info(decoded)
-        
+
         # Also output as JSON for programmatic use
         click.echo("\n📄 JSON Output:")
         click.echo("-" * 20)
@@ -5119,7 +5119,7 @@ def jwt_decode_cmd(ctx, token):
             'payload': decoded['payload'],
             'signature': decoded['signature']
         }, indent=2))
-        
+
     except ValueError as e:
         click.echo(f"❌ Error decoding JWT: {e}", err=True)
         sys.exit(1)
@@ -5197,7 +5197,7 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         # NOTE: token is already built above (either via DER-key path or encode_jwt).
         # Do NOT call encode_jwt again here — that would overwrite the DER-signed
         # key-confusion token with a plain HMAC-secret token (BUG-002 fix).
-        
+
         # Encode JWT
         token = encode_jwt(header_dict, payload_dict, secret)
 
@@ -5224,12 +5224,6 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
         click.echo("🔐 Payload: " + click.style(json.dumps(payload_dict), fg=JWT_PAYLOAD_COLOR))
         click.echo(f"\n🎫 Generated Token:")
         click.echo("-" * 20)
-        click.echo(colorize_jwt(decode_jwt(token)))
-        if is_none_alg:
-            click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
-                       + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
-                       + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
-        else:
         if is_none_alg:
             # colorize_jwt would fail on an empty/absent signature — print raw token.
             click.echo(token)
@@ -5432,26 +5426,26 @@ def jwt_jwks_to_key_cmd(ctx, jwks_file):
 @click.pass_context
 def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
     """Test algorithm confusion attack with alg:none
-    
+
     \b
     🧪 CRITICAL SEVERITY ATTACK
     Algorithm confusion - completely nullifies authentication by:
-    
+
     1️⃣ Rewriting header: "alg": "none"\b
     2️⃣ Removing signature completely\b
     3️⃣ Inserting malicious payload\b
     4️⃣ Sending unsigned token\b
     5️⃣ Testing privileged access
 
-    
+
     \b
     Examples:
       # Basic alg:none test
       python apileaks.py jwt test-alg-none TOKEN
-      
+
       # Test with custom admin payload
       python apileaks.py jwt test-alg-none TOKEN --payload '{"sub":"admin","role":"admin"}'
-      
+
       # Test against real endpoint
       python apileaks.py jwt test-alg-none TOKEN --url https://api.example.com/admin
     """
@@ -5507,24 +5501,24 @@ def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
 @click.pass_context
 def jwt_test_null_signature(ctx, token, payload, url, header, data, timeout):
     """Test null signature vulnerability
-    
+
     \b
     🧾 CRITICAL SEVERITY ATTACK
     Null/empty signature acceptance - cryptographic validation bypass by:
-    
+
     1️⃣ Sending JWT with empty signature: header.payload.\b
     2️⃣ Inserting admin payload\b
     3️⃣ Testing against protected endpoint\b
     4️⃣ Confirming bypass of signature validation
-    
+
     \b
     Examples:
       # Basic null signature test
       python apileaks.py jwt test-null-signature TOKEN
-      
+
       # Test with custom admin payload
       python apileaks.py jwt test-null-signature TOKEN --payload '{"sub":"admin","admin":true}'
-      
+
       # Test against real endpoint
       python apileaks.py jwt test-null-signature TOKEN --url https://api.example.com/protected
     """
@@ -5672,27 +5666,27 @@ def jwt_test_alg_confusion(ctx, token, public_key, payload, url, header, data, t
 @click.pass_context
 def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, timeout):
     """Brute-force weak HMAC secrets and test exploitation
-    
+
     \b
     🔐 CRITICAL SEVERITY ATTACK
     This attack attempts to crack JWT HMAC secrets and demonstrates
     complete authentication compromise by:
-    
+
     1️⃣ Confirming JWT uses HS* algorithm\b
     2️⃣ Executing brute-force/dictionary attack\b
     3️⃣ Recovering the real secret\b
     4️⃣ Forging new JWT with modified claims\b
     5️⃣ Testing real API access with forged token\b
 
-    
+
     \b
     Examples:
       # Basic secret brute-force
       python apileaks.py jwt brute-secret TOKEN
-      
+
       # Test exploitation against real endpoint
       python apileaks.py jwt brute-secret TOKEN --url https://api.example.com/admin
-      
+
       # Full exploitation test with custom headers
       python apileaks.py jwt brute-secret TOKEN -u URL -H "X-API-Key: key123"
     """
@@ -5701,7 +5695,7 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
         click.echo("="*45)
         click.echo("🔥 SEVERITY: CRITICAL - Complete Authentication Compromise")
         click.echo("")
-        
+
         # Parse custom headers
         custom_headers = {}
         for h in header:
@@ -5710,12 +5704,12 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
                 sys.exit(1)
             name, value = h.split(':', 1)
             custom_headers[name.strip()] = value.strip()
-        
+
         # Check if wordlist exists
         if not Path(wordlist).exists():
             click.echo(f"❌ Wordlist not found: {wordlist}")
             click.echo("Creating default wordlist...")
-            
+
             # Create default wordlist
             Path(wordlist).parent.mkdir(exist_ok=True)
             default_secrets = [
@@ -5726,17 +5720,17 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
                 "", "null", "undefined", "test", "dev", "development",
                 "prod", "production", "staging", "demo", "example"
             ]
-            
+
             with open(wordlist, 'w') as f:
                 for secret in default_secrets:
                     f.write(f"{secret}\n")
-            
+
             click.echo(f"✅ Created default wordlist: {wordlist}")
-        
+
         # Load secrets from wordlist
         with open(wordlist, 'r') as f:
             secrets = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-        
+
         # Decode token to get header and payload
         decoded = decode_jwt(token)
 
@@ -5859,35 +5853,35 @@ def jwt_brute_secret(ctx, token, wordlist, max_attempts, url, header, data, time
 @click.pass_context
 def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, timeout):
     """Test Key ID (kid) injection vulnerability
-    
+
     \b
     🗝️ HIGH → CRITICAL SEVERITY ATTACK
     Key ID (kid) injection - depends on backend implementation:
-    
+
     1️⃣ Injecting malicious kid parameter
     2️⃣ Testing local file paths: "kid": "../../etc/passwd"
     3️⃣ Testing remote URLs: "kid": "http://attacker/key.pem"
     4️⃣ Signing token with controlled key
     5️⃣ Testing real API access
-    
+
     \b
     🧪 Expected Exploitation:
     • File disclosure (path traversal)
     • Validation with arbitrary keys
     • Remote key fetching from attacker server
     • Potential RCE in vulnerable parsers
-    
+
     \b
     Examples:
       # Basic kid injection test
       python apileaks.py jwt test-kid-injection TOKEN
-      
+
       # Test with custom kid payload
       python apileaks.py jwt test-kid-injection TOKEN --kid-payload "http://evil.com/key.pem"
-      
+
       # Test with custom JWT payload
       python apileaks.py jwt test-kid-injection TOKEN --payload '{"sub":"admin","role":"admin"}'
-      
+
       # Test against real endpoint with both custom payloads
       python apileaks.py jwt test-kid-injection TOKEN --kid-payload "../../etc/passwd" --payload '{"admin":true}' --url https://api.example.com/protected
     """
@@ -5896,7 +5890,7 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
         click.echo("="*40)
         click.echo("🔥 SEVERITY: HIGH → CRITICAL (depends on backend)")
         click.echo("")
-        
+
         # Parse custom headers
         custom_headers = {}
         for h in header:
@@ -5905,13 +5899,13 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
                 sys.exit(1)
             name, value = h.split(':', 1)
             custom_headers[name.strip()] = value.strip()
-        
+
         # Decode original token
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
+
         # Route generation + execution through the single-source-of-truth engine
         # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated kid
         # injection payload set; a custom --payload is merged onto the base token.
@@ -5952,25 +5946,25 @@ def jwt_test_kid_injection(ctx, token, kid_payload, payload, url, header, data, 
 @click.pass_context
 def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
     """Test JWKS spoofing vulnerability
-    
+
     \b
     JWKS spoofing - breaks trust boundary by:
-    
+
     1️⃣ Detecting JWKS endpoint usage\b
     2️⃣ Spoofing remote JWKS URL\b
     3️⃣ Publishing attacker-controlled keys\b
     4️⃣ Signing token with attacker key\b
     5️⃣ Testing real API access\b
 
-    
+
     \b
     Examples:
       # Basic JWKS spoofing test
       python apileaks.py jwt test-jwks-spoof TOKEN
-      
+
       # Test with custom malicious JWKS URL
       python apileaks.py jwt test-jwks-spoof TOKEN --jwks-url http://evil.com/jwks.json
-      
+
       # Test against real endpoint
       python apileaks.py jwt test-jwks-spoof TOKEN --url https://api.example.com/protected
     """
@@ -5979,7 +5973,7 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
         click.echo("="*30)
         click.echo("🔥 SEVERITY: CRITICAL - Trust Boundary Broken")
         click.echo("")
-        
+
         # Parse custom headers
         custom_headers = {}
         for h in header:
@@ -5988,13 +5982,13 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
                 sys.exit(1)
             name, value = h.split(':', 1)
             custom_headers[name.strip()] = value.strip()
-        
+
         # Decode original token
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"� Original Paayload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
+
         # Route generation + execution through the single-source-of-truth engine
         # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated
         # jku/x5u spoofing URL set and signs with the resolved key.
@@ -6023,25 +6017,25 @@ def jwt_test_jwks_spoof(ctx, token, jwks_url, url, header, data, timeout):
 @click.pass_context
 def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
     """Test inline JWKS injection vulnerability
-    
+
     \b
     Inline JWKS injection - total cryptographic validation control by:
-    
+
     1️⃣ Generating attacker's own key pair\n
     2️⃣ Injecting JWKS inline in header\b
     3️⃣ Signing JWT with attacker's private key\b
     4️⃣ Sending token with embedded public key\b
     5️⃣ Testing admin access\b
-    
-    
+
+
     \b
     Examples:
       # Basic inline JWKS test
       python apileaks.py jwt test-inline-jwks TOKEN
-      
+
       # Test against real endpoint
       python apileaks.py jwt test-inline-jwks TOKEN --url https://api.example.com/admin
-      
+
       # Test with custom headers
       python apileaks.py jwt test-inline-jwks TOKEN -u URL -H "X-API-Key: key123"
     """
@@ -6050,7 +6044,7 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
         click.echo("="*35)
         click.echo("🔥 SEVERITY: CRITICAL - Total Cryptographic Control")
         click.echo("")
-        
+
         # Parse custom headers
         custom_headers = {}
         for h in header:
@@ -6059,13 +6053,13 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
                 sys.exit(1)
             name, value = h.split(':', 1)
             custom_headers[name.strip()] = value.strip()
-        
+
         # Decode original token
         decoded = decode_jwt(token)
         click.echo(f"📋 Original Header: {json.dumps(decoded['header'])}")
         click.echo(f"📋 Original Payload: {json.dumps(decoded['payload'])}")
         click.echo("")
-        
+
         # Route generation + execution through the single-source-of-truth engine
         # (Requirements 14.2, 14.3, 17.1, 19.2). The engine owns the curated
         # inline-JWK set and signs with the resolved key.
@@ -6105,33 +6099,33 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
 def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
                     max_retries, fuzz_target, vector_file, raw_request, canary):
     """Comprehensive JWT attack testing against live endpoints
-    
+
     Performs automated security testing of JWT tokens against live API endpoints
     to identify common JWT vulnerabilities. This command executes multiple attack
     vectors and provides detailed vulnerability assessment with evidence.
-    
+
     \b
     Attack Vectors Tested:
     • Algorithm Confusion Attacks
       - alg:none bypass (removes signature requirement)
       - Null signature attacks (various bypass techniques)
       - Algorithm downgrade (RS256 to HS256 confusion)
-    
-    • Secret-Based Attacks  
+
+    • Secret-Based Attacks
       - Weak HMAC secret brute-force using common wordlists
       - Empty secret testing
       - Predictable secret patterns
-    
+
     • Injection Attacks
       - Key ID (kid) injection (path traversal, command injection)
       - JWKS URL spoofing (jku parameter manipulation)
       - Inline JWKS injection (embed malicious public keys)
-    
+
     • Payload Manipulation
       - Privilege escalation (modify role/admin claims)
       - User impersonation (change user identifier claims)
       - Expiration bypass (remove or extend exp claims)
-    
+
     \b
     Response Analysis:
     • Compares attack responses against baseline (original token)
@@ -6139,48 +6133,48 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
     • Identifies privilege escalation attempts
     • Analyzes response timing for blind vulnerabilities
     • Provides confidence scoring for findings
-    
+
     \b
     Required Arguments:
       TOKEN                 JWT token to use as base for attack generation
-    
+
     \b
     Required Options:
       -u, --url URL         Target endpoint URL to test attacks against
                            Must be a complete URL (e.g., https://api.example.com/protected)
-    
+
     \b
     Optional Parameters:
       -H, --header TEXT     Custom HTTP headers to include in all requests
                            Format: "Header-Name: Header-Value"
                            Can be specified multiple times for different headers
                            Example: -H "Authorization: Bearer token" -H "X-API-Key: key123"
-    
+
       -d, --data TEXT       POST data to include in request body
                            Recommended format: JSON string
                            Example: -d '{"userId": 123, "action": "read"}'
-    
+
       --timeout INTEGER     HTTP request timeout in seconds (default: 30)
                            Increase for slow endpoints or networks
-    
+
       --no-ssl-verify       Disable SSL certificate verification
                            Use for testing against self-signed certificates
                            WARNING: Only use in testing environments
-    
+
       --max-retries INTEGER Maximum retry attempts for failed requests (default: 3)
                            Helps handle temporary network issues
-    
+
     \b
     Basic Usage Examples:
       # Test JWT against a protected endpoint
       python apileaks.py jwt attack-test eyJ0eXAiOiJKV1Q... --url https://api.example.com/user/profile
-    
+
       # Test with custom authentication header
       python apileaks.py jwt attack-test TOKEN -u https://api.example.com/admin -H "X-API-Key: secret123"
-    
+
       # Test POST endpoint with request body
       python apileaks.py jwt attack-test TOKEN -u https://api.example.com/update -d '{"name": "test"}'
-    
+
     \b
     Advanced Usage Examples:
       # Multiple custom headers with extended timeout
@@ -6189,16 +6183,16 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
         -H "X-Forwarded-For: 127.0.0.1" \\
         -H "User-Agent: Mobile-App/1.0" \\
         --timeout 60
-    
+
       # Testing against development server with self-signed certificate
       python apileaks.py jwt attack-test TOKEN -u https://dev-api.local/protected \\
         --no-ssl-verify --max-retries 5
-    
+
       # Complex POST request with JSON payload
       python apileaks.py jwt attack-test TOKEN -u https://api.example.com/transactions \\
         -d '{"amount": 100, "currency": "USD", "recipient": "user123"}' \\
         -H "Content-Type: application/json"
-    
+
     \b
     Output and Results:
     • Real-time progress display with attack status
@@ -6206,24 +6200,24 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
     • Evidence and exploitation steps for successful attacks
     • Files saved to 'jwtattack/[session-id]/' directory:
       - tokens/: Generated attack tokens (*.jwt files)
-      - responses/: HTTP response details (*.json files)  
+      - responses/: HTTP response details (*.json files)
       - reports/: Human-readable and machine-parseable reports
       - baseline_response.json: Original token response for comparison
-    
+
     \b
     Exit Codes:
       0    No vulnerabilities found or low/medium severity only
       1    High severity vulnerabilities detected
       2    Critical vulnerabilities detected
       130  Interrupted by user (Ctrl+C)
-    
+
     \b
     Security Notes:
     • Only test against systems you own or have explicit permission to test
     • This tool generates multiple HTTP requests - be mindful of rate limits
     • Some attacks may trigger security monitoring - ensure proper authorization
     • Results should be verified manually before reporting as vulnerabilities
-    
+
     \b
     Integration with Existing JWT Commands:
     • Uses same JWT utilities as other jwt subcommands for consistency
@@ -6315,7 +6309,7 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
         except Exception as e:
             click.echo(f"❌ Invalid JWT token: {e}", err=True)
             sys.exit(1)
-        
+
         # Parse custom headers. When a raw request file was supplied its parsed
         # headers seed the request context (Req 67.1); explicit -H options then
         # override on a per-name basis.
@@ -6328,7 +6322,7 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
                 sys.exit(1)
             name, value = h.split(':', 1)
             custom_headers[name.strip()] = value.strip()
-        
+
         # Display attack configuration
         click.echo("🎯 Attack Configuration")
         click.echo("="*50)
@@ -6355,7 +6349,7 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
         if canary:
             click.echo("Canary: (supplied — corroborates analyzer success)")
         click.echo("")
-        
+
         # Route all attack-token generation and execution through the single-
         # source-of-truth JWTAttackEngine (Requirements 14.2, 14.3), issuing HTTP
         # through the shared HTTPRequestEngine (Requirement 17.1). Success is
@@ -6423,7 +6417,7 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
 
         # Run the async attack test
         asyncio.run(run_attack_test())
-        
+
     except KeyboardInterrupt:
         click.echo("\n❌ Attack testing interrupted by user")
         sys.exit(130)
@@ -6599,11 +6593,11 @@ def jwt_login(ctx, url, body, method, header, token_field, save, no_ssl_verify, 
 
 
 @cli.command(hidden=True)
-@click.option('--config', '-c', type=click.Path(exists=True), 
+@click.option('--config', '-c', type=click.Path(exists=True),
               help='Configuration file path (YAML or JSON) - optional')
 @click.option('--target', '-t', help='Target URL to scan (overrides config)')
 @click.option('--output', '-o', default='reports', help='Output directory for reports')
-@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']), 
+@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
               default='WARNING', help='Logging level')
 @click.option('--log-file', help='Log file path (optional)')
 @click.option('--json-logs', is_flag=True, help='Output logs in JSON format')
@@ -6696,7 +6690,7 @@ def evaluate_severity_gate(counts, fail_on):
 async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseline=None, discovery_progress=None, scope_endpoints=None, checkpoint_path=None, resume_checkpoint=None):
     """
     Run enhanced APILeak scan with full integration of all components
-    
+
     Args:
         config: APILeak configuration
         ci_mode: Whether running in CI/CD mode
@@ -6717,10 +6711,10 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
                   (Requirements 36.3, 36.8).
     """
     logger = get_logger("run_enhanced_apileak")
-    
+
     # Initialize APILeak Core with enhanced orchestration
     core = APILeakCore(config)
-    
+
     # Attach the live Progress_Display (if any) before discovery runs so the
     # endpoint fuzzer can render it (Requirement 32). No-op/disabled instances
     # are harmless.
@@ -6736,19 +6730,19 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
         core.discovery_checkpoint_path = checkpoint_path
     if resume_checkpoint is not None:
         core.discovery_resume_checkpoint = resume_checkpoint
-    
+
     # Perform health check
     health_status = await core.health_check()
     if health_status["status"] != "healthy":
         logger.warning("Health check indicates issues", status=health_status)
-    
+
     # Run the enhanced scan with intelligent orchestration
     target_url = config.target.base_url
     logger.info("Starting enhanced APILeak scan", target=target_url, ci_mode=ci_mode)
-    
+
     # Show enhanced scan configuration
     click.echo(f"\n🎯 Target: {target_url}")
-    
+
     # Display enabled advanced features
     advanced_features = []
     if hasattr(config.advanced_discovery, 'framework_detection') and config.advanced_discovery.framework_detection.get('enabled'):
@@ -6763,14 +6757,14 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
         advanced_features.append("Subdomain Discovery")
     if config.advanced_discovery.cors_analysis:
         advanced_features.append("CORS Analysis")
-    
+
     if advanced_features:
         click.echo(f"🚀 Advanced Features: {', '.join(advanced_features)}")
-    
+
     # Display OWASP modules
     if config.owasp_testing.enabled_modules:
         click.echo(f"🛡️  OWASP Modules: {', '.join(config.owasp_testing.enabled_modules)}")
-    
+
     if hasattr(config.fuzzing, 'response_filter') and config.fuzzing.response_filter:
         click.echo(f"📊 Response Filter: {config.fuzzing.response_filter}")
     if hasattr(config, 'http_output') and config.http_output.status_code_filter:
@@ -6779,37 +6773,37 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
         click.echo("🔐 Authentication: JWT Token provided")
     if hasattr(config.fuzzing.headers, 'random_user_agent') and config.fuzzing.headers.random_user_agent:
         click.echo("🎭 WAF Evasion: Random User-Agent enabled")
-    
+
     click.echo(f"⚡ Rate Limit: {config.rate_limiting.requests_per_second} req/sec")
-    
+
     if getattr(config, 'safe_mode', False):
         click.echo("🛟 Safe Mode: Enabled (state-changing probes skipped, safe methods only)")
-    
+
     if ci_mode:
         click.echo(f"🔄 CI/CD Mode: Enabled (fail on {fail_on}+ severity)")
-    
+
     click.echo("")
-    
+
     try:
         # Execute the enhanced scan with intelligent orchestration
         results = await core.run_scan(target_url, scope_endpoints=scope_endpoints)
-        
+
         # Generate enhanced reports with all findings
         from utils.report_generator import ReportGenerator
-        
+
         report_generator = ReportGenerator()
-        
+
         # Determine scan type for report naming
         scan_type = "full"
         if config.fuzzing.endpoints.enabled and not config.fuzzing.parameters.enabled:
             scan_type = "dir"
         elif config.fuzzing.parameters.enabled and not config.fuzzing.endpoints.enabled:
             scan_type = "param"
-        
+
         # Generate reports with custom names
         output_filename = getattr(config.reporting, 'output_filename', None)
         report_files = report_generator.save_reports(results, config.reporting.output_dir, scan_type, output_filename, formats=getattr(config.reporting, 'formats', None))
-        
+
         # Display enhanced summary with advanced features results
         click.echo("\n" + "="*60)
         click.echo("APILeak Enhanced Scan Completed Successfully")
@@ -6817,17 +6811,17 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
         click.echo(f"Target: {target_url}")
         click.echo(f"Scan ID: {results.scan_id}")
         click.echo(f"Duration: {results.performance_metrics.duration}")
-        
+
         # Surface discovery recursion-control status (budget reached / catch-all
         # detected) so the operator sees when discovery was truncated or wildcard
         # responses were excluded (Requirements 18.5, 19.5).
         _echo_discovery_control_status(core)
-        
+
         # Get enhanced statistics from findings collector
         if hasattr(results, 'findings_collector') and results.findings_collector:
             stats = results.findings_collector.get_statistics()
             owasp_coverage = results.findings_collector.get_owasp_coverage()
-            
+
             # Show advanced discovery results if available
             if hasattr(results, 'advanced_results'):
                 advanced_results = results.advanced_results
@@ -6839,7 +6833,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
                     click.echo(f"🌐 Subdomains Discovered: {len(advanced_results.subdomains_discovered)}")
                 if hasattr(advanced_results, 'waf_detected') and advanced_results.waf_detected:
                     click.echo(f"🛡️  WAF Detected: {advanced_results.waf_detected.name} (confidence: {advanced_results.waf_detected.confidence:.2f})")
-            
+
             # Show scan-specific metrics
             if scan_type == "dir":
                 endpoints_tested = getattr(results.statistics, 'endpoints_tested', 0)
@@ -6856,7 +6850,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
                         click.echo("No valid endpoints found (all returned 404 or errors)")
             elif scan_type == "param":
                 click.echo(f"Total Parameters Tested: {getattr(results.statistics, 'parameters_tested', 0)}")
-            
+
             click.echo(f"Total Findings: {stats['total_findings']}")
             click.echo(f"Critical: {stats['critical_findings']}")
             click.echo(f"High: {stats['high_findings']}")
@@ -6864,7 +6858,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
             click.echo(f"Low: {stats['low_findings']}")
             click.echo(f"Info: {stats['info_findings']}")
             click.echo(f"OWASP Coverage: {owasp_coverage['coverage_percentage']:.1f}% ({owasp_coverage['tested_categories']}/{owasp_coverage['total_categories']} categories)")
-            
+
             # Show most critical category if any
             if stats.get('most_critical_category'):
                 click.echo(f"Most Critical Category: {stats['most_critical_category']}")
@@ -6876,11 +6870,11 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
             click.echo(f"Medium: {results.statistics.medium_findings}")
             click.echo(f"Low: {results.statistics.low_findings}")
             click.echo(f"Info: {results.statistics.info_findings}")
-        
+
         click.echo(f"\nReports generated:")
         for report_file in report_files:
             click.echo(f"  - {report_file}")
-        
+
         # Baseline comparison: classify findings into new vs known relative to a
         # baseline JSON report (Requirements 11.1-11.3). A missing baseline path
         # yields an empty baseline so every finding is treated as new (11.5).
@@ -6902,7 +6896,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
             click.echo(f"  - Baseline: {baseline}")
             click.echo(f"  - New findings: {len(new_findings)}")
             click.echo(f"  - Known findings: {len(known_findings)}")
-        
+
         # Enhanced CI/CD integration with configurable exit codes
         if ci_mode:
             if new_findings is not None:
@@ -6931,14 +6925,14 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
                 )
 
             click.echo(f"\n🔄 CI/CD Result: Exit code {exit_code} - {exit_reason}")
-            
+
             logger.info("CI/CD scan completed", exit_code=exit_code, reason=exit_reason)
             sys.exit(exit_code)
         else:
             # Standard exit codes for non-CI mode
             critical_count = getattr(results.statistics, 'critical_findings', 0)
             high_count = getattr(results.statistics, 'high_findings', 0)
-            
+
             if critical_count > 0:
                 logger.info("Exiting with code 2 due to critical findings")
                 sys.exit(2)
@@ -6948,7 +6942,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
             else:
                 logger.info("Scan completed successfully with no critical/high findings")
                 sys.exit(0)
-            
+
     except Exception as e:
         logger.error("Enhanced scan execution failed", error=str(e))
         if ci_mode:
@@ -6960,7 +6954,7 @@ async def run_enhanced_apileak(config, ci_mode=False, fail_on="critical", baseli
 async def run_apileak(config):
     """
     Run APILeak scan with the provided configuration (legacy compatibility)
-    
+
     Args:
         config: APILeak configuration
     """
