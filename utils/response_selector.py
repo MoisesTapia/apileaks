@@ -25,7 +25,7 @@ selection operates on an **in-memory-only** extended view,
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from utils.discovery_session import (
     DiscoveryResult,
@@ -122,7 +122,7 @@ class Soft404Baseline:
         )
 
 
-def calibrate_soft_404(fuzzer: "EndpointFuzzer") -> Optional[Soft404Baseline]:
+def calibrate_soft_404(fuzzer: "EndpointFuzzer") -> Soft404Baseline | None:
     """Build a :class:`Soft404Baseline` from the fuzzer's catch-all probes.
 
     Reuses the ``(status_code, size, words)`` signature that
@@ -159,7 +159,7 @@ class Bound:
 
     op: str                        # one of '==','>','>=','<','<=','range'
     lo: float
-    hi: Optional[float] = None
+    hi: float | None = None
 
     def test(self, value: float) -> bool:
         """Return whether ``value`` satisfies this bound."""
@@ -191,12 +191,12 @@ class ResponseSelector:
     from :mod:`utils.discovery_session`.
     """
 
-    status: Optional[StatusFilter] = None      # reuse existing status semantics
-    size: Optional[Bound] = None               # response body size in bytes
-    words: Optional[Bound] = None              # whitespace-delimited word count
-    lines: Optional[Bound] = None              # newline-delimited line count
-    regex: Optional[re.Pattern] = None         # response-body regular expression
-    time: Optional[Bound] = None               # response time, seconds
+    status: StatusFilter | None = None      # reuse existing status semantics
+    size: Bound | None = None               # response body size in bytes
+    words: Bound | None = None              # whitespace-delimited word count
+    lines: Bound | None = None              # newline-delimited line count
+    regex: re.Pattern | None = None         # response-body regular expression
+    time: Bound | None = None               # response time, seconds
 
     def satisfies(self, r: DiscoveryResultEx) -> bool:
         """Return whether record ``r`` satisfies every present predicate."""
@@ -317,9 +317,9 @@ def _parse_one_selector(expr: str) -> ResponseSelector:
 
 
 def parse_selectors(
-    match_exprs: List[str],
-    filter_exprs: List[str],
-) -> Tuple[List[ResponseSelector], List[ResponseSelector]]:
+    match_exprs: list[str],
+    filter_exprs: list[str],
+) -> tuple[list[ResponseSelector], list[ResponseSelector]]:
     """Parse ``--match-*``/``--filter-*`` expressions into selectors.
 
     Each expression is an ``<attribute>:<expression>`` string where the bound
@@ -345,11 +345,11 @@ def parse_selectors(
 
 
 def apply_selectors(
-    records: List[DiscoveryResultEx],
-    matchers: List[ResponseSelector],
-    filters: List[ResponseSelector],
-    status_filter: Optional[StatusFilter] = None,
-) -> List[DiscoveryResultEx]:
+    records: list[DiscoveryResultEx],
+    matchers: list[ResponseSelector],
+    filters: list[ResponseSelector],
+    status_filter: StatusFilter | None = None,
+) -> list[DiscoveryResultEx]:
     """Narrow ``records`` by status filter, matchers, then filters.
 
     Applies the three selections conjunctively (Requirement 22.7): a record is
@@ -371,7 +371,7 @@ def apply_selectors(
     Returns:
         The retained records, in their original relative order.
     """
-    retained: List[DiscoveryResultEx] = []
+    retained: list[DiscoveryResultEx] = []
     for record in records:
         if status_filter is not None and not _status_matches(
             status_filter, record.result

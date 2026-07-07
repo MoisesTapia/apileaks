@@ -13,16 +13,14 @@ Requirements: 16.1, 16.2, 16.3, 16.4, 16.5
 
 import base64
 import html
-import json
 import random
-import re
-import string
 import urllib.parse
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+
 import yaml
+
 
 class EncodingType(Enum):
     """Supported encoding types for payload obfuscation"""
@@ -57,76 +55,76 @@ class PayloadTemplate:
     """Template for generating vulnerability-specific payloads"""
     name: str
     vulnerability_type: VulnerabilityType
-    base_payloads: List[str]
-    variations: List[str] = field(default_factory=list)
-    encodings: List[EncodingType] = field(default_factory=list)
-    obfuscations: List[ObfuscationType] = field(default_factory=list)
+    base_payloads: list[str]
+    variations: list[str] = field(default_factory=list)
+    encodings: list[EncodingType] = field(default_factory=list)
+    obfuscations: list[ObfuscationType] = field(default_factory=list)
     description: str = ""
 
 @dataclass
 class PayloadGenerationConfig:
     """Configuration for payload generation"""
-    enabled_encodings: List[EncodingType] = field(default_factory=lambda: [
+    enabled_encodings: list[EncodingType] = field(default_factory=lambda: [
         EncodingType.URL, EncodingType.BASE64, EncodingType.HTML, EncodingType.UNICODE
     ])
-    enabled_obfuscations: List[ObfuscationType] = field(default_factory=lambda: [
+    enabled_obfuscations: list[ObfuscationType] = field(default_factory=lambda: [
         ObfuscationType.CASE_VARIATION, ObfuscationType.MUTATION
     ])
     max_variations_per_payload: int = 10
     include_original: bool = True
-    custom_templates_dir: Optional[str] = None
+    custom_templates_dir: str | None = None
 
 class PayloadGenerator:
     """
     Advanced payload generator with encoding and obfuscation capabilities
-    
+
     Supports multiple encoding types, obfuscation techniques, and vulnerability-specific
     payload generation for comprehensive API security testing.
     """
-    
+
     def __init__(self, config: PayloadGenerationConfig = None, templates_dir: str = None):
         """
         Initialize the payload generator
-        
+
         Args:
             config: Configuration for payload generation
             templates_dir: Directory containing payload templates
         """
         self.config = config or PayloadGenerationConfig()
         self.templates_dir = templates_dir or "templates/payloads"
-        self.templates: Dict[VulnerabilityType, List[PayloadTemplate]] = {}
+        self.templates: dict[VulnerabilityType, list[PayloadTemplate]] = {}
         self._load_default_templates()
         if self.config.custom_templates_dir:
             self._load_custom_templates()
-    
-    def generate_encoded_payloads(self, base_payload: str, encodings: List[EncodingType] = None) -> List[str]:
+
+    def generate_encoded_payloads(self, base_payload: str, encodings: list[EncodingType] = None) -> list[str]:
         """
         Generate encoded variations of a base payload
-        
+
         Args:
             base_payload: The original payload to encode
             encodings: List of encoding types to apply (uses config default if None)
-            
+
         Returns:
             List of encoded payload variations
         """
         if encodings is None:
             encodings = self.config.enabled_encodings
-        
+
         encoded_payloads = []
-        
+
         if self.config.include_original:
             encoded_payloads.append(base_payload)
-        
+
         for encoding in encodings:
             try:
                 encoded = self._apply_encoding(base_payload, encoding)
                 if encoded and encoded != base_payload:
                     encoded_payloads.append(encoded)
-            except Exception as e:
+            except Exception:
                 # Log encoding error but continue with other encodings
                 continue
-        
+
         # Generate combination encodings (e.g., URL + Base64)
         for i, enc1 in enumerate(encodings):
             for enc2 in encodings[i+1:]:
@@ -138,62 +136,62 @@ class PayloadGenerator:
                         encoded_payloads.append(double_encoded)
                 except Exception:
                     continue
-        
+
         return encoded_payloads
-    
-    def apply_obfuscation(self, payload: str, techniques: List[ObfuscationType] = None) -> List[str]:
+
+    def apply_obfuscation(self, payload: str, techniques: list[ObfuscationType] = None) -> list[str]:
         """
         Apply obfuscation techniques to a payload
-        
+
         Args:
             payload: The payload to obfuscate
             techniques: List of obfuscation techniques to apply
-            
+
         Returns:
             List of obfuscated payload variations
         """
         if techniques is None:
             techniques = self.config.enabled_obfuscations
-        
+
         obfuscated_payloads = []
-        
+
         if self.config.include_original:
             obfuscated_payloads.append(payload)
-        
+
         for technique in techniques:
             variations = self._apply_obfuscation_technique(payload, technique)
             obfuscated_payloads.extend(variations)
-        
+
         # Limit variations to prevent explosion
         if len(obfuscated_payloads) > self.config.max_variations_per_payload:
             obfuscated_payloads = obfuscated_payloads[:self.config.max_variations_per_payload]
-        
+
         return list(set(obfuscated_payloads))  # Remove duplicates
-    
-    def generate_injection_payloads(self, vuln_type: VulnerabilityType) -> List[str]:
+
+    def generate_injection_payloads(self, vuln_type: VulnerabilityType) -> list[str]:
         """
         Generate payloads for specific vulnerability types
-        
+
         Args:
             vuln_type: Type of vulnerability to generate payloads for
-            
+
         Returns:
             List of vulnerability-specific payloads
         """
         if vuln_type not in self.templates:
             return []
-        
+
         all_payloads = []
-        
+
         for template in self.templates[vuln_type]:
             # Generate base payloads from template
             base_payloads = template.base_payloads.copy()
-            
+
             # Add variations
             for base in template.base_payloads:
                 for variation in template.variations:
                     base_payloads.append(base.replace("{VARIATION}", variation))
-            
+
             # Apply encodings if specified in template
             if template.encodings:
                 encoded_payloads = []
@@ -202,7 +200,7 @@ class PayloadGenerator:
                         self.generate_encoded_payloads(payload, template.encodings)
                     )
                 base_payloads.extend(encoded_payloads)
-            
+
             # Apply obfuscations if specified in template
             if template.obfuscations:
                 obfuscated_payloads = []
@@ -211,53 +209,53 @@ class PayloadGenerator:
                         self.apply_obfuscation(payload, template.obfuscations)
                     )
                 base_payloads.extend(obfuscated_payloads)
-            
+
             all_payloads.extend(base_payloads)
-        
+
         return list(set(all_payloads))  # Remove duplicates
-    
-    def expand_wordlist(self, wordlist: List[str], prefixes: List[str] = None, 
-                       suffixes: List[str] = None) -> List[str]:
+
+    def expand_wordlist(self, wordlist: list[str], prefixes: list[str] = None,
+                       suffixes: list[str] = None) -> list[str]:
         """
         Expand a wordlist with prefixes and suffixes
-        
+
         Args:
             wordlist: Original wordlist
             prefixes: List of prefixes to add
             suffixes: List of suffixes to add
-            
+
         Returns:
             Expanded wordlist with all combinations
         """
         expanded = wordlist.copy()
-        
+
         if prefixes:
             for word in wordlist:
                 for prefix in prefixes:
                     expanded.append(f"{prefix}{word}")
-        
+
         if suffixes:
             for word in wordlist:
                 for suffix in suffixes:
                     expanded.append(f"{word}{suffix}")
-        
+
         # Generate prefix + word + suffix combinations
         if prefixes and suffixes:
             for word in wordlist:
                 for prefix in prefixes:
                     for suffix in suffixes:
                         expanded.append(f"{prefix}{word}{suffix}")
-        
+
         return list(set(expanded))  # Remove duplicates
-    
-    def generate_framework_specific_payloads(self, framework: str, vuln_type: VulnerabilityType) -> List[str]:
+
+    def generate_framework_specific_payloads(self, framework: str, vuln_type: VulnerabilityType) -> list[str]:
         """
         Generate payloads specific to a detected framework
-        
+
         Args:
             framework: Detected framework (e.g., 'fastapi', 'django', 'express')
             vuln_type: Type of vulnerability to target
-            
+
         Returns:
             Framework-specific payloads
         """
@@ -308,21 +306,21 @@ class PayloadGenerator:
                 ]
             }
         }
-        
+
         framework_lower = framework.lower()
         if framework_lower in framework_payloads and vuln_type in framework_payloads[framework_lower]:
             base_payloads = framework_payloads[framework_lower][vuln_type]
-            
+
             # Apply standard encoding and obfuscation
             all_payloads = []
             for payload in base_payloads:
                 all_payloads.extend(self.generate_encoded_payloads(payload))
                 all_payloads.extend(self.apply_obfuscation(payload))
-            
+
             return list(set(all_payloads))
-        
+
         return []
-    
+
     def _apply_encoding(self, payload: str, encoding: EncodingType) -> str:
         """Apply specific encoding to a payload"""
         try:
@@ -342,11 +340,11 @@ class PayloadGenerator:
                 return payload
         except Exception:
             return payload
-    
-    def _apply_obfuscation_technique(self, payload: str, technique: ObfuscationType) -> List[str]:
+
+    def _apply_obfuscation_technique(self, payload: str, technique: ObfuscationType) -> list[str]:
         """Apply specific obfuscation technique to a payload"""
         variations = []
-        
+
         try:
             if technique == ObfuscationType.CASE_VARIATION:
                 variations.extend(self._generate_case_variations(payload))
@@ -360,39 +358,39 @@ class PayloadGenerator:
                 variations.extend(self._generate_concatenations(payload))
         except Exception:
             pass
-        
+
         return variations
-    
-    def _generate_case_variations(self, payload: str) -> List[str]:
+
+    def _generate_case_variations(self, payload: str) -> list[str]:
         """Generate case variations of a payload"""
         variations = []
-        
+
         # All uppercase
         variations.append(payload.upper())
-        
+
         # All lowercase
         variations.append(payload.lower())
-        
+
         # Random case
         random_case = ''.join(
             c.upper() if random.choice([True, False]) else c.lower()
             for c in payload
         )
         variations.append(random_case)
-        
+
         # Alternating case
         alternating = ''.join(
             c.upper() if i % 2 == 0 else c.lower()
             for i, c in enumerate(payload)
         )
         variations.append(alternating)
-        
+
         return variations
-    
-    def _generate_mutations(self, payload: str) -> List[str]:
+
+    def _generate_mutations(self, payload: str) -> list[str]:
         """Generate character mutations of a payload"""
         variations = []
-        
+
         # Character substitutions for common SQL injection
         substitutions = {
             ' ': ['/**/', '+', '%20', '\t', '\n'],
@@ -403,19 +401,19 @@ class PayloadGenerator:
             'SELECT': ['SELECT/**/'],
             "'": ['%27', '"', '`']
         }
-        
+
         for original, replacements in substitutions.items():
             if original in payload:
                 for replacement in replacements:
                     variations.append(payload.replace(original, replacement))
-        
+
         return variations
-    
-    def _insert_whitespace(self, payload: str) -> List[str]:
+
+    def _insert_whitespace(self, payload: str) -> list[str]:
         """Insert whitespace characters for obfuscation"""
         variations = []
         whitespace_chars = [' ', '\t', '\n', '\r', '\f', '\v']
-        
+
         # Insert random whitespace
         for ws in whitespace_chars:
             # Insert at random positions
@@ -423,14 +421,14 @@ class PayloadGenerator:
                 pos = random.randint(0, len(payload))
                 variation = payload[:pos] + ws + payload[pos:]
                 variations.append(variation)
-        
+
         return variations
-    
-    def _insert_comments(self, payload: str) -> List[str]:
+
+    def _insert_comments(self, payload: str) -> list[str]:
         """Insert SQL/code comments for obfuscation"""
         variations = []
         comments = ['/**/', '/*comment*/', '--', '#', '-- -']
-        
+
         for comment in comments:
             # Insert at word boundaries
             words = payload.split()
@@ -439,25 +437,25 @@ class PayloadGenerator:
                     new_words = words.copy()
                     new_words.insert(i, comment)
                     variations.append(' '.join(new_words))
-        
+
         return variations
-    
-    def _generate_concatenations(self, payload: str) -> List[str]:
+
+    def _generate_concatenations(self, payload: str) -> list[str]:
         """Generate string concatenation variations"""
         variations = []
-        
+
         # SQL concatenation
         if len(payload) > 4:
             mid = len(payload) // 2
             sql_concat = f"'{payload[:mid]}'||'{payload[mid:]}'"
             variations.append(sql_concat)
-            
+
             # MySQL CONCAT
             mysql_concat = f"CONCAT('{payload[:mid]}','{payload[mid:]}')"
             variations.append(mysql_concat)
-        
+
         return variations
-    
+
     def _load_default_templates(self):
         """Load default payload templates"""
         # SQL Injection templates
@@ -477,7 +475,7 @@ class PayloadGenerator:
                 obfuscations=[ObfuscationType.CASE_VARIATION, ObfuscationType.MUTATION]
             )
         ]
-        
+
         # XSS templates
         self.templates[VulnerabilityType.XSS] = [
             PayloadTemplate(
@@ -494,7 +492,7 @@ class PayloadGenerator:
                 obfuscations=[ObfuscationType.CASE_VARIATION]
             )
         ]
-        
+
         # Command Injection templates
         self.templates[VulnerabilityType.COMMAND_INJECTION] = [
             PayloadTemplate(
@@ -512,7 +510,7 @@ class PayloadGenerator:
                 obfuscations=[ObfuscationType.WHITESPACE_INSERTION]
             )
         ]
-        
+
         # Path Traversal templates
         self.templates[VulnerabilityType.PATH_TRAVERSAL] = [
             PayloadTemplate(
@@ -529,7 +527,7 @@ class PayloadGenerator:
                 obfuscations=[ObfuscationType.MUTATION]
             )
         ]
-        
+
         # SSTI templates
         self.templates[VulnerabilityType.SSTI] = [
             PayloadTemplate(
@@ -547,7 +545,7 @@ class PayloadGenerator:
                 obfuscations=[ObfuscationType.CASE_VARIATION]
             )
         ]
-        
+
         # NoSQL Injection templates
         self.templates[VulnerabilityType.NOSQL_INJECTION] = [
             PayloadTemplate(
@@ -564,21 +562,21 @@ class PayloadGenerator:
                 obfuscations=[ObfuscationType.MUTATION]
             )
         ]
-    
+
     def _load_custom_templates(self):
         """Load custom payload templates from YAML files"""
         if not self.config.custom_templates_dir:
             return
-        
+
         templates_path = Path(self.config.custom_templates_dir)
         if not templates_path.exists():
             return
-        
+
         for template_file in templates_path.glob("*.yaml"):
             try:
-                with open(template_file, 'r') as f:
+                with open(template_file) as f:
                     template_data = yaml.safe_load(f)
-                
+
                 vuln_type = VulnerabilityType(template_data['vulnerability_type'])
                 template = PayloadTemplate(
                     name=template_data['name'],
@@ -589,24 +587,24 @@ class PayloadGenerator:
                     obfuscations=[ObfuscationType(o) for o in template_data.get('obfuscations', [])],
                     description=template_data.get('description', '')
                 )
-                
+
                 if vuln_type not in self.templates:
                     self.templates[vuln_type] = []
                 self.templates[vuln_type].append(template)
-                
-            except Exception as e:
+
+            except Exception:
                 # Log error but continue loading other templates
                 continue
-    
-    def get_available_vulnerability_types(self) -> List[VulnerabilityType]:
+
+    def get_available_vulnerability_types(self) -> list[VulnerabilityType]:
         """Get list of available vulnerability types"""
         return list(self.templates.keys())
-    
-    def get_template_info(self, vuln_type: VulnerabilityType) -> List[Dict[str, str]]:
+
+    def get_template_info(self, vuln_type: VulnerabilityType) -> list[dict[str, str]]:
         """Get information about templates for a vulnerability type"""
         if vuln_type not in self.templates:
             return []
-        
+
         return [
             {
                 'name': template.name,

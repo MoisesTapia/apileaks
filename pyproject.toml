@@ -41,6 +41,7 @@ dependencies = [
     "tqdm>=4.65.0",
     "colorama>=0.4.6",
     "rich>=13.4.0",
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
