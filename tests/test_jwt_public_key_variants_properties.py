@@ -130,6 +130,9 @@ def _load_variant_public_key(name: str, key_bytes: bytes):
     if name == "x5c_cert_der":
         cert = x509.load_der_x509_certificate(key_bytes)
         return cert.public_key()
+    # OpenSSH format variants — load with the SSH loader.
+    if name in ("ssh_original", "ssh_serialized"):
+        return serialization.load_ssh_public_key(key_bytes)
     # PEM or DER SubjectPublicKeyInfo.
     for loader in (
         serialization.load_pem_public_key,

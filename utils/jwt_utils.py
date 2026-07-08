@@ -333,9 +333,12 @@ def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
       - ``'der'``                 : DER-encoded SubjectPublicKeyInfo bytes
       - ``'x5c_cert_der'``        : certificate DER bytes (only when the material
                                     is/contains an X.509 certificate)
+      - ``'ssh_original'``        : raw OpenSSH public key string (ssh-rsa ...)
+                                    as-is, for servers that store/use the key in
+                                    its original ssh format as the HMAC secret
 
-    The source ``material`` may be a PEM/DER public key or a PEM/DER X.509
-    certificate (the same JWK/PEM/cert conversion used for Reqs 6.2/45.1).
+    The source ``material`` may be a PEM/DER public key, a PEM/DER X.509
+    certificate, or an OpenSSH public key (ssh-rsa/ssh-ed25519/ecdsa-sha2-*).
     Representations that cannot be produced from the given material are OMITTED,
     never raised — an unparseable input yields an empty list.
     """
@@ -350,6 +353,12 @@ def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
 
     public_key = None
     certificate = None
+    is_ssh_key = False
+
+    # Detect OpenSSH public key format (e.g. "ssh-rsa AAAA...", "ecdsa-sha2-...")
+    raw_stripped = raw.strip()
+    if raw_stripped.startswith(b'ssh-') or raw_stripped.startswith(b'ecdsa-sha2-'):
+        is_ssh_key = True
 
     # Prefer certificate loaders so the x5c representation is available; a raw
     # public key falls through to the SPKI loaders below.
@@ -370,8 +379,31 @@ def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
             except Exception:
                 continue
 
+    # Try loading as OpenSSH public key format (ssh-rsa, ssh-ed25519, etc.)
+    if public_key is None:
+        try:
+            public_key = serialization.load_ssh_public_key(raw_stripped)
+        except Exception:
+            pass
+
     if public_key is None:
         return variants
+
+    # OpenSSH original format — some servers store and use the raw ssh-rsa/
+    # ssh-ed25519 string as-is for HMAC signing (common in CTFs and vulnerable
+    # implementations that pass the key file content directly as the secret).
+    # Tried FIRST because this is the most common vulnerable pattern.
+    if is_ssh_key:
+        variants.append(('ssh_original', raw_stripped))
+
+    # OpenSSH serialized format — the key re-exported in OpenSSH format, which
+    # may differ from the original if it had comments or trailing whitespace.
+    try:
+        ssh_bytes = public_key.public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        if not is_ssh_key or ssh_bytes.strip() != raw_stripped:
+            variants.append(('ssh_serialized', ssh_bytes))
+    except Exception:
+        pass
 
     # PEM SubjectPublicKeyInfo (with and without the trailing newline).
     try:

@@ -877,12 +877,10 @@ your-256-bit-secret
         # No representation was accepted -> no finding reported.
         assert findings == []
 
-        # The certificate produces all four representations.
+        # The certificate produces representations including the four core ones.
         expected_reps = {name for name, _ in
                          jwt_utils._public_key_variants(cert_pem.encode("utf-8"))}
-        assert expected_reps == {
-            "pem_with_newline", "pem_without_newline", "der", "x5c_cert_der"
-        }
+        assert {"pem_with_newline", "pem_without_newline", "der", "x5c_cert_der"}.issubset(expected_reps)
 
         # Each representation was attempted through the shared HTTP client: the
         # per-variant auth contexts name the representation submitted.
