@@ -5859,8 +5859,9 @@ def _build_jwt_http_engine(timeout=30, verify_ssl=True):
 
 
 def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
-                     signing_secret=None, fuzz_target=None, fuzz_values=None,
-                     canary_value=None, public_key_material=None):
+                     signing_secret=None, method=None, fuzz_target=None,
+                     fuzz_values=None, canary_value=None,
+                     public_key_material=None):
     """Construct a :class:`JWTAttackEngine` for a CLI subcommand.
 
     ``fuzz_target``/``fuzz_values`` drive the CLAIM_FUZZING vector (Req 63.1) and
@@ -5878,6 +5879,7 @@ def _make_jwt_engine(token, url, custom_headers, data, http_engine=None,
         public_key_material=public_key_material,
         custom_headers=custom_headers or {},
         post_data=data,
+        method=method,
         fuzz_target=fuzz_target,
         fuzz_values=fuzz_values,
         canary_value=canary_value,
@@ -5940,7 +5942,8 @@ def _report_attack_result(result):
 
 
 def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
-                    verify_ssl=True, signing_secret=None, public_key_material=None):
+                    verify_ssl=True, signing_secret=None, public_key_material=None,
+                    method=None):
     """Drive one JWT attack vector through the engine.
 
     When ``url`` is provided the vector is executed against the endpoint through
@@ -5962,7 +5965,7 @@ def _run_jwt_vector(token, attack_type, url, custom_headers, data, timeout,
             engine = _make_jwt_engine(
                 token, url, custom_headers, data,
                 http_engine=http_engine, signing_secret=signing_secret,
-                public_key_material=public_key_material)
+                method=method, public_key_material=public_key_material)
             _display_generated_tokens(engine, attack_type)
             click.echo(f"\n🎯 Testing against endpoint: {url}")
             result = await engine.execute_attack(attack_type)
@@ -6345,11 +6348,13 @@ def jwt_jwks_to_key_cmd(ctx, jwks_file):
 @click.argument('token')
 @click.option('--payload', help='Custom payload to inject (JSON format)')
 @click.option('--url', '-u', help='Target URL to test alg:none attack against (optional)')
+@click.option('--method', '-X', 'method', type=click.Choice(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], case_sensitive=False),
+              help='HTTP method to use (default: POST if --data is set, otherwise GET)')
 @click.option('--header', '-H', multiple=True, help='Custom headers for endpoint testing (format: "Name: Value")')
 @click.option('--data', '-d', help='POST data for endpoint testing')
 @click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
 @click.pass_context
-def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
+def jwt_test_alg_none(ctx, token, payload, url, method, header, data, timeout):
     """Test algorithm confusion attack with alg:none
 
     \b
@@ -6403,7 +6408,7 @@ def jwt_test_alg_none(ctx, token, payload, url, header, data, timeout):
             base_token = encode_jwt(decoded['header'], merged, 'secret')
 
         _run_jwt_vector(base_token, AttackType.ALG_NONE, url, custom_headers,
-                        data, timeout)
+                        data, timeout, method=method)
 
         click.echo("\n💡 REMEDIATION:")
         click.echo("• Configure JWT library to REJECT alg:none tokens")
@@ -7007,6 +7012,8 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
 @jwt.command('attack-test')
 @click.argument('token', required=False)
 @click.option('--url', '-u', help='Target URL to test JWT attacks against')
+@click.option('--method', '-X', 'method', type=click.Choice(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], case_sensitive=False),
+              help='HTTP method to use for requests (default: POST if --data is set, otherwise GET)')
 @click.option('--header', '-H', multiple=True, help='Custom headers (format: "Name: Value"). Can be used multiple times.')
 @click.option('--data', '-d', help='POST data for request body (JSON format recommended)')
 @click.option('--timeout', default=30, help='Request timeout in seconds (default: 30)')
@@ -7021,7 +7028,7 @@ def jwt_test_inline_jwks(ctx, token, url, header, data, timeout):
 @click.option('--canary',
               help='Expected-success string that corroborates (never replaces) analyzer success (Req 67.3)')
 @click.pass_context
-def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
+def jwt_attack_test(ctx, token, url, method, header, data, timeout, no_ssl_verify,
                     max_retries, fuzz_target, vector_file, raw_request, canary):
     """Comprehensive JWT attack testing against live endpoints
 
@@ -7292,8 +7299,8 @@ def jwt_attack_test(ctx, token, url, header, data, timeout, no_ssl_verify,
             try:
                 engine = _make_jwt_engine(
                     token, url, custom_headers, data, http_engine=http_engine,
-                    fuzz_target=fuzz_target, fuzz_values=fuzz_values,
-                    canary_value=canary)
+                    method=method, fuzz_target=fuzz_target,
+                    fuzz_values=fuzz_values, canary_value=canary)
 
                 click.echo("🚀 Starting JWT Attack Testing...")
                 click.echo("="*50)

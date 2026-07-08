@@ -448,6 +448,7 @@ class JWTAttackEngine:
                  safe_mode: bool = False,
                  custom_headers: dict[str, str] | None = None,
                  post_data: str | None = None,
+                 method: str | None = None,
                  weak_secrets: list[str] | None = None,
                  fuzz_target: str | None = None,
                  fuzz_values: list[str] | None = None,
@@ -460,6 +461,7 @@ class JWTAttackEngine:
         self.safe_mode = safe_mode
         self.custom_headers = custom_headers or {}
         self.post_data = post_data
+        self.method_override = method.upper() if method else None
         self.weak_secrets = list(weak_secrets) if weak_secrets else list(DEFAULT_WEAK_SECRETS)
         self.fuzz_target = fuzz_target
         self.fuzz_values = list(fuzz_values) if fuzz_values else []
@@ -1357,11 +1359,12 @@ class JWTAttackEngine:
     def _resolve_method(self) -> str:
         """Select the HTTP method, honoring Safe Mode (Requirement 17.2).
 
-        POST is used when a body is present, otherwise GET. Under Safe Mode a
-        state-changing method is downgraded to GET so attack requests are
-        restricted to Safe_Methods.
+        If an explicit method override is set (via --method/-X), it takes
+        precedence. Otherwise POST is used when a body is present, else GET.
+        Under Safe Mode a state-changing method is downgraded to GET so attack
+        requests are restricted to Safe_Methods.
         """
-        method = "POST" if self.post_data else "GET"
+        method = self.method_override or ("POST" if self.post_data else "GET")
         if self.safe_mode and method.upper() not in SAFE_METHODS:
             self.logger.info(
                 "Restricting JWT attack request to a safe method in safe mode",
