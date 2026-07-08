@@ -6,7 +6,7 @@ Implements OWASP API7 - Server Side Request Forgery testing
 import re
 import statistics
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
 from .registry import OWASPModule
 from utils.findings import Finding

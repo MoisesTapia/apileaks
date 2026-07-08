@@ -25,7 +25,7 @@ base (even for fields not declared in the schema, and even when no schema is
 declared) so callers can inject a mass-assignment or BOLA-mutated field.
 """
 
-from typing import Any
+from typing import Any, Type
 
 from utils.spec_import import SpecOperation, SpecParameter
 

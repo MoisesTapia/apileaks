@@ -7,7 +7,7 @@ import asyncio
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, List
 from urllib.parse import urlparse
 from uuid import uuid4
 

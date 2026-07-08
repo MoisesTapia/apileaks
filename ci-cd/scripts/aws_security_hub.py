@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 from datetime import datetime
-from typing import Any
+from typing import Any, List, Optional, Type
 
 import boto3
 

@@ -10,7 +10,7 @@ import json
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type
 from unittest.mock import AsyncMock, Mock
 
 import pytest

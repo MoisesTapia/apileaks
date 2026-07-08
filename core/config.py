@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type
 
 import yaml
 
@@ -108,13 +108,11 @@ class EndpointFuzzingConfig:
     fuzz_mode: str = "clusterbomb"
     # Per-marker wordlists in marker order (Requirement 39/43). ``None`` means no
     # marker mode is configured, preserving the wordlist/candidate_set paths.
-    marker_wordlists: list[list[str]] | None = None
     marker_wordlists: Optional[List[List[str]]] = None
     # Rich SpecSchema loaded from --openapi / --postman sources. When not None,
     # the EndpointFuzzer uses the declared per-route parameters, headers, and
     # request body to send contextually correct requests (spec-aware mode).
     # None (the default) preserves the existing brute-force behavior.
-    spec_schema: "SpecSchema | None" = None
     spec_schema: Optional["SpecSchema"] = None
     # Spec-methods-only mode (--spec-methods-only). When True and a spec is
     # supplied, each spec-seeded path is probed with ONLY the method(s) declared
@@ -127,7 +125,6 @@ class EndpointFuzzingConfig:
     # (non-404) responses during scanning, discovery is halted early and the host
     # is flagged as a wildcard. 0 disables the feature. Defaults to 10, matching
     # the EndpointFuzzer.DEFAULT_QUARANTINE_THRESHOLD.
-    quarantine_threshold: int | None = None  # None => use class default (10)
     quarantine_threshold: Optional[int] = None  # None => use class default (10)
 
 
@@ -360,7 +357,6 @@ class AuthTestingConfig:
     # -------------------------------------------------------------------
     # URL of the OTP/MFA verification endpoint (e.g. /api/v1/auth/otp/verify).
     # Required for OTP brute-force and OTP race-condition probes.
-    otp_endpoint: str | None = None
     otp_endpoint: Optional[str] = None
     # Number of digits in the OTP code (4 or 6 are the most common).
     otp_digits: int = 6
@@ -369,7 +365,6 @@ class AuthTestingConfig:
     # Session / provisional token field name sent alongside the OTP code.
     otp_session_field: str = "session_token"
     # Operator-supplied provisional/session token obtained before the OTP step.
-    otp_session_token: str | None = None
     otp_session_token: Optional[str] = None
     # Number of parallel goroutines for the OTP race-condition probe.
     otp_race_concurrency: int = 50
@@ -395,7 +390,6 @@ class AuthTestingConfig:
     ip_rotation_burst: int = 15
     # Extra override headers to test beyond the built-in list.
     extra_ip_headers: list[str] = field(default_factory=list)
-    extra_ip_headers: List[str] = field(default_factory=list)
     # -------------------------------------------------------------------
     # Timing / Content-Length oracle fields (Expert level).
     # -------------------------------------------------------------------
@@ -457,13 +451,11 @@ class FunctionAuthConfig:
     # JSON field names and values tried as privilege-escalation payloads.
     # -----------------------------------------------------------------------
     role_fields: list[str] = field(default_factory=lambda: [
-    role_fields: List[str] = field(default_factory=lambda: [
         "role", "roles", "user_role", "userRole", "user_type", "userType",
         "is_admin", "isAdmin", "admin", "privilege", "access_level",
         "accessLevel", "permission", "permissions",
     ])
     role_values: list[str] = field(default_factory=lambda: [
-    role_values: List[str] = field(default_factory=lambda: [
         "admin", "administrator", "ADMIN", "SUPER_ADMIN", "superadmin",
         "root", "owner", "manager",
     ])
@@ -472,13 +464,11 @@ class FunctionAuthConfig:
     # Version strings to try when downgrading discovered versioned endpoints.
     # -----------------------------------------------------------------------
     api_versions: list[str] = field(default_factory=lambda: [
-    api_versions: List[str] = field(default_factory=lambda: [
         "v1", "v2", "v3", "v4", "v0",
     ])
     # -----------------------------------------------------------------------
     # Output – persist BFLA matrix to a JSON file for downstream analysis.
     # -----------------------------------------------------------------------
-    bfla_output_file: str | None = None
     bfla_output_file: Optional[str] = None
 
 
@@ -1315,8 +1305,6 @@ class ConfigurationManager:
             unsafe_consumption_testing=UnsafeConsumptionConfig(**data.get('unsafe_consumption_testing', {}))
         )
 
-    def _build_ssrf_config(self, data: dict[str, Any]) -> SSRFConfig:
-    
     def _build_ssrf_config(self, data: Dict[str, Any]) -> SSRFConfig:
         """Build SSRFConfig from a YAML/JSON config dict, mapping all known
         fields explicitly so new fields are always populated correctly even when
@@ -1349,7 +1337,6 @@ class ConfigurationManager:
         )
 
     def _build_auth_config(self, data: dict[str, Any]) -> AuthConfig:
-    def _build_auth_config(self, data: Dict[str, Any]) -> AuthConfig:
         """Build authentication configuration from dict"""
         contexts_data = data.get('contexts', [])
         contexts = []

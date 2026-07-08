@@ -168,7 +168,6 @@ class BurpXmlImporter:
                 )
         return results
 
-    def _parse_item(self, item: _stdlib_ET.Element) -> Optional["ImportedRequest"]:
     def _parse_item(self, item: ET.Element) -> Optional["ImportedRequest"]:
         """Extract an ``ImportedRequest`` from a single ``<item>`` element."""
         request_elem = item.find("request")

@@ -9,7 +9,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import click
 from cryptography import x509

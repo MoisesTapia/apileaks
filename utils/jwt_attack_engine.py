@@ -43,7 +43,7 @@ import json
 import time
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from core.config import Severity

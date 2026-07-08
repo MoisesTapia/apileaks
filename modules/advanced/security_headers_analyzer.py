@@ -4,7 +4,7 @@ Analyzes HTTP security headers for proper configuration and missing protections
 """
 
 import asyncio
-from typing import List, Dict, Optional, Any, Set
+from typing import Any, Dict, List, Optional, Set, Type
 from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4

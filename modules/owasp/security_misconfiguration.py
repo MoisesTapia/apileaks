@@ -10,7 +10,7 @@ Because it issues only read-style requests (GET / OPTIONS), it is inherently
 Safe-Mode compatible and performs no state-changing operations against the target.
 """
 
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Type
 
 from .registry import OWASPModule
 from utils.findings import Finding

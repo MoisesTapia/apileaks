@@ -103,7 +103,7 @@ def _invoke_cli(args):
     import apileaks
 
     # Click >= 8.2 always keeps stderr separate from stdout (no ``mix_stderr``).
-    runner = CliRunner()
+    runner = CliRunner(mix_stderr=False)
     return runner.invoke(apileaks.cli, args)
 
 
@@ -209,7 +209,7 @@ def test_deprecation_helper_is_non_terminating_and_names_replacement():
     """
     import apileaks
 
-    runner = CliRunner()
+    runner = CliRunner(mix_stderr=False)
 
     # Exercise the shared helper directly through a tiny Click command so the
     # stderr routing matches the real CLI, and assert it does not raise/exit.

@@ -120,7 +120,7 @@ def _write_wordlist(tmp_path: Path, entries) -> str:
 
 def _invoke_cli(args):
     import apileaks
-    runner = CliRunner()
+    runner = CliRunner(mix_stderr=False)
     return runner.invoke(apileaks.cli, args)
 
 
@@ -507,7 +507,7 @@ def test_full_alias_stdout_and_exit_snapshot(offline_http, stub_reports, tmp_pat
 
     # full is a deprecated alias; exit code may be 0, 1, or 2.
     assert result.exit_code in (0, 1, 2), result.output
-    combined = _ANSI_RE.sub("", result.output)
+    combined = _ANSI_RE.sub("", (result.output or "") + (result.stderr or ""))
     # Deprecation notice must reference both 'full' and 'scan'.
     assert "full" in combined and "scan" in combined
 
