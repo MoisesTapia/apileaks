@@ -4,7 +4,7 @@ Analyzes CORS policies and configurations for security vulnerabilities
 """
 
 import asyncio
-from typing import List, Dict, Optional, Any, Set
+from typing import Any, Dict, List, Optional, Set, Type
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from datetime import datetime

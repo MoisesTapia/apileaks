@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from re import Pattern
-from typing import Any
+from typing import Any, List, Set, Type
 
 from core.config import Severity
 from core.logging import get_logger

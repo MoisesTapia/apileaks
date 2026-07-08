@@ -62,7 +62,7 @@ def _url_with_keyword(keyword: str, n: int = 1) -> str:
 
 def _invoke_par(args: list) -> "click.testing.Result":
     import apileaks
-    runner = CliRunner()
+    runner = CliRunner(mix_stderr=False)
     return runner.invoke(apileaks.cli, ["--no-banner", "par"] + args)
 
 

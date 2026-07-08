@@ -6,7 +6,7 @@ Aggregates and manages security findings from all modules
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, List
 from uuid import uuid4
 
 from core.config import Severity

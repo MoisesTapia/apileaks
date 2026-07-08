@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Type
 from xml.dom import minidom
 
 from core.logging import get_logger

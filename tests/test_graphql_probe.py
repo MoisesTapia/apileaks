@@ -24,7 +24,7 @@ Requirement mapping:
 
 import asyncio
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Type
 
 import pytest
 

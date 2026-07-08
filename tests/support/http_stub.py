@@ -70,7 +70,7 @@ import json as _json
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Type, Union
 from urllib.parse import parse_qsl
 
 from utils.http_client import PerformanceMetrics, Response

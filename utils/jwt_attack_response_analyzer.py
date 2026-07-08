@@ -4,7 +4,7 @@ Analyzes HTTP responses to detect JWT vulnerabilities and authentication bypasse
 """
 
 import re
-from typing import Any
+from typing import Any, List, Type
 
 from core.logging import get_logger
 

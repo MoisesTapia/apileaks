@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 from urllib.parse import urlencode, urljoin, urlparse
 from uuid import uuid4
 
@@ -326,7 +326,6 @@ class EndpointFuzzer:
         # catch_all_signature is the (status_code, response_size) recorded when the
         # base URL answers random non-existent paths with 2xx responses.
         self.catch_all_detected = False
-        self.catch_all_signature: tuple[int, int] | None = None
         self.catch_all_signature: Optional[Tuple[int, int]] = None
 
         # Live quarantine counter. Tracks consecutive "interesting" (non-404)
@@ -360,7 +359,6 @@ class EndpointFuzzer:
         # dir command can surface a GRAPHQL_INTROSPECTION_ENABLED finding tagged to
         # it (27.4). It stays None when GraphQL probing is disabled, no GraphQL
         # endpoint is found, or introspection is not enabled (27.6).
-        self.graphql_introspection_endpoint: str | None = None
         self.graphql_introspection_endpoint: Optional[str] = None
 
         # Streaming JSONL output (Streaming_Hit_Output). When set, each newly
@@ -577,8 +575,6 @@ class EndpointFuzzer:
 
         return discovered
 
-    async def _load_wordlist(self, wordlist_path: str) -> list[str]:
-    
     async def _load_wordlist(self, wordlist_path: str) -> List[str]:
         """Load wordlist from file with caching.
 
@@ -640,7 +636,6 @@ class EndpointFuzzer:
         # The lookup key is the normalized candidate path (matching the seed_methods
         # key format) paired with the HTTP method: (normalized_path, METHOD).
         spec_schema = getattr(self.config.endpoints, "spec_schema", None)
-        _spec_params: dict[tuple, dict[str, Any]] = {}
         _spec_params: "Dict[tuple, Dict[str, Any]]" = {}
         if spec_schema is not None and _TYPED_PAYLOAD_AVAILABLE:
             for operation in getattr(spec_schema, "operations", []):
@@ -807,8 +802,6 @@ class EndpointFuzzer:
 
         return discovered_endpoints
 
-    async def _execute_batch(self, batch: list[tuple]) -> list[Endpoint]:
-    
     async def _execute_batch(self, batch: List[Tuple]) -> List[Endpoint]:
         """Execute a batch of requests"""
         tasks = []
@@ -836,9 +829,6 @@ class EndpointFuzzer:
 
         return endpoints
 
-    async def _test_endpoint(self, method: str, url: str, word: str, depth: int,
-                             route_ctx: dict[str, Any] | None = None) -> Endpoint | None:
-    
     async def _test_endpoint(self, method: str, url: str, word: str, depth: int,
                              route_ctx: Optional[Dict[str, Any]] = None) -> Optional[Endpoint]:
         """Test a single endpoint.
@@ -873,7 +863,6 @@ class EndpointFuzzer:
                 # params and extra headers are merged in when present; a non-empty
                 # body is sent as JSON. Empty dicts are intentionally omitted so the
                 # HTTP client keeps its default behavior for brute-force candidates.
-                req_kwargs: dict[str, Any] = {}
                 req_kwargs: Dict[str, Any] = {}
                 if _spec_query:
                     req_kwargs["params"] = _spec_query

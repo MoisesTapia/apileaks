@@ -5,7 +5,7 @@ Intelligent orchestration system that combines fuzzing, OWASP testing, and advan
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, List, Type
 
 from utils.findings import FindingsCollector
 

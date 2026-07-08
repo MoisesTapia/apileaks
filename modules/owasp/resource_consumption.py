@@ -10,7 +10,7 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List, Type
 
 from core.config import AuthContext, ResourceTestingConfig, Severity
 from core.logging import get_logger

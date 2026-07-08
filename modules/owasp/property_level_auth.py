@@ -8,7 +8,7 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List, Optional, Type
 
 from core.config import AuthContext, AuthType, PropertyTestingConfig, Severity
 from core.logging import get_logger

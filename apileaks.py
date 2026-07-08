@@ -12,7 +12,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Set, Type
 
 import click
 
@@ -547,12 +547,6 @@ def parse_target_file(path: str) -> list:
         raise click.BadParameter(f"--target-file cannot be read: {path} ({exc})") from exc
 
     targets: list[str] = []
-        with open(path, "r", encoding="utf-8") as fh:
-            raw_lines = fh.readlines()
-    except OSError as exc:
-        raise click.BadParameter(f"--target-file cannot be read: {path} ({exc})")
-
-    targets: List[str] = []
     for line in raw_lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -581,7 +575,6 @@ def _read_wordlist_entries(source):
         # Resolve (and auto-download) the Assetnote wordlist; then read it.
         resolved = resolve_wordlist(source, show_progress=True)
         with open(resolved, encoding='utf-8', errors='replace') as handle:
-        with open(resolved, 'r', encoding='utf-8', errors='replace') as handle:
             lines = handle.readlines()
     else:
         with open(source, encoding='utf-8') as handle:
@@ -811,13 +804,6 @@ def prepare_output_filename(output_param):
 def print_banner():
     """Print APILeak banner"""
     banner = r"""
-      .o.       ooooooooo.   ooooo ooooo                            oooo
-     .888.      `888   `Y88. `888' `888'                            `888
-    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o
-   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8
-  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
- .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
-o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
       .o.       ooooooooo.   ooooo ooooo                            oooo                 
      .888.      `888   `Y88. `888' `888'                            `888                 
     .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o 
@@ -6159,13 +6145,6 @@ def jwt_encode_cmd(ctx, payload, header, secret, public_key_file):
                        + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
                        + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
         else:
-        if is_none_alg:
-            # colorize_jwt would fail on an empty/absent signature — print raw token.
-            click.echo(token)
-            click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
-                       + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
-                       + "  " + click.style("■ (no signature)", fg=JWT_SIGNATURE_COLOR, bold=True))
-        else:
             click.echo(colorize_jwt(decode_jwt(token)))
             click.echo("  " + click.style("■ header", fg=JWT_HEADER_COLOR, bold=True)
                        + "  " + click.style("■ payload", fg=JWT_PAYLOAD_COLOR, bold=True)
@@ -7952,10 +7931,6 @@ def replay_cmd(ctx, report, url_filter, method_filter, source_filter, index,
     """
     import asyncio
 
-    from utils.replay import (
-        _extract_requests_from_report,
-        filter_requests,
-        load_report,
     from utils.replay import (
         load_report,
         _extract_requests_from_report,

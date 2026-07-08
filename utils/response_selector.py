@@ -25,7 +25,7 @@ selection operates on an **in-memory-only** extended view,
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from utils.discovery_session import (
     DiscoveryResult,

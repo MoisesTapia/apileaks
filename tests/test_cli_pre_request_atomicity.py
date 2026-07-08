@@ -64,7 +64,7 @@ def _invoke_asserting_atomicity(args):
     error text; the "no module executed / no request issued" invariant is
     checked here.
     """
-    runner = CliRunner()
+    runner = CliRunner(mix_stderr=False)
     with patch.object(apileaks, "run_enhanced_apileak") as mock_run, patch.object(
         apileaks, "APILeakCore"
     ) as mock_core:
@@ -149,7 +149,7 @@ def test_bola_option_on_auth_aborts_before_any_request():
     )
 
     assert result.exit_code == 2
-    assert "No such option" in result.output
+    assert "No such option" in (result.output + result.stderr)
 
 
 def test_auth_option_on_bola_aborts_before_any_request():
@@ -162,7 +162,7 @@ def test_auth_option_on_bola_aborts_before_any_request():
     )
 
     assert result.exit_code == 2
-    assert "No such option" in result.output
+    assert "No such option" in (result.output + result.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +202,7 @@ def test_invalid_timeout_value_aborts_before_any_request(label, base):
     )
 
     assert result.exit_code == 2, f"{label}: {result.output}"
-    assert "--timeout" in result.output
+    assert "--timeout" in (result.output + result.stderr)
 
 
 @pytest.mark.parametrize("label,base", _TRANSVERSAL_COMMANDS)
@@ -216,4 +216,4 @@ def test_negative_retries_value_aborts_before_any_request(label, base):
     )
 
     assert result.exit_code == 2, f"{label}: {result.output}"
-    assert "--retries" in result.output
+    assert "--retries" in (result.output + result.stderr)

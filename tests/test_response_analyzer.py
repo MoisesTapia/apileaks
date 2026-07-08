@@ -5,7 +5,7 @@ Tests for Response Analyzer
 import pytest
 from unittest.mock import Mock, MagicMock
 from datetime import datetime
-from typing import Dict, Any
+from typing import Any, Dict, Type
 
 from utils.response_analyzer import (
     ResponseAnalyzer, 

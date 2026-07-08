@@ -4,7 +4,7 @@ Implements OWASP API9 - Improper Inventory Management testing
 """
 
 import re
-from typing import Any
+from typing import Any, List
 from urllib.parse import urlparse
 
 from core.config import AuthContext, InventoryConfig, Severity
