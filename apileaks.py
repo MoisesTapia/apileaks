@@ -5922,7 +5922,18 @@ def _report_attack_result(result):
                    f"({assessment.severity.value})")
         for ev in assessment.evidence:
             click.echo(f"   💀 {ev}")
+        if response.body and response.body.strip():
+            click.echo(f"   📄 Response: {response.body.strip()}")
         return True
+
+    # Show response body when content length differs significantly from
+    # baseline — the server may have accepted the token even if the status code
+    # did not change (common in CTF/lab environments).
+    if result.baseline_comparison:
+        length_diff = abs(result.baseline_comparison.get('content_length_diff', 0))
+        if length_diff > 20 and response.body and response.body.strip():
+            click.echo("   ⚠️  Response body differs from baseline:")
+            click.echo(f"   📄 Response: {response.body.strip()}")
 
     click.echo("   ✅ Attack blocked - server rejected the malicious token")
     return False

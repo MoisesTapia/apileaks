@@ -633,9 +633,14 @@ class HTTPRequestEngine:
                 # Prepare httpx request parameters
                 request_kwargs = {
                     'headers': request.headers,
-                    'params': request.params,
                     'timeout': request.timeout or self.timeout
                 }
+
+                # Only include params when non-empty to avoid httpx
+                # re-encoding the URL query string (which can corrupt
+                # query parameters already embedded in the URL).
+                if request.params:
+                    request_kwargs['params'] = request.params
 
                 if request.data is not None:
                     request_kwargs['content'] = request.data

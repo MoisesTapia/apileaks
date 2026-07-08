@@ -490,9 +490,9 @@ def _self_signed_cert_pem() -> str:
 
 class TestAlgConfusionRepresentations:
     def test_public_key_yields_three_named_representations(self):
-        """A bare public key yields PEM(+nl), PEM(-nl), and DER representations."""
+        """A bare public key yields PEM(+nl), PEM(-nl), DER, and ssh_serialized representations."""
         variants = dict(_public_key_variants(_rsa_public_pem()))
-        assert set(variants) == {"pem_with_newline", "pem_without_newline", "der"}
+        assert set(variants) == {"pem_with_newline", "pem_without_newline", "der", "ssh_serialized"}
         assert variants["pem_with_newline"].endswith(b"\n")
         assert not variants["pem_without_newline"].endswith(b"\n")
         assert (
@@ -503,7 +503,7 @@ class TestAlgConfusionRepresentations:
     def test_certificate_yields_four_representations_including_x5c(self):
         """Certificate material additionally derives the x5c_cert_der representation."""
         variants = dict(_public_key_variants(_self_signed_cert_pem()))
-        assert set(variants) == {
+        assert set(variants) >= {
             "pem_with_newline", "pem_without_newline", "der", "x5c_cert_der",
         }
         # Every representation carries non-empty distinct key bytes usable as an

@@ -160,7 +160,11 @@ class JWTAttackResponseAnalyzer:
         # 5. Content Analysis
         content_analysis = self._analyze_content_differences(attack_response, baseline)
         evidence.extend(content_analysis['evidence'])
-        if content_analysis['confidence'] > 0:
+        if content_analysis.get('is_vulnerable'):
+            is_vulnerable = True
+            confidence_score = max(confidence_score, content_analysis['confidence'])
+            severity = self._escalate_severity(severity, VulnerabilitySeverity.HIGH)
+        elif content_analysis['confidence'] > 0:
             confidence_score = max(confidence_score, content_analysis['confidence'])
 
         # 6. Timing Analysis
@@ -407,6 +411,7 @@ class JWTAttackResponseAnalyzer:
         """Analyze content length and body differences"""
         evidence = []
         confidence = 0.0
+        is_vulnerable = False
 
         # Content length analysis
         length_diff = abs(attack_response.content_length - baseline_response.content_length)
@@ -430,10 +435,22 @@ class JWTAttackResponseAnalyzer:
                     if similarity < 0.3:  # Very different content
                         evidence.append("Response content significantly different from baseline")
                         confidence = max(confidence, 0.4)
+                        # When the status code stays the same but the body is
+                        # completely different, the server likely processed the
+                        # token successfully (common in labs/CTFs that return
+                        # data with a non-2xx status).
+                        if (attack_response.status_code == baseline_response.status_code
+                                and length_diff > 20):
+                            is_vulnerable = True
+                            confidence = max(confidence, 0.6)
+                            evidence.append(
+                                "Same status code with substantially different body "
+                                "indicates token was processed differently")
 
         return {
             'evidence': evidence,
-            'confidence': confidence
+            'confidence': confidence,
+            'is_vulnerable': is_vulnerable,
         }
 
     def _analyze_timing_differences(self, attack_response: ResponseDetails,
