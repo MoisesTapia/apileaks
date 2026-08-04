@@ -1231,7 +1231,7 @@ def machine_output_options(f):
 @click.option('--no-banner', is_flag=True, help='Suppress banner output')
 @click.pass_context
 def cli(ctx, no_banner):
-    """APILeak v0.2.1 - Enterprise API Fuzzing Tool
+    """APILeak v0.3.0 - Enterprise API Fuzzing Tool
 
     
     \b

@@ -330,7 +330,7 @@ class EnhancedOrchestrator:
     async def _execute_framework_detection(self, target: str, core_engine: Any) -> None:
         """Execute framework detection"""
         try:
-            from modules.advanced.framework_detector import FrameworkDetector
+            from modules.advanced.framework_detector import FrameworkDetector, FrameworkDetectionConfig
             from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
 
             # Create HTTP client for framework detection
@@ -338,8 +338,19 @@ class EnhancedOrchestrator:
             retry_config = RetryConfig(max_attempts=3, backoff_factor=2.0)
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
 
+            # Build FrameworkDetectionConfig from the advanced_discovery config dict
+            fd_cfg_dict = getattr(self.config.advanced_discovery, 'framework_detection', {}) or {}
+            fd_config = FrameworkDetectionConfig(
+                enabled=fd_cfg_dict.get('enabled', True),
+                adapt_payloads=fd_cfg_dict.get('adapt_payloads', True),
+                test_framework_endpoints=fd_cfg_dict.get('test_framework_endpoints', True),
+                max_error_requests=fd_cfg_dict.get('max_error_requests', 5),
+                timeout=fd_cfg_dict.get('timeout', 10.0),
+                confidence_threshold=fd_cfg_dict.get('confidence_threshold', 0.6),
+            )
+
             # Initialize framework detector
-            framework_detector = FrameworkDetector(http_client)
+            framework_detector = FrameworkDetector(fd_config, http_client)
 
             # Detect framework
             framework_info = await framework_detector.detect_framework(target)
@@ -370,7 +381,7 @@ class EnhancedOrchestrator:
     async def _execute_version_fuzzing(self, target: str, core_engine: Any) -> None:
         """Execute API version fuzzing"""
         try:
-            from modules.advanced.version_fuzzer import VersionFuzzer
+            from modules.advanced.version_fuzzer import VersionFuzzer, VersionFuzzingConfig
             from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
 
             # Create HTTP client for version fuzzing
@@ -378,13 +389,21 @@ class EnhancedOrchestrator:
             retry_config = RetryConfig(max_attempts=3, backoff_factor=2.0)
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
 
-            # Get version patterns from config
-            version_patterns = getattr(self.config.advanced_discovery, 'version_fuzzing', {}).get('version_patterns', [
-                "/v1", "/v2", "/v3", "/api/v1", "/api/v2"
-            ])
+            # Build VersionFuzzingConfig from the advanced_discovery config dict
+            vf_cfg_dict = getattr(self.config.advanced_discovery, 'version_fuzzing', {}) or {}
+            vf_config = VersionFuzzingConfig(
+                version_patterns=vf_cfg_dict.get('version_patterns', [
+                    '/v1', '/v2', '/v3', '/api/v1', '/api/v2'
+                ]),
+                test_endpoints=vf_cfg_dict.get('test_endpoints', ['/', '/health', '/status']),
+                max_concurrent_requests=vf_cfg_dict.get('max_concurrent_requests', 5),
+                timeout=vf_cfg_dict.get('timeout', 10.0),
+                compare_endpoints=vf_cfg_dict.get('compare_endpoints', True),
+                detect_deprecated=vf_cfg_dict.get('detect_deprecated', True),
+            )
 
-            # Initialize version fuzzer
-            version_fuzzer = VersionFuzzer(http_client, version_patterns)
+            # Initialize version fuzzer (correct arg order: config first, then http_client)
+            version_fuzzer = VersionFuzzer(vf_config, http_client)
 
             # Fuzz API versions
             versions_found = await version_fuzzer.fuzz_api_versions(target)
@@ -424,11 +443,12 @@ class EnhancedOrchestrator:
             retry_config = RetryConfig(max_attempts=3, backoff_factor=2.0)
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
 
-            # Initialize WAF detector
-            waf_detector = WAFDetector(http_client)
+            # Initialize WAF detector (constructor takes no arguments; http_client
+            # is passed directly to detect_waf as required by its signature)
+            waf_detector = WAFDetector()
 
-            # Detect WAF
-            waf_info = await waf_detector.detect_waf(target)
+            # Detect WAF — pass http_client and target as positional args
+            waf_info = await waf_detector.detect_waf(http_client, target)
 
             if waf_info:
                 self.waf_detected = waf_info

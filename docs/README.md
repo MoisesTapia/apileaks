@@ -28,7 +28,14 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[OWASP Command Reference](owasp-command.md)** - Complete `owasp <module>` reference (isolated single-module runs)
 - **[dir vs scan vs inventory](dir-vs-scan-vs-inventory.md)** - Analysis of overlaps between `dir`, `scan --fuzz-versions`, and the `inventory` API9 module — includes the double `VersionFuzzer` execution issue
 - **[BOLA Testing (API1)](owasp/bola-testing.md)** - Broken Object Level Authorization testing
-- **[Property Level Auth (API3)](owasp/property-level-auth.md)** - Property Level Authorization testing
+- **[Property Level Auth (API3)](owasp/property-level-auth.md)** - Mass assignment, sensitive data exposure, read-only bypass
+- **[Resource Consumption (API4)](owasp/resource-consumption.md)** - Rate limiting, large payloads, deep JSON nesting
+- **[Function Level Auth (API5)](owasp/function-level-auth.md)** - BFLA grey-box testing across 4 attack levels
+- **[Business Flows (API6)](owasp/business-flows.md)** - Rate-limit absence, quota enforcement, multi-step flow bypass
+- **[SSRF Testing (API7)](owasp/ssrf-testing.md)** - Internal network, cloud metadata, blind SSRF, port scanning
+- **[Security Misconfiguration (API8)](owasp/security-misconfiguration.md)** - CORS misconfiguration, missing security headers
+- **[Inventory Management (API9)](owasp/inventory-management.md)** - Deprecated and shadow API version detection
+- **[Unsafe Consumption (API10)](owasp/unsafe-consumption.md)** - Upstream data reflection, blind redirects, cleartext channels
 
 ### Advanced Topics
 - **[Advanced Discovery](advanced-discovery.md)** - Advanced endpoint discovery techniques

@@ -428,7 +428,7 @@ docker run --rm \
 
 ### Production Usage
 
-1. **Use specific tags**: `apileak:v0.2.0` instead of `latest`
+1. **Use specific tags**: `apileak:v0.3.0` instead of `latest`
 2. **Set resource limits**: Prevent resource exhaustion
 3. **Use read-only volumes**: For configuration and wordlists
 4. **Enable health checks**: Monitor container health
@@ -1248,7 +1248,7 @@ docker run --rm \
 # Use specific version tags instead of latest
 docker run --rm \
   -v $(pwd)/reports:/app/reports \
-  apileak:v0.2.0 dir \
+  apileak:v0.3.0 dir \
   --target https://api.example.com
 ```
 

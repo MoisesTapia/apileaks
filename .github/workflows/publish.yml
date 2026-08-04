@@ -7,7 +7,7 @@ on:
 
 jobs:
   # ── 1. Publicar en PyPI ─────────────────────────────────────────────────────
-  # TEMPORALMENTE DESHABILITADO para v0.2.1
+  # TEMPORALMENTE DESHABILITADO para v0.3.0
   # publish-pypi:
   #   name: Build & Publish to PyPI
   #   runs-on: ubuntu-latest
@@ -30,7 +30,7 @@ jobs:
   #       uses: pypa/gh-action-pypi-publish@release/v1
 
   # ── 2. Build paquete .deb ──────────────────────────────────────────────────
-  # TEMPORALMENTE DESHABILITADO para v0.2.1
+  # TEMPORALMENTE DESHABILITADO para v0.3.0
   # build-deb:
   #   name: Build .deb package
   #   runs-on: ubuntu-latest

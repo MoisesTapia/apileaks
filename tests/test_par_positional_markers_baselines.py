@@ -120,7 +120,7 @@ def _write_wordlist(tmp_path: Path, entries) -> str:
 
 def _invoke_cli(args):
     import apileaks
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     return runner.invoke(apileaks.cli, args)
 
 

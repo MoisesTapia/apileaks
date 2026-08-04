@@ -2,7 +2,7 @@
 
 ## Overview
 
-APILeak v0.2.0 includes advanced framework detection and API version fuzzing capabilities that allow identifying specific technologies and mapping different API versions for more comprehensive security analysis.
+APILeak v0.3.0 includes advanced framework detection and API version fuzzing capabilities that allow identifying specific technologies and mapping different API versions for more comprehensive security analysis.
 
 ## Framework Detection
 

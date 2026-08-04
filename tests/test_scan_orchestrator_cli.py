@@ -69,7 +69,7 @@ def _invoke_capturing_config(args):
 
         return _noop()
 
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
     ), patch.object(

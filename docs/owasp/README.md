@@ -9,13 +9,13 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 | **API1** | [Broken Object Level Authorization](bola-testing.md) | `bola` | ✅ Complete | P0 | Broken Object Level Authorization (BOLA) detection |
 | **API2** | Broken Authentication | `auth` | ✅ Complete | P0 | Broken Authentication detection |
 | **API3** | [Broken Object Property Level Authorization](property-level-auth.md) | `property` | ✅ Complete | P0 | Broken Object Property Level Authorization detection |
-| **API4** | Unrestricted Resource Consumption | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
-| **API5** | Broken Function Level Authorization | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
-| **API6** | Unrestricted Access to Sensitive Business Flows | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
+| **API4** | [Unrestricted Resource Consumption](resource-consumption.md) | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
+| **API5** | [Broken Function Level Authorization](function-level-auth.md) | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
+| **API6** | [Unrestricted Access to Sensitive Business Flows](business-flows.md) | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
 | **API7** | [Server-Side Request Forgery](ssrf-testing.md) | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
-| **API8** | Security Misconfiguration | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
-| **API9** | Improper Inventory Management | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
-| **API10** | Unsafe Consumption of APIs | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
+| **API8** | [Security Misconfiguration](security-misconfiguration.md) | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
+| **API9** | [Improper Inventory Management](inventory-management.md) | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
+| **API10** | [Unsafe Consumption of APIs](unsafe-consumption.md) | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
 
 **Legend**: ✅ Complete
 
@@ -39,18 +39,19 @@ All ten OWASP API Security Top 10 2023 modules are fully implemented and registe
 ### P0 Modules (Critical)
 - ✅ **API1 — `bola`**: Comprehensive ID enumeration, horizontal privilege escalation, anonymous object access, cross-user leakage. Supports composite-key, verb-tampering, parameter-pollution, and id-leakage probes with opt-in destructive mode.
 - ✅ **API2 — `auth`**: JWT algorithm confusion, expired-token acceptance, weak HMAC secrets, missing authentication, MFA bypass, OAuth flow abuse, predictable reset tokens. Opt-in aggressive probes (rate-limit burst, revocation race).
-- ✅ **API3 — `property`**: Mass assignment, sensitive field exposure (passwords, API keys, SSNs), undocumented response fields, read-only property bypass.
-- ✅ **API5 — `function_auth`**: Unauthorized admin access, HTTP method bypass, parameter/header bypass, vertical privilege escalation.
+- ✅ **API3 — `property`**: Mass assignment detection (dangerous fields injected into POST/PUT/PATCH bodies), sensitive field exposure (passwords, API keys, SSNs in responses), read-only property modification, undocumented field discovery across auth contexts. Configurable sensitive-field and mass-assignment-field lists.
+- ✅ **API5 — `function_auth`**: Four attack levels — L1 multi-token matrix replay (admin-discovered endpoints with low-priv/anonymous tokens), L2 HTTP verb tampering + X-HTTP-Method-Override bypass, L3 mass-assignment role injection (registration/profile-update flows), L4 API version downgrade. Configurable admin paths, dangerous methods, role fields/values, version list, and JSON probe-matrix output.
 
 ### P1 Modules (High Priority)
-- ✅ **API4 — `resource`**: Missing rate limiting, oversized payload acceptance, deeply nested JSON, ReDoS-susceptible patterns, complex query processing without guards.
-- ✅ **API6 — `business_flow`**: Business logic bypass, sensitive workflow manipulation, excessive-use detection.
+- ✅ **API4 — `resource`**: Rate-limit absence (burst of N requests), large-payload acceptance (1MB/10MB), deeply nested JSON, ReDoS-susceptible patterns, complex query strings. Configurable burst size, payload sizes, and nesting depth.
+- ✅ **API6 — `business_flow`**: Rate-limit absence detection (N repeated requests with no 429 or anti-automation headers), quota/inventory decrement check (resource fields unchanged across N requests), and multi-step flow bypass (complete ordered transaction sequences repeated end-to-end). Configurable patterns, quota fields, repetition count, and inter-request delay.
 - ✅ **API7 — `ssrf`**: Internal network access, cloud metadata endpoint access (`169.254.169.254`), file-protocol abuse, URL-scheme bypass, IP-encoding bypass, blind SSRF via OOB callback, opt-in port scanning and redirect-chain probes.
-- ✅ **API8 — `security_misconfig`**: Misconfigured CORS, missing or weak security headers, insecure framework defaults, verbose error responses.
+- ✅ **API8 — `security_misconfig`**: Permissive CORS policy detection (wildcard origins, credentials+wildcard, dangerous methods), missing required security headers (HSTS, X-Content-Type-Options, X-Frame-Options, CSP). Read-only probes — Safe Mode compatible by design. Configurable required-header list.
 
 ### P2 Modules (Medium Priority)
-- ✅ **API9 — `inventory`**: Deprecated/undocumented API versions, shadow endpoints not in official specs, documentation gaps.
-- ✅ **API10 — `unsafe_consumption`**: Insufficient validation of external API data, insecure trust boundaries with third-party services.
+- ✅ **API8 — `security_misconfig`**: Permissive CORS policy detection (wildcard origins, credentials+wildcard, dangerous methods), missing required security headers (HSTS, X-Content-Type-Options, X-Frame-Options, CSP). Read-only probes — Safe Mode compatible by design. Configurable required-header list.
+- ✅ **API9 — `inventory`**: Deprecated, undocumented, and non-current API version detection via version fuzzing. Identifies `/api/v1/` accessible alongside `/api/v3/`, dev/beta endpoints in production, and decommissioned-but-live versions. Configurable deprecated detection toggle.
+- ✅ **API10 — `unsafe_consumption`**: Unvalidated upstream data reflection (injection via query params and body), blind redirect following (Location-header and IMDS-signature detection), and cleartext upstream channel (static `http://` scheme check). Configurable upstream indicators, custom payloads, OOB redirect listener support.
 
 ## 🛡️ Module Architecture
 

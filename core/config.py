@@ -349,8 +349,6 @@ class AuthTestingConfig:
     token_lifetime_threshold: int = 3600
     ecdsa_algorithms: list[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
     canary_value: str | None = None
-    ecdsa_algorithms: List[str] = field(default_factory=lambda: ["ES256", "ES384", "ES512"])
-    canary_value: Optional[str] = None
     # -------------------------------------------------------------------
     # OTP / MFA brute-force fields (Levels 2 & Expert).
     # All default to None / 0 so existing configs load unchanged.
@@ -375,9 +373,6 @@ class AuthTestingConfig:
     users_wordlist: str | None = None
     # Single password to spray across all usernames.
     spray_password: str | None = None
-    users_wordlist: Optional[str] = None
-    # Single password to spray across all usernames.
-    spray_password: Optional[str] = None
     # Maximum requests per spray batch before a pause (safety bound).
     spray_batch_size: int = 50
     # JSON field names for username and password in the login body.
@@ -433,11 +428,6 @@ class FunctionAuthConfig:
     ])
     # HTTP methods treated as privileged for verb-tampering probes.
     dangerous_methods: list[str] = field(default_factory=lambda: ["DELETE", "PUT", "PATCH"])
-    admin_endpoints: List[str] = field(default_factory=lambda: [
-        "/admin", "/api/admin", "/management", "/dashboard"
-    ])
-    # HTTP methods treated as privileged for verb-tampering probes.
-    dangerous_methods: List[str] = field(default_factory=lambda: ["DELETE", "PUT", "PATCH"])
     # -----------------------------------------------------------------------
     # Multi-token / grey-box BFLA fields (Levels 1-4).
     # -----------------------------------------------------------------------
@@ -527,51 +517,18 @@ class SSRFConfig:
     # other 2xx codes normally.
     success_status_codes: list[int] = field(default_factory=lambda: list(range(200, 300)))
 
-    # Expanded fields (Requirement 1.1–1.7)
-    # Authoritative safe-mode flag — replaces getattr fallbacks (Req 1.1, 10.6).
-    safe_mode: bool = False
-    # OOB callback listener URL for blind SSRF detection (Req 1.2).
-    callback_url: Optional[str] = None
-    # Extra internal hosts/IPs to probe in addition to internal_targets (Req 1.3).
-    additional_internal_targets: List[str] = field(default_factory=list)
-    # Extra URL schemes to test in addition to file_protocols (Req 1.4).
-    additional_schemes: List[str] = field(default_factory=list)
-    # Gate for internal port-scanning probes (Req 1.5).
-    allow_port_scan: bool = False
-    # Ports to probe when allow_port_scan is True (Req 1.6).
-    scan_ports: List[int] = field(default_factory=lambda: [
-        22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
-    ])
-    # When True, IP-encoding bypass payloads (decimal, octal, hex, IPv6) are
-    # generated and injected alongside the plain internal targets (Req 1.7).
-    bypass_encodings: bool = True
-    # When True, SSRF payloads are injected into JSON request body fields on
-    # POST/PUT/PATCH endpoints (Req 1.4, 3.1–3.5).
-    body_injection: bool = False
-    # HTTP methods to use for body injection probes. When non-empty, body
-    # injection is attempted with each of these methods regardless of the
-    # method the discovery engine recorded for the endpoint. This lets the
-    # operator force POST/PUT/PATCH body probes even when the endpoint was
-    # discovered via GET. Defaults to empty list (use the endpoint's own method).
-    body_injection_methods: List[str] = field(default_factory=list)
-    # --- Import source fields (--burp-xml / --har / --ssrf-body-field) ----
-    # Path to a Burp Suite XML Proxy-History export file.
-    burp_xml_path: Optional[str] = None
-    # Path to a HAR (HTTP Archive) JSON file.
-    har_path: Optional[str] = None
-    # Explicit body field names to always probe (merged with auto-detection).
-    extra_body_fields: List[str] = field(default_factory=list)
-    # --- Response filtering -----------------------------------------------
-    # When True, only emit a finding when a known internal-target signature is
-    # matched in the response body. Plain 2xx responses without a signature are
-    # suppressed. Use this to eliminate false positives on APIs that return 200
-    # for any URL parameter regardless of what was fetched.
-    require_signature: bool = False
-    # HTTP status codes considered a "success hit" for SSRF_INTERNAL_ACCESS
-    # detection (in addition to signature matches). Defaults to the 2xx range.
-    # Set to a narrower list (e.g. [200]) to reduce noise on APIs that return
-    # other 2xx codes normally.
-    success_status_codes: List[int] = field(default_factory=lambda: list(range(200, 300)))
+
+@dataclass
+class MultiStepFlow:
+    """Definition of a multi-step business flow (ordered sequence of endpoints).
+
+    Each entry in ``steps`` is a dict with at least ``method`` and ``path``
+    keys (e.g. ``{"method": "POST", "path": "/cart/add"}``). The module will
+    execute the steps in order and detect whether the complete sequence can be
+    repeated without any rate-limiting or anti-automation control.
+    """
+    name: str = "unnamed_flow"
+    steps: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -579,8 +536,30 @@ class BusinessFlowConfig:
     """Business flow (unrestricted access to sensitive flows) testing configuration"""
     enabled: bool = True
     sensitive_flow_patterns: list[str] = field(default_factory=lambda: [
-        "/checkout", "/purchase", "/order", "/transfer", "/register", "/coupon", "/payment"])
+        "/checkout", "/purchase", "/order", "/transfer", "/register",
+        "/coupon", "/payment", "/booking", "/reserve", "/redeem",
+        "/vote", "/referral", "/invite", "/subscribe",
+    ])
     repetition_limit: int = 50
+    # Detector 2: quota / resource decrement check.
+    # When True the module compares the 1st and Nth response for a field that
+    # should decrease (stock, seats, credits, quota, remaining, balance, count).
+    # If the value does not change across N repetitions it emits
+    # BUSINESS_FLOW_QUOTA_NOT_ENFORCED.
+    check_quota_decrement: bool = True
+    quota_fields: list[str] = field(default_factory=lambda: [
+        "stock", "quantity", "remaining", "available", "count",
+        "seats", "quota", "credits", "balance", "limit",
+    ])
+    # Detector 3: multi-step flow sequences.
+    # Each MultiStepFlow defines an ordered list of requests that together
+    # constitute a sensitive business transaction. The module runs each sequence
+    # repetition_limit times and reports BUSINESS_FLOW_MULTI_STEP_BYPASS when
+    # the full sequence completes without any control.
+    multi_step_flows: list = field(default_factory=list)  # list[MultiStepFlow]
+    # Delay (ms) between repetitions — 0 means no delay (full automation).
+    # Used to surface timing-based controls (e.g. "max 1 request per second").
+    inter_request_delay_ms: int = 0
 
 
 @dataclass
@@ -605,6 +584,17 @@ class UnsafeConsumptionConfig:
     enabled: bool = True
     upstream_indicators: list[str] = field(default_factory=lambda: ["proxy", "upstream", "external", "aggregate"])
     malformed_payloads: list[str] = field(default_factory=lambda: ['{"__proto__":{}}', "<script>", "' OR 1=1--", "\u0000"])
+    # Redirect-following detection (OWASP API10 Scenario #2): probe upstream
+    # endpoints with a synthetic redirect target and detect whether the API
+    # blindly follows it.  ``check_redirects`` enables the probe;
+    # ``redirect_test_url`` is the URL injected as the Location target (should
+    # point to an attacker-controlled or OOB listener in real scans).
+    check_redirects: bool = True
+    redirect_test_url: str = "http://169.254.169.254/latest/meta-data/"
+    # Cleartext-channel detection (OWASP API10 vector 3): flag endpoints whose
+    # URL starts with ``http://`` — the API is integrating with an upstream
+    # service over an unencrypted channel.
+    check_cleartext_upstream: bool = True
 
 
 @dataclass

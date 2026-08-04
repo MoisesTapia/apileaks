@@ -64,7 +64,7 @@ def _invoke_asserting_atomicity(args):
     error text; the "no module executed / no request issued" invariant is
     checked here.
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with patch.object(apileaks, "run_enhanced_apileak") as mock_run, patch.object(
         apileaks, "APILeakCore"
     ) as mock_core:

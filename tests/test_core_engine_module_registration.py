@@ -1,5 +1,5 @@
 """
-Engine integration tests for OWASP module registration (v0.2.0)
+Engine integration tests for OWASP module registration (v0.3.0)
 
 These tests validate that the engine wires up all ten OWASP detection modules,
 that enabling the ``ssrf`` module executes through the OWASP phase without a

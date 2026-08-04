@@ -42,7 +42,7 @@ APILeak implements specialized modules for each category of the **OWASP API Secu
 | `inventory` | **API9** - Improper Inventory Management | Improper Inventory Management detection | **P2** |
 | `unsafe_consumption` | **API10** - Unsafe Consumption of APIs | Unsafe Consumption of APIs detection | **P2** |
 
-Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
+Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). All ten modules own module-specific CLI options — see the [OWASP Command Reference](owasp-command.md) for the full option tables.
 
 ### Implementation Status
 
@@ -415,20 +415,21 @@ fi
 #### Property Module (API3)
 - `SENSITIVE_DATA_EXPOSURE` (CRITICAL)
 - `MASS_ASSIGNMENT` (HIGH)
+- `READONLY_PROPERTY_MODIFICATION` (HIGH)
 - `UNDOCUMENTED_FIELD` (MEDIUM)
-- `READONLY_PROPERTY_MODIFIED` (HIGH)
 
 #### Resource Module (API4)
 - `MISSING_RATE_LIMITING` (MEDIUM)
-- `LARGE_PAYLOAD_ACCEPTED` (MEDIUM/HIGH)
-- `REDOS_VULNERABILITY` (HIGH)
-- `COMPLEX_QUERY_PROCESSED` (MEDIUM/HIGH)
+- `LARGE_PAYLOAD_ACCEPTED` (MEDIUM)
 
 #### Function Auth Module (API5)
-- `ADMIN_ACCESS_ANONYMOUS` (CRITICAL)
-- `FUNCTION_LEVEL_BYPASS` (HIGH)
-- `HTTP_METHOD_BYPASS` (HIGH)
-- `PARAMETER_BYPASS` (MEDIUM)
+- `BFLA_ANONYMOUS_ADMIN_ACCESS` (CRITICAL)
+- `BFLA_LOW_PRIV_ACCESS` (CRITICAL)
+- `BFLA_ADMIN_ENDPOINT_EXPOSED` (MEDIUM)
+- `BFLA_VERB_TAMPERING` (HIGH)
+- `BFLA_METHOD_OVERRIDE` (HIGH)
+- `BFLA_MASS_ASSIGNMENT_ROLE` (CRITICAL)
+- `BFLA_VERSION_DOWNGRADE` (HIGH)
 
 ### Example Report
 
@@ -623,4 +624,4 @@ All ten OWASP API Security Top 10 2023 modules are fully implemented and registe
 
 ---
 
-*This documentation covers APILeak version 0.2.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*
+*This documentation covers APILeak version 0.3.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*

@@ -1,239 +1,311 @@
 # Property Level Authorization Testing (API3)
 
-The Property Level Authorization Testing Module detects **OWASP API3 - Broken Object Property Level Authorization** vulnerabilities, including mass assignment, excessive data exposure, and property-level access control issues.
+The Property Level Authorization Module detects **OWASP API3 - Broken Object Property Level Authorization** vulnerabilities: cases where an API exposes sensitive fields that should be hidden, accepts privilege-escalation fields in request bodies, allows modification of read-only properties, or returns different fields to different auth contexts without proper justification.
+
+The module runs in isolation as `apileaks owasp property --target URL` or as part of an orchestrated `scan` run.
 
 ## 📋 Table of Contents
 
 - [Overview](#overview)
-- [Vulnerability Types](#vulnerability-types)
-- [Testing Methodology](#testing-methodology)
-- [Configuration](#configuration)
-- [Implementation Details](#implementation-details)
-- [Property-Based Testing](#property-based-testing)
-- [Common Findings](#common-findings)
+- [Quick Start](#quick-start)
+- [How the Module Works](#how-the-module-works)
+- [Detector 1 — Sensitive Data Exposure](#detector-1--sensitive-data-exposure)
+- [Detector 2 — Mass Assignment](#detector-2--mass-assignment)
+- [Detector 3 — Read-Only Property Modification](#detector-3--read-only-property-modification)
+- [Detector 4 — Undocumented Field Discovery](#detector-4--undocumented-field-discovery)
+- [Command Reference](#command-reference)
+- [Safe Mode Behavior](#safe-mode-behavior)
+- [Configuration (YAML)](#configuration-yaml)
+- [Finding Categories](#finding-categories)
+- [Attack Scenarios (OWASP API3:2023)](#attack-scenarios-owasp-api32023)
 - [Remediation](#remediation)
+
+---
 
 ## 🎯 Overview
 
-Property Level Authorization vulnerabilities occur when APIs expose more data than intended or allow modification of properties that should be read-only or restricted. This module comprehensively tests for:
+API3 differs from API1 (BOLA) in scope: BOLA is about accessing *another user's object*; API3 is about accessing or manipulating *fields within your own or any object* that should be restricted. The four vulnerability patterns:
 
-- **Sensitive Data Exposure**: Detection of passwords, API keys, and personal information in responses
-- **Mass Assignment**: Testing modification of dangerous properties like `is_admin`, `role`, `permissions`
-- **Read-Only Property Modification**: Attempting to modify supposedly immutable fields
-- **Undocumented Field Discovery**: Identifying fields that appear inconsistently across authentication contexts
+| Pattern | Example | Impact |
+|---------|---------|--------|
+| Sensitive field exposed | `password_hash` in GET /users/me response | Credential theft |
+| Mass assignment | `role=admin` accepted in PATCH /users/me body | Privilege escalation |
+| Read-only modification | `created_at` changed via PUT /users/123 | Data tampering |
+| Undocumented field | `internal_flag` visible only to admin context | Information disclosure |
 
-## 🔍 Vulnerability Types
+**Four detectors, all enabled by default:**
 
-### 1. Sensitive Data Exposure
+| Detector | Finding | Severity |
+|----------|---------|----------|
+| Sensitive field in response | `SENSITIVE_DATA_EXPOSURE` | CRITICAL |
+| Dangerous field accepted in body | `MASS_ASSIGNMENT` | HIGH |
+| Read-only field successfully modified | `READONLY_PROPERTY_MODIFICATION` | HIGH |
+| Field visible only in certain auth contexts | `UNDOCUMENTED_FIELD` | MEDIUM |
 
-**Description**: APIs returning sensitive information that should be filtered based on user permissions.
+---
 
-**Examples**:
-```json
-// Bad: Exposing sensitive fields to regular users
-{
-  "user_id": 123,
-  "username": "john_doe",
-  "password": "hashed_password_123",  // ❌ Should not be exposed
-  "api_key": "sk_live_abc123def456",  // ❌ Should not be exposed
-  "ssn": "123-45-6789",              // ❌ Should not be exposed
-  "email": "john@example.com",
-  "role": "user"
-}
+## 🚀 Quick Start
 
-// Good: Filtered response for regular users
-{
-  "user_id": 123,
-  "username": "john_doe",
-  "email": "john@example.com",
-  "role": "user"
-}
+```bash
+# Single auth context — detects sensitive data exposure and undocumented fields
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# Two auth contexts — unlocks all four detectors (recommended)
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --auth-context admin:ADMIN_TOKEN:100 \
+  --auth-context user:USER_TOKEN:1
+
+# Custom sensitive field list
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-sensitive-fields password \
+  --property-sensitive-fields api_key \
+  --property-sensitive-fields iban \
+  --property-sensitive-fields cvv
+
+# Custom mass-assignment field list
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-mass-assignment-fields role \
+  --property-mass-assignment-fields is_admin \
+  --property-mass-assignment-fields balance
+
+# Safe read-only mode
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --safe-mode
+
+# Run alongside other modules
+python apileaks.py scan \
+  --target https://api.example.com \
+  --modules property,bola,auth
 ```
 
-### 2. Mass Assignment
+---
 
-**Description**: APIs accepting and processing dangerous properties that allow privilege escalation or unauthorized modifications.
+## How the Module Works
 
-**Examples**:
-```json
-// Attack: Attempting to escalate privileges
-POST /api/users/123
-{
-  "name": "John Doe",
-  "email": "john@example.com",
-  "is_admin": true,        // ❌ Dangerous field
-  "role": "admin",         // ❌ Dangerous field
-  "permissions": ["all"]   // ❌ Dangerous field
-}
+The module runs four sequential detectors against every discovered endpoint. Most detectors require at least one auth context; Detectors 2 and 3 require a state-changing method (POST/PUT/PATCH) and are suppressed in Safe Mode.
 
-// Result: User gains admin privileges
-{
-  "user_id": 123,
-  "name": "John Doe", 
-  "email": "john@example.com",
-  "is_admin": true,        // ❌ Mass assignment successful
-  "role": "admin",         // ❌ Privilege escalation
-  "permissions": ["all"]
-}
+**Auth context handling:**
+- With **one** context — Detectors 1 and 4 run; 2 and 3 run if the endpoint accepts state-changing methods.
+- With **two or more** contexts — all four detectors run. Detector 4 compares fields across contexts to surface undocumented fields.
+
+**Field sources:**
+- `sensitive_fields` config → Detector 1 (exposure check against response)
+- `mass_assignment_fields` config → Detector 2 (injection into request body)
+- Built-in read-only field patterns (`id`, `created_at`, `updated_at`, `version`, `checksum`) → Detector 3
+- All contexts compared → Detector 4
+
+---
+
+## Detector 1 — Sensitive Data Exposure
+
+**Finding:** `SENSITIVE_DATA_EXPOSURE` · **Severity:** CRITICAL · **OWASP:** API3
+
+Issues a GET request to each endpoint with each auth context. Parses the JSON response and checks every field name and value against the configured `sensitive_fields` list (case-insensitive). Also detects values whose shape matches known sensitive patterns (API key format, SSN, credit card number).
+
+**Built-in sensitive fields** (overridable with `--property-sensitive-fields`):
+
+```
+password   api_key   secret   token   ssn   credit_card
 ```
 
-### 3. Read-Only Property Modification
+The module also detects high-entropy strings that match credential shapes (e.g. `sk_live_...`, `AKIA...`, `-----BEGIN RSA PRIVATE KEY-----`).
 
-**Description**: APIs allowing modification of fields that should be immutable.
+```bash
+# Default sensitive field check
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
-**Examples**:
-```json
-// Attack: Attempting to modify read-only fields
-PUT /api/users/123
-{
-  "id": 999,                           // ❌ Should be immutable
-  "created_at": "2099-01-01T00:00:00Z", // ❌ Should be immutable
-  "user_id": 456,                      // ❌ Should be immutable
-  "version": 999                       // ❌ Should be immutable
-}
+# Domain-specific sensitive fields (fintech)
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-sensitive-fields password \
+  --property-sensitive-fields iban \
+  --property-sensitive-fields cvv \
+  --property-sensitive-fields swift_code \
+  --property-sensitive-fields pin
 
-// Bad Result: Read-only fields were modified
-{
-  "id": 999,                           // ❌ ID was changed
-  "created_at": "2099-01-01T00:00:00Z", // ❌ Timestamp was modified
-  "user_id": 456,                      // ❌ User ID was changed
-  "version": 999                       // ❌ Version was modified
-}
+# Domain-specific sensitive fields (SaaS)
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-sensitive-fields webhook_secret \
+  --property-sensitive-fields private_key \
+  --property-sensitive-fields client_secret \
+  --property-sensitive-fields access_token
 ```
 
-### 4. Undocumented Field Exposure
+> **Severity classification:** Severity escalates from MEDIUM → HIGH → CRITICAL based on the privilege level of the auth context that receives the sensitive field and the type of data. A regular user receiving a `password_hash` is CRITICAL; the same field visible to an admin-only context is HIGH.
 
-**Description**: APIs exposing different fields based on authentication context without proper documentation.
+---
 
-**Examples**:
-```json
-// Response for regular user
-{
-  "user_id": 123,
-  "username": "john_doe",
-  "email": "john@example.com"
-}
+## Detector 2 — Mass Assignment
 
-// Response for admin user (same endpoint)
-{
-  "user_id": 123,
-  "username": "john_doe", 
-  "email": "john@example.com",
-  "internal_notes": "VIP customer",     // ❌ Undocumented field
-  "debug_info": {...},                  // ❌ Undocumented field
-  "system_flags": [...]                 // ❌ Undocumented field
-}
+**Finding:** `MASS_ASSIGNMENT` · **Severity:** HIGH (CRITICAL for privilege fields) · **OWASP:** API3
+
+Sends POST/PUT/PATCH requests to each endpoint, injecting each configured `mass_assignment_fields` value into the request body. Compares the response against a baseline (same body without the dangerous field). If the dangerous field is reflected back, or the response differs from the baseline in ways indicating the field was processed, a finding is emitted.
+
+**Built-in mass-assignment fields** (overridable with `--property-mass-assignment-fields`). The module combines config fields with a built-in set covering common privilege-escalation paths:
+
+```
+is_admin    role        permissions    user_id
+id          account_id  owner_id       created_by
+is_active   enabled     status         verified
+balance     credit      points         score
 ```
 
-## 🧪 Testing Methodology
+```bash
+# Default mass-assignment check
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
-### 1. Sensitive Data Detection
-
-The module analyzes API responses to detect sensitive information:
-
-```python
-# Sensitive field patterns
-SENSITIVE_FIELD_PATTERNS = {
-    'financial': [
-        r'credit_card', r'cc_number', r'account_number', 
-        r'routing_number', r'bank_account', r'payment', r'billing'
-    ],
-    'password': [
-        r'password', r'passwd', r'pwd', r'pass', r'secret',
-        r'hash', r'encrypted', r'cipher'
-    ],
-    'api_key': [
-        r'api_key', r'apikey', r'key', r'token', r'secret',
-        r'access_token', r'refresh_token', r'bearer'
-    ],
-    'personal_data': [
-        r'ssn', r'social_security', r'phone', r'email', 
-        r'address', r'birth_date', r'dob'
-    ],
-    'internal': [
-        r'internal', r'debug', r'admin', r'system', r'config',
-        r'database', r'db_', r'sql', r'query'
-    ]
-}
+# Custom fields for a specific domain
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-mass-assignment-fields subscription_tier \
+  --property-mass-assignment-fields account_type \
+  --property-mass-assignment-fields trial_expires_at
 ```
 
-**Detection Process**:
-1. Make requests with different authentication contexts
-2. Parse JSON responses and extract all field names
-3. Match field names against sensitive patterns
-4. Check field values for sensitive data patterns (SSN, credit cards, API keys)
-5. Classify severity based on data type and user privilege level
+> **Note:** Detector 2 is automatically skipped when `--safe-mode` is active because it issues state-changing POST/PUT/PATCH requests.
 
-### 2. Mass Assignment Testing
+---
 
-The module tests for mass assignment vulnerabilities:
+## Detector 3 — Read-Only Property Modification
 
-```python
-# Dangerous fields for mass assignment
-MASS_ASSIGNMENT_FIELDS = [
-    'is_admin', 'admin', 'role', 'roles', 'permissions', 'privilege',
-    'user_id', 'id', 'account_id', 'owner_id', 'created_by',
-    'is_active', 'enabled', 'status', 'verified', 'approved',
-    'balance', 'credit', 'points', 'score', 'level'
-]
+**Finding:** `READONLY_PROPERTY_MODIFICATION` · **Severity:** HIGH · **OWASP:** API3
+
+Issues a baseline GET to capture existing field values, then sends a PUT/PATCH with modified values for known read-only fields (`id`, `created_at`, `updated_at`, `timestamp`, `version`, `checksum`, `created_by`). Re-fetches the object and checks whether the read-only field value changed.
+
+```bash
+# Runs automatically as part of the full property scan
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# Skip in safe mode (no state-changing probes)
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --safe-mode
 ```
 
-**Testing Process**:
-1. Make baseline request to understand normal response
-2. For each dangerous field, create test payload
-3. Send POST/PUT/PATCH request with dangerous field
-4. Compare response to detect if field was processed
-5. Check if dangerous value appears in response or causes privilege escalation
+---
 
-### 3. Read-Only Property Testing
+## Detector 4 — Undocumented Field Discovery
 
-The module attempts to modify supposedly immutable fields:
+**Finding:** `UNDOCUMENTED_FIELD` · **Severity:** MEDIUM · **OWASP:** API3
 
-```python
-# Read-only field patterns
-READ_ONLY_FIELDS = [
-    'id', 'created_at', 'updated_at', 'timestamp', 'created_by',
-    'modified_by', 'version', 'revision', 'hash', 'checksum'
-]
+Issues GET requests to each endpoint with each configured auth context. Compares the set of fields returned across contexts — fields that appear only in higher-privilege responses are flagged as potentially undocumented. Also flags fields that appear inconsistently across multiple requests to the same endpoint.
+
+This detector is most effective with two or more auth contexts at different privilege levels:
+
+```bash
+# Compare user vs admin context — surfaces admin-only fields
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --auth-context admin:ADMIN_TOKEN:100 \
+  --auth-context user:USER_TOKEN:1
 ```
 
-**Testing Process**:
-1. Identify read-only fields from baseline response
-2. Generate modified values for each read-only field
-3. Send modification request with altered read-only fields
-4. Check if read-only fields were actually modified
-5. Report successful modification as vulnerability
+---
 
-### 4. Undocumented Field Analysis
+## 📖 Command Reference
 
-The module compares responses across authentication contexts:
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--property-sensitive-fields FIELD` | Field name to flag as sensitive in API responses (repeatable). Replaces the built-in list when any value is supplied. | `password`, `api_key`, `secret`, `token`, `ssn`, `credit_card` |
+| `--property-mass-assignment-fields FIELD` | Dangerous field name to inject in mass-assignment probes (repeatable). Replaces the built-in list when any value is supplied. | `is_admin`, `role`, `permissions`, `user_id` |
 
-**Analysis Process**:
-1. Make same request with different authentication contexts
-2. Extract all field names from each response
-3. Compare field sets to find context-specific fields
-4. Filter out common metadata fields
-5. Report fields that appear only for certain contexts
+### `--property-sensitive-fields`
 
-## ⚙️ Configuration
+Replaces the built-in sensitive-field list when any value is supplied. The module checks response JSON for field names matching (case-insensitive) any configured pattern.
 
-### Basic Configuration
+```bash
+# Healthcare domain
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --property-sensitive-fields medical_record_number \
+  --property-sensitive-fields diagnosis \
+  --property-sensitive-fields prescription
+
+# E-commerce domain
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --property-sensitive-fields card_number \
+  --property-sensitive-fields cvv \
+  --property-sensitive-fields billing_address
+```
+
+### `--property-mass-assignment-fields`
+
+Replaces the built-in mass-assignment field list when any value is supplied. For each field, the module generates a plausible test value (e.g. `true` for boolean fields, `"admin"` for role-like string fields) and injects it into the request body.
+
+```bash
+# Game/platform with custom privilege model
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --property-mass-assignment-fields vip_status \
+  --property-mass-assignment-fields premium \
+  --property-mass-assignment-fields coins
+```
+
+---
+
+## 🔒 Safe Mode Behavior
+
+| Behavior | Normal | Safe mode |
+|----------|--------|-----------|
+| Sensitive data exposure (GET) | ✅ | ✅ |
+| Undocumented field discovery (GET) | ✅ | ✅ |
+| Mass assignment (POST/PUT/PATCH) | ✅ | ❌ skipped |
+| Read-only modification (PUT/PATCH) | ✅ | ❌ skipped |
+
+```bash
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --safe-mode
+```
+
+---
+
+## 🗂️ Configuration (YAML)
 
 ```yaml
 owasp_testing:
+  enabled_modules: ["property"]
+
   property_testing:
     enabled: true
-    
-    # Sensitive field patterns to detect
+    safe_mode: false
+
+    # Detector 1: field names flagged as sensitive in responses.
+    # The module also detects values whose shape matches known credential
+    # patterns (API keys, SSNs, credit card numbers) regardless of field name.
     sensitive_fields:
       - "password"
-      - "api_key" 
+      - "api_key"
       - "secret"
       - "token"
       - "ssn"
       - "credit_card"
-    
-    # Dangerous fields for mass assignment
+
+    # Detector 2: field names injected as mass-assignment probes.
+    # These are combined with the built-in privilege-escalation field set
+    # (is_admin, role, balance, etc.) — config fields are additive.
     mass_assignment_fields:
       - "is_admin"
       - "role"
@@ -241,486 +313,143 @@ owasp_testing:
       - "user_id"
 ```
 
-### Advanced Configuration
-
-```yaml
-owasp_testing:
-  property_testing:
-    enabled: true
-    
-    # Comprehensive sensitive field detection
-    sensitive_fields:
-      # Authentication & Authorization
-      - "password"
-      - "passwd"
-      - "pwd"
-      - "secret"
-      - "api_key"
-      - "access_token"
-      - "refresh_token"
-      - "bearer_token"
-      
-      # Personal Information
-      - "ssn"
-      - "social_security"
-      - "phone"
-      - "email"
-      - "address"
-      - "birth_date"
-      - "dob"
-      
-      # Financial Information
-      - "credit_card"
-      - "cc_number"
-      - "account_number"
-      - "routing_number"
-      - "bank_account"
-      
-      # Internal/Debug Information
-      - "internal_notes"
-      - "debug_info"
-      - "system_flags"
-      - "admin_notes"
-    
-    # Mass assignment dangerous fields
-    mass_assignment_fields:
-      # Privilege Escalation
-      - "is_admin"
-      - "admin"
-      - "role"
-      - "roles"
-      - "permissions"
-      - "privilege"
-      - "privilege_level"
-      
-      # Identity Manipulation
-      - "user_id"
-      - "id"
-      - "account_id"
-      - "owner_id"
-      - "created_by"
-      - "modified_by"
-      
-      # Status Manipulation
-      - "is_active"
-      - "enabled"
-      - "status"
-      - "verified"
-      - "approved"
-      - "confirmed"
-      
-      # Financial Manipulation
-      - "balance"
-      - "credit"
-      - "points"
-      - "score"
-      - "level"
-      - "tier"
-    
-    # Testing options
-    test_readonly_fields: true
-    detect_undocumented_fields: true
-    
-    # HTTP methods to use for testing
-    test_methods: ["POST", "PUT", "PATCH"]
-    
-    # Maximum number of fields to test per endpoint
-    max_fields_per_endpoint: 50
-```
-
-### Authentication Context Setup
-
-Property level authorization testing requires multiple authentication contexts:
+**Authentication contexts for multi-context testing:**
 
 ```yaml
 authentication:
   contexts:
-    # Anonymous user (no authentication)
     - name: "anonymous"
       type: "bearer"
       token: ""
       privilege_level: 0
-    
-    # Regular user
     - name: "user"
       type: "bearer"
       token: "${USER_TOKEN}"
       privilege_level: 1
-    
-    # Moderator/Manager
-    - name: "moderator"
-      type: "bearer"
-      token: "${MODERATOR_TOKEN}"
-      privilege_level: 2
-    
-    # Administrator
     - name: "admin"
       type: "bearer"
       token: "${ADMIN_TOKEN}"
       privilege_level: 3
 ```
 
-## 🔧 Implementation Details
+**Field reference:**
 
-### Module Architecture
-
-```python
-class PropertyLevelAuthModule(OWASPModule):
-    """Property Level Authorization Testing Module"""
-    
-    async def execute_tests(self, endpoints: List[Endpoint]) -> List[Finding]:
-        """Execute all property-level authorization tests"""
-        findings = []
-        
-        # Test sensitive data exposure
-        sensitive_findings = await self._test_sensitive_data_exposure(endpoints)
-        findings.extend(sensitive_findings)
-        
-        # Test mass assignment
-        mass_assignment_findings = await self._test_mass_assignment(endpoints)
-        findings.extend(mass_assignment_findings)
-        
-        # Test read-only property modification
-        readonly_findings = await self._test_readonly_property_modification(endpoints)
-        findings.extend(readonly_findings)
-        
-        # Test undocumented fields
-        undocumented_findings = await self._test_undocumented_fields(endpoints)
-        findings.extend(undocumented_findings)
-        
-        return findings
-```
-
-### Sensitive Data Detection
-
-```python
-async def _test_sensitive_data_exposure(self, endpoints: List[Endpoint]) -> List[Finding]:
-    """Test for sensitive data exposure"""
-    findings = []
-    
-    for auth_context in self.auth_contexts:
-        self.http_client.set_auth_context(auth_context)
-        
-        for endpoint in endpoints:
-            response = await self.http_client.request('GET', endpoint.url)
-            
-            if response.is_success:
-                sensitive_fields = self._detect_sensitive_fields(response, endpoint.url)
-                
-                for field in sensitive_fields:
-                    severity = self._classify_sensitive_data_severity(field, auth_context)
-                    
-                    finding = Finding(
-                        category='SENSITIVE_DATA_EXPOSURE',
-                        owasp_category='API3',
-                        severity=severity,
-                        endpoint=endpoint.url,
-                        evidence=f"Sensitive field '{field.field_name}' exposed",
-                        recommendation="Implement field-level authorization"
-                    )
-                    findings.append(finding)
-    
-    return findings
-```
-
-### Mass Assignment Testing
-
-```python
-async def _test_mass_assignment(self, endpoints: List[Endpoint]) -> List[Finding]:
-    """Test for mass assignment vulnerabilities"""
-    findings = []
-    
-    for endpoint in endpoints:
-        # Get baseline response
-        baseline_response = await self.http_client.request('GET', endpoint.url)
-        existing_fields = self._extract_fields_from_response(baseline_response)
-        
-        # Test each dangerous field
-        for dangerous_field in self.mass_assignment_fields:
-            test_payload = {dangerous_field: self._generate_test_value(dangerous_field)}
-            test_payload.update(existing_fields)  # Include existing fields
-            
-            test_response = await self.http_client.request('POST', endpoint.url, json=test_payload)
-            
-            if self._is_mass_assignment_successful(baseline_response, test_response, dangerous_field):
-                finding = Finding(
-                    category='MASS_ASSIGNMENT',
-                    owasp_category='API3',
-                    severity=self._classify_mass_assignment_severity(dangerous_field),
-                    endpoint=endpoint.url,
-                    evidence=f"Mass assignment successful for field '{dangerous_field}'",
-                    recommendation="Use allow-lists for accepted fields"
-                )
-                findings.append(finding)
-    
-    return findings
-```
-
-## 🧪 Property-Based Testing
-
-The module includes comprehensive property-based tests using Hypothesis:
-
-### Property 8: Mass Assignment Detection
-
-```python
-@given(
-    baseline_response=response_strategy(),
-    test_response=response_strategy(), 
-    field_name=st.sampled_from(['is_admin', 'role', 'permissions']),
-    test_value=st.one_of(st.booleans(), st.text(), st.integers())
-)
-@settings(max_examples=100)
-def test_mass_assignment_detection_property(self, baseline_response, test_response, field_name, test_value):
-    """
-    **Feature: apileak-owasp-enhancement, Property 8: Mass Assignment Detection**
-    **Validates: Requirements 3.2, 3.3**
-    
-    For any baseline and test response, mass assignment detection should correctly
-    identify when dangerous fields are accepted and processed.
-    """
-    result = self.module._is_mass_assignment_successful(
-        baseline_response, test_response, field_name, test_value
-    )
-    
-    # Property: Result should always be boolean
-    assert isinstance(result, bool)
-    
-    # Property: If test response contains the field with test value, should return True
-    if field_name in test_response.json and test_response.json[field_name] == test_value:
-        assert result is True
-```
-
-### Property 9: Undocumented Field Detection
-
-```python
-@given(field_names=st.lists(st.text(min_size=1, max_size=30), min_size=1, max_size=20))
-@settings(max_examples=100)
-def test_undocumented_field_filtering_property(self, field_names):
-    """
-    **Feature: apileak-owasp-enhancement, Property 9: Undocumented Field Detection**
-    **Validates: Requirements 3.4**
-    
-    For any list of field names, undocumented field filtering should consistently
-    identify potentially undocumented fields while filtering out common metadata.
-    """
-    for field_name in field_names:
-        result = self.module._is_potentially_undocumented(field_name)
-        
-        # Property: Result should always be boolean
-        assert isinstance(result, bool)
-        
-        # Property: Common metadata fields should be filtered out
-        common_fields = ['timestamp', 'created_at', 'updated_at', 'id']
-        if any(common in field_name.lower() for common in common_fields):
-            assert result is False
-```
-
-## 🔍 Common Findings
-
-### Critical Severity Findings
-
-**SENSITIVE_DATA_EXPOSURE - Password/API Key Exposure**
-```
-Category: SENSITIVE_DATA_EXPOSURE
-Severity: CRITICAL
-Evidence: Password field 'user_password' exposed in API response to regular user
-Endpoint: GET /api/users/123
-Recommendation: Remove sensitive fields from API responses or implement proper field-level authorization
-```
-
-**MASS_ASSIGNMENT - Admin Privilege Escalation**
-```
-Category: MASS_ASSIGNMENT  
-Severity: CRITICAL
-Evidence: Mass assignment successful for field 'is_admin' - user gained admin privileges
-Endpoint: POST /api/users/123
-Recommendation: Use allow-lists for accepted fields and reject dangerous properties
-```
-
-### High Severity Findings
-
-**SENSITIVE_DATA_EXPOSURE - Personal Data to Low-Privilege User**
-```
-Category: SENSITIVE_DATA_EXPOSURE
-Severity: HIGH
-Evidence: Personal data field 'ssn' exposed to user with privilege level 1
-Endpoint: GET /api/users/456
-Recommendation: Implement role-based field filtering for personal information
-```
-
-**MASS_ASSIGNMENT - Financial Field Manipulation**
-```
-Category: MASS_ASSIGNMENT
-Severity: HIGH  
-Evidence: Mass assignment successful for field 'balance' - user modified account balance
-Endpoint: PUT /api/accounts/789
-Recommendation: Protect financial fields with strict validation and authorization
-```
-
-### Medium Severity Findings
-
-**READONLY_PROPERTY_MODIFICATION - Timestamp Manipulation**
-```
-Category: READONLY_PROPERTY_MODIFICATION
-Severity: HIGH
-Evidence: Read-only property 'created_at' was successfully modified from original value
-Endpoint: PUT /api/users/123
-Recommendation: Implement validation to prevent modification of immutable fields
-```
-
-**UNDOCUMENTED_FIELD - Context-Specific Field Exposure**
-```
-Category: UNDOCUMENTED_FIELD
-Severity: MEDIUM
-Evidence: Field 'internal_notes' appears only for admin context but not for user context
-Endpoint: GET /api/users/123  
-Recommendation: Document all API response fields or implement consistent field filtering
-```
-
-## 🛠️ Remediation
-
-### 1. Sensitive Data Exposure
-
-**Prevention Strategies**:
-
-```python
-# Good: Field-level authorization
-class UserSerializer:
-    def serialize(self, user, requesting_user):
-        data = {
-            'user_id': user.id,
-            'username': user.username,
-            'email': user.email
-        }
-        
-        # Only include sensitive fields for authorized users
-        if requesting_user.is_admin or requesting_user.id == user.id:
-            data['phone'] = user.phone
-            
-        # Never include passwords or API keys
-        # data['password'] = user.password  # ❌ Never do this
-        
-        return data
-```
-
-**Implementation**:
-- Use serializers with field-level permissions
-- Implement role-based field filtering
-- Never include passwords, API keys, or secrets in responses
-- Audit all API responses for sensitive data
-
-### 2. Mass Assignment
-
-**Prevention Strategies**:
-
-```python
-# Good: Use allow-lists for accepted fields
-class UserUpdateRequest:
-    ALLOWED_FIELDS = ['name', 'email', 'phone']  # Only safe fields
-    
-    def validate(self, data):
-        # Reject any fields not in allow-list
-        for field in data.keys():
-            if field not in self.ALLOWED_FIELDS:
-                raise ValidationError(f"Field '{field}' is not allowed")
-        
-        return data
-
-# Good: Separate DTOs for different operations
-class UserCreateDTO:
-    allowed_fields = ['name', 'email', 'phone']
-
-class UserUpdateDTO:
-    allowed_fields = ['name', 'phone']  # Email changes require separate endpoint
-
-class AdminUserUpdateDTO:
-    allowed_fields = ['name', 'email', 'phone', 'role', 'is_active']
-```
-
-**Implementation**:
-- Use strict allow-lists for input validation
-- Separate DTOs for different user roles
-- Never accept dangerous fields like `is_admin`, `role`, `permissions`
-- Validate all input against expected schema
-
-### 3. Read-Only Property Protection
-
-**Prevention Strategies**:
-
-```python
-# Good: Protect immutable fields
-class UserModel:
-    READONLY_FIELDS = ['id', 'created_at', 'user_id', 'version']
-    
-    def update(self, data):
-        # Remove any read-only fields from update data
-        for field in self.READONLY_FIELDS:
-            if field in data:
-                del data[field]
-                # Optionally log security event
-                logger.warning(f"Attempt to modify read-only field: {field}")
-        
-        # Proceed with safe update
-        return super().update(data)
-```
-
-**Implementation**:
-- Define and enforce read-only field lists
-- Strip read-only fields from update operations
-- Use database constraints to prevent modification
-- Log attempts to modify immutable fields
-
-### 4. Consistent Field Exposure
-
-**Prevention Strategies**:
-
-```python
-# Good: Consistent field exposure with documentation
-class APIResponse:
-    def __init__(self, data, user_context):
-        self.data = data
-        self.user_context = user_context
-    
-    def serialize(self):
-        # Base fields available to all users
-        response = {
-            'user_id': self.data.id,
-            'username': self.data.username,
-            'created_at': self.data.created_at
-        }
-        
-        # Documented admin-only fields
-        if self.user_context.is_admin:
-            response.update({
-                'last_login_ip': self.data.last_login_ip,
-                'account_status': self.data.status,
-                'admin_notes': self.data.admin_notes
-            })
-        
-        return response
-```
-
-**Implementation**:
-- Document all API response fields
-- Implement consistent field filtering logic
-- Use role-based serializers
-- Regularly audit API responses across different contexts
-
-### Security Headers
-
-Add security headers to prevent information disclosure:
-
-```python
-# Add security headers
-response.headers.update({
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY', 
-    'X-XSS-Protection': '1; mode=block',
-    'Cache-Control': 'no-store, no-cache, must-revalidate',
-    'Pragma': 'no-cache'
-})
-```
+| Field | CLI equivalent | Default | Purpose |
+|-------|----------------|---------|---------|
+| `sensitive_fields` | `--property-sensitive-fields` | 6 built-in fields | Detector 1 field list |
+| `mass_assignment_fields` | `--property-mass-assignment-fields` | 4 built-in fields | Detector 2 injection targets |
+| `safe_mode` | `--safe-mode` | `false` | Skip state-changing probes |
 
 ---
 
-The Property Level Authorization Testing Module provides comprehensive detection of API3 vulnerabilities, helping ensure your APIs properly control access to sensitive data and properties. 🛡️
+## 📊 Finding Categories
+
+### `SENSITIVE_DATA_EXPOSURE`
+
+| Field | Value |
+|-------|-------|
+| Severity | CRITICAL |
+| OWASP | API3 |
+| Description | A sensitive field (password, API key, SSN, credit card number) was returned in an API response to an auth context that should not have access to it. |
+| Evidence | Field name, field path in the JSON response, auth context name (never the token value), endpoint, and a truncated value snippet. |
+| Recommendation | Apply field-level authorization: filter sensitive fields from response serializers based on the caller's role. Never include passwords, API keys, or credentials in API responses. Use separate DTOs per privilege level. |
+
+### `MASS_ASSIGNMENT`
+
+| Field | Value |
+|-------|-------|
+| Severity | HIGH (CRITICAL for `role`, `is_admin` and other privilege-escalation fields) |
+| OWASP | API3 |
+| Description | A dangerous field (`role`, `is_admin`, `balance`, etc.) was accepted in the request body and reflected in the response or caused a detectable change, indicating the server bound the raw request body to the model without filtering. |
+| Evidence | Injected field name, injected value, baseline response delta, endpoint and method. |
+| Recommendation | Use an allowlist (DTO / request schema) to restrict which fields the API accepts. Never bind the raw request body to the user or account model. Explicitly block privilege, identity, and financial fields from end-user write paths. |
+
+### `READONLY_PROPERTY_MODIFICATION`
+
+| Field | Value |
+|-------|-------|
+| Severity | HIGH |
+| OWASP | API3 |
+| Description | A field that should be immutable (`created_at`, `id`, `version`, `checksum`) was successfully changed by a client write request. The re-fetched object confirms the change persisted. |
+| Evidence | Field name, original value, new value, endpoint and method used. |
+| Recommendation | Strip read-only fields from all update operations before persisting. Use database constraints (`NOT NULL`, triggers, or generated columns) to enforce immutability. Log and alert on attempts to modify immutable fields. |
+
+### `UNDOCUMENTED_FIELD`
+
+| Field | Value |
+|-------|-------|
+| Severity | MEDIUM |
+| OWASP | API3 |
+| Description | A response field appeared only for higher-privilege auth contexts or inconsistently across requests, indicating the API leaks internal or admin-only data through the same endpoint used by regular users. |
+| Evidence | Field name, the context(s) that received it, the context(s) that did not, endpoint. |
+| Recommendation | Document all API response fields and implement consistent field filtering based on the caller's role. Use role-based serializers so each privilege level gets a well-defined, stable field set. |
+
+---
+
+## 🎭 Attack Scenarios (OWASP API3:2023)
+
+### Scenario 1 — API key exposure
+
+A mobile app calls `GET /api/users/me` to load the user profile. The API returns the full database model, including the `api_key` field. An attacker who intercepts or replays this request extracts valid API keys and uses them to authenticate as the victim.
+
+**What apileaks detects:** `api_key` matches the built-in sensitive-field list. The GET response is checked for the field name (case-insensitive). `SENSITIVE_DATA_EXPOSURE` CRITICAL is emitted.
+
+```bash
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-sensitive-fields api_key \
+  --property-sensitive-fields secret
+```
+
+### Scenario 2 — Role escalation via mass assignment
+
+A user sends `PATCH /api/users/me` with `{"name": "Alice", "role": "admin"}`. The server binds the entire request body to the User model without filtering. The `role` field is updated to `admin`, giving the user full administrative access.
+
+**What apileaks detects:** `role` is in the built-in mass-assignment field list. The module sends a PATCH with `{"role": "admin"}` alongside a baseline PATCH without it. The response difference (or re-fetch) confirms the field was applied. `MASS_ASSIGNMENT` CRITICAL is emitted.
+
+```bash
+python apileaks.py owasp property \
+  --target https://api.example.com \
+  --jwt "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  --property-mass-assignment-fields role \
+  --property-mass-assignment-fields is_admin
+```
+
+### Scenario 3 — Account takeover via balance manipulation
+
+A fintech API accepts `{"amount": 100, "balance": 99999}` in a transfer endpoint. The `balance` field is bound directly to the account model, allowing the attacker to set their own balance to an arbitrary value.
+
+**What apileaks detects:** `balance` is in the built-in mass-assignment field list. The injected value is reflected back in the response. `MASS_ASSIGNMENT` HIGH is emitted.
+
+---
+
+## 🛡️ Remediation
+
+### Sensitive data exposure
+
+- **Response serializer allowlists:** Define the exact fields each endpoint returns for each role. Never serialize the full model. Use separate DTO classes per privilege level (`UserResponseDTO`, `AdminUserResponseDTO`).
+- **Strip by default:** Start from an empty response object and add only the fields the caller is authorized to see, rather than starting from the full model and removing sensitive fields.
+- **Never return credentials:** Passwords (hashed or otherwise), API keys, private keys, and session tokens must never appear in API responses. Return them only at creation time (once, over TLS) and never again.
+- **Audit regularly:** Automated API response scanning in your CI/CD pipeline catches new sensitive fields added without proper filtering.
+
+### Mass assignment
+
+- **Input DTO allowlists:** Accept only explicitly declared fields. Any field not in the DTO is rejected with a `400 Bad Request` — not silently ignored.
+- **Role-gated fields:** For fields that admins can set but users cannot (e.g. `role`, `is_active`), use a separate privileged endpoint or a separate DTO that is only bound when the caller's role is verified.
+- **Never bind raw request body:** Framework `mass_assignment` or `auto_bind` features are dangerous. Always use an explicit DTO or field-by-field assignment.
+
+### Read-only property protection
+
+- **Strip on write:** Remove read-only fields from the payload before any persistence operation.
+- **Database constraints:** Use `GENERATED ALWAYS` columns, triggers, or application-layer constraints to enforce immutability.
+- **Version fields for optimistic locking:** If you use `version` or `revision` fields for concurrency control, verify the client-supplied value matches the stored value — never let the client set it arbitrarily.
+
+### Undocumented field exposure
+
+- **One serializer per role:** Implement `UserSerializer`, `AdminUserSerializer`, etc. that explicitly declare their field set. The field sets must be documented and reviewed at each release.
+- **CI/CD API contract tests:** Use snapshot tests or OpenAPI schema validation to catch any new field that appears in production responses without a spec update.
+
+---
+
+See also: [OWASP Coverage](README.md) · [BOLA Testing (API1)](bola-testing.md) · [Function Level Auth (API5)](function-level-auth.md) · [OWASP Command Reference](../owasp-command.md) · [Scan Guide](../scan-guide.md)

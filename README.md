@@ -1,10 +1,10 @@
-# APILeak v0.2.0 [Beta][DEVELOPMENT]
+# APILeak v0.3.0
 
 <div align="center">
   <img src="images/apileaks_logo.png" alt="APILeak Logo" width="500"/>
 </div>
 
-## APILeak v0.2.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+## APILeak v0.3.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
 
 **Enterprise-grade API security testing tool with comprehensive OWASP API Security Top 10 2023 coverage.**
 
@@ -173,10 +173,16 @@ python apileaks.py scan --target https://api.example.com --df --fv --framework-c
 - **[🛡️ OWASP Coverage](docs/owasp-coverage.md)** - OWASP API Security Top 10 2023 coverage
 
 ### OWASP Modules
-- **[🛡️ OWASP Overview](docs/owasp/README.md)** - Complete OWASP API Security coverage
-- **[🔐 BOLA Testing](docs/owasp/bola-testing.md)** - Broken Object Level Authorization
-- **[🔑 Auth Testing](docs/owasp/auth-testing.md)** - Authentication vulnerability detection
-- **[📋 Property Auth](docs/owasp/property-level-auth.md)** - Property-level authorization testing
+- **[🛡️ OWASP Overview](docs/owasp/README.md)** - Complete OWASP API Security coverage and module index
+- **[🔐 BOLA Testing (API1)](docs/owasp/bola-testing.md)** - Broken Object Level Authorization
+- **[📋 Property Level Auth (API3)](docs/owasp/property-level-auth.md)** - Mass assignment, sensitive data exposure, read-only bypass
+- **[⚡ Resource Consumption (API4)](docs/owasp/resource-consumption.md)** - Rate limiting, payload size, deep JSON
+- **[🛡️ Function Level Auth (API5)](docs/owasp/function-level-auth.md)** - BFLA: grey-box 4-level attack methodology
+- **[🔄 Business Flows (API6)](docs/owasp/business-flows.md)** - Automation abuse, quota enforcement, multi-step bypass
+- **[🌐 SSRF Testing (API7)](docs/owasp/ssrf-testing.md)** - Internal network, cloud metadata, blind SSRF, port scan
+- **[⚙️ Security Misconfiguration (API8)](docs/owasp/security-misconfiguration.md)** - CORS, missing security headers
+- **[📦 Inventory Management (API9)](docs/owasp/inventory-management.md)** - Deprecated/shadow API versions
+- **[🔗 Unsafe Consumption (API10)](docs/owasp/unsafe-consumption.md)** - Upstream data reflection, blind redirects, cleartext channel
 
 
 
@@ -197,7 +203,7 @@ Total Endpoints Tested: 1,247
   - GET https://api.example.com/debug (200)
 Total Findings: 8
 Critical: 2 | High: 3 | Medium: 2 | Low: 1
-OWASP Coverage: 70.0% (7/10 categories)
+OWASP Coverage: 100.0% (10/10 categories)
 
 Reports generated:
   - reports/security_scan.json

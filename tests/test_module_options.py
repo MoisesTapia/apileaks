@@ -408,3 +408,664 @@ def test_apply_auth_empty_repeatables_skipped():
     ))
     assert cfg.reset_token_samples is None
     assert cfg.reset_token_known_inputs is None
+
+
+# ===========================================================================
+# New module options — Function Auth / Business Flow / Property / Resource /
+# Security Misconfig / Inventory / Unsafe Consumption / SSRF
+# ===========================================================================
+
+import click
+import pytest
+
+from cli.module_options import (
+    FUNCTION_AUTH_OPTIONS,
+    BUSINESS_FLOW_OPTIONS,
+    PROPERTY_OPTIONS,
+    RESOURCE_OPTIONS,
+    SECURITY_MISCONFIG_OPTIONS,
+    INVENTORY_OPTIONS,
+    UNSAFE_CONSUMPTION_OPTIONS,
+    SSRF_OPTIONS,
+    function_auth_options,
+    business_flow_options,
+    property_options,
+    resource_options,
+    security_misconfig_options,
+    inventory_options,
+    unsafe_consumption_options,
+    ssrf_options,
+    apply_function_auth_options,
+    apply_business_flow_options,
+    apply_property_options,
+    apply_resource_options,
+    apply_security_misconfig_options,
+    apply_inventory_options,
+    apply_unsafe_consumption_options,
+    apply_ssrf_options,
+)
+from core.config import (
+    FunctionAuthConfig,
+    BusinessFlowConfig,
+    PropertyTestingConfig,
+    ResourceTestingConfig,
+    SecurityMisconfigConfig,
+    InventoryConfig,
+    UnsafeConsumptionConfig,
+    SSRFConfig,
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared introspection helper (mirrors the pattern above)
+# ---------------------------------------------------------------------------
+
+def _opts_on_command(decorator):
+    """Return {name: Option} for every option the aggregate decorator attaches."""
+    @click.command()
+    @decorator
+    def _probe(**kwargs):  # pragma: no cover
+        pass
+    return {p.name: p for p in _probe.params if isinstance(p, click.Option)}
+
+
+def _eff_default(opt):
+    """Resolved default: () for multiple, None otherwise when unset."""
+    d = opt.default
+    if d is None or type(d).__name__ == "Sentinel":
+        return () if opt.multiple else None
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Option snapshots — (name, primary_flag, is_flag, multiple, default)
+# ---------------------------------------------------------------------------
+
+EXPECTED_FUNCTION_AUTH = [
+    ("bfla_admin_endpoints",   "--bfla-admin-endpoints",   False, True,  ()),
+    ("bfla_dangerous_methods", "--bfla-dangerous-methods", False, False, None),
+    ("bfla_role_fields",       "--bfla-role-fields",       False, True,  ()),
+    ("bfla_role_values",       "--bfla-role-values",       False, True,  ()),
+    ("bfla_api_versions",      "--bfla-api-versions",      False, False, None),
+    ("bfla_output_file",       "--bfla-output-file",       False, False, None),
+    ("allow_destructive_bfla", "--allow-destructive-bfla", True,  False, False),
+]
+
+EXPECTED_BUSINESS_FLOW = [
+    ("flow_patterns",     "--flow-patterns",     False, True,  ()),
+    ("flow_repetitions",  "--flow-repetitions",  False, False, None),
+    ("flow_check_quota",  "--flow-check-quota",  True,  False, True),
+    ("flow_quota_fields", "--flow-quota-fields", False, True,  ()),
+    ("flow_delay_ms",     "--flow-delay-ms",     False, False, None),
+]
+
+EXPECTED_PROPERTY = [
+    ("property_sensitive_fields",       "--property-sensitive-fields",       False, True, ()),
+    ("property_mass_assignment_fields", "--property-mass-assignment-fields", False, True, ()),
+]
+
+EXPECTED_RESOURCE = [
+    ("resource_burst_size",    "--resource-burst-size",    False, False, None),
+    ("resource_payload_sizes", "--resource-payload-sizes", False, False, None),
+    ("resource_json_depth",    "--resource-json-depth",    False, False, None),
+]
+
+EXPECTED_SECURITY_MISCONFIG = [
+    ("misconfig_required_headers", "--misconfig-required-headers", False, True, ()),
+]
+
+EXPECTED_INVENTORY = [
+    ("inventory_detect_deprecated", "--inventory-detect-deprecated", True, False, True),
+]
+
+EXPECTED_UNSAFE_CONSUMPTION = [
+    ("unsafe_upstream_indicators", "--unsafe-upstream-indicators", False, True,  ()),
+    ("unsafe_payloads",            "--unsafe-payloads",            False, True,  ()),
+    ("unsafe_check_redirects",     "--unsafe-check-redirects",     True,  False, True),
+    ("unsafe_redirect_url",        "--unsafe-redirect-url",        False, False, None),
+    ("unsafe_check_cleartext",     "--unsafe-check-cleartext",     True,  False, True),
+]
+
+EXPECTED_SSRF = [
+    ("openapi",                "--openapi",                False, True,  ()),
+    ("postman",                "--postman",                False, True,  ()),
+    ("ssrf_callback_url",      "--ssrf-callback-url",      False, False, None),
+    ("ssrf_internal_targets",  "--ssrf-internal-targets",  False, True,  ()),
+    ("ssrf_schemes",           "--ssrf-schemes",           False, True,  ()),
+    ("ssrf_scan_ports",        "--ssrf-scan-ports",        False, False, None),
+    ("ssrf_body_injection",    "--ssrf-body-injection",    True,  False, False),
+    ("ssrf_body_methods",      "--ssrf-body-methods",      False, False, None),
+    ("ssrf_body_field",        "--ssrf-body-field",        False, True,  ()),
+    ("burp_xml",               "--burp-xml",               False, False, None),
+    ("har",                    "--har",                    False, False, None),
+    ("allow_aggressive_ssrf",  "--allow-aggressive-ssrf",  True,  False, False),
+    ("ssrf_require_signature", "--ssrf-require-signature", True,  False, False),
+    ("ssrf_match_status",      "--ssrf-match-status",      False, False, None),
+]
+
+
+# ---------------------------------------------------------------------------
+# Materialised command option dicts (one per module)
+# ---------------------------------------------------------------------------
+
+FA_OPTS  = _opts_on_command(function_auth_options)
+BF_OPTS  = _opts_on_command(business_flow_options)
+PR_OPTS  = _opts_on_command(property_options)
+RE_OPTS  = _opts_on_command(resource_options)
+SM_OPTS  = _opts_on_command(security_misconfig_options)
+INV_OPTS = _opts_on_command(inventory_options)
+UC_OPTS  = _opts_on_command(unsafe_consumption_options)
+SS_OPTS  = _opts_on_command(ssrf_options)
+
+
+# ---------------------------------------------------------------------------
+# Registration count + name-set snapshot
+# ---------------------------------------------------------------------------
+
+def test_function_auth_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_FUNCTION_AUTH} == set(FA_OPTS)
+    assert len(FA_OPTS) == len(EXPECTED_FUNCTION_AUTH)
+
+
+def test_business_flow_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_BUSINESS_FLOW} == set(BF_OPTS)
+    assert len(BF_OPTS) == len(EXPECTED_BUSINESS_FLOW)
+
+
+def test_property_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_PROPERTY} == set(PR_OPTS)
+    assert len(PR_OPTS) == len(EXPECTED_PROPERTY)
+
+
+def test_resource_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_RESOURCE} == set(RE_OPTS)
+    assert len(RE_OPTS) == len(EXPECTED_RESOURCE)
+
+
+def test_security_misconfig_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_SECURITY_MISCONFIG} == set(SM_OPTS)
+    assert len(SM_OPTS) == len(EXPECTED_SECURITY_MISCONFIG)
+
+
+def test_inventory_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_INVENTORY} == set(INV_OPTS)
+    assert len(INV_OPTS) == len(EXPECTED_INVENTORY)
+
+
+def test_unsafe_consumption_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_UNSAFE_CONSUMPTION} == set(UC_OPTS)
+    assert len(UC_OPTS) == len(EXPECTED_UNSAFE_CONSUMPTION)
+
+
+def test_ssrf_options_register_exactly_expected_names():
+    assert {n for n, *_ in EXPECTED_SSRF} == set(SS_OPTS)
+    assert len(SS_OPTS) == len(EXPECTED_SSRF)
+
+
+# ---------------------------------------------------------------------------
+# Per-option snapshot (flag / is_flag / multiple / default)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_FUNCTION_AUTH)
+def test_function_auth_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = FA_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_BUSINESS_FLOW)
+def test_business_flow_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = BF_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_PROPERTY)
+def test_property_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = PR_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_RESOURCE)
+def test_resource_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = RE_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_SECURITY_MISCONFIG)
+def test_security_misconfig_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = SM_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_INVENTORY)
+def test_inventory_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = INV_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_UNSAFE_CONSUMPTION)
+def test_unsafe_consumption_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = UC_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+@pytest.mark.parametrize("name,flag,is_flag,multiple,default", EXPECTED_SSRF)
+def test_ssrf_option_snapshot(name, flag, is_flag, multiple, default):
+    opt = SS_OPTS[name]
+    assert flag in opt.opts
+    assert opt.is_flag == is_flag
+    assert opt.multiple == multiple
+    assert _eff_default(opt) == default
+
+
+# ---------------------------------------------------------------------------
+# All new modules are disjoint from each other and from bola/auth
+# ---------------------------------------------------------------------------
+
+def test_all_new_module_options_are_pairwise_disjoint():
+    """No two modules share a parameter name (ownership isolation)."""
+    all_groups = {
+        "function_auth": set(FA_OPTS),
+        "business_flow": set(BF_OPTS),
+        "property":      set(PR_OPTS),
+        "resource":      set(RE_OPTS),
+        "sec_misconfig": set(SM_OPTS),
+        "inventory":     set(INV_OPTS),
+        "unsafe":        set(UC_OPTS),
+        "ssrf":          set(SS_OPTS),
+    }
+    names = list(all_groups)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            overlap = all_groups[a] & all_groups[b]
+            assert not overlap, f"{a} and {b} share: {overlap}"
+
+
+# ---------------------------------------------------------------------------
+# apply_* behaviour — defaults preserve config defaults
+# ---------------------------------------------------------------------------
+
+def test_apply_function_auth_defaults_preserve_config():
+    cfg = FunctionAuthConfig()
+    original_admins = list(cfg.admin_endpoints)
+    original_methods = list(cfg.dangerous_methods)
+    apply_function_auth_options(cfg, {
+        "bfla_admin_endpoints": (),
+        "bfla_dangerous_methods": None,
+        "bfla_role_fields": (),
+        "bfla_role_values": (),
+        "bfla_api_versions": None,
+        "bfla_output_file": None,
+        "allow_destructive_bfla": False,
+    })
+    assert cfg.admin_endpoints == original_admins
+    assert cfg.dangerous_methods == original_methods
+    assert cfg.allow_destructive is False
+    assert cfg.bfla_output_file is None
+
+
+def test_apply_function_auth_endpoints_replaced():
+    cfg = FunctionAuthConfig()
+    apply_function_auth_options(cfg, {
+        "bfla_admin_endpoints": ("/backstage", "/ops"),
+        "bfla_dangerous_methods": None,
+        "bfla_role_fields": (), "bfla_role_values": (),
+        "bfla_api_versions": None, "bfla_output_file": None,
+        "allow_destructive_bfla": False,
+    })
+    assert cfg.admin_endpoints == ["/backstage", "/ops"]
+
+
+def test_apply_function_auth_dangerous_methods_comma_parsed():
+    cfg = FunctionAuthConfig()
+    apply_function_auth_options(cfg, {
+        "bfla_admin_endpoints": (),
+        "bfla_dangerous_methods": "DELETE, put ,PATCH",
+        "bfla_role_fields": (), "bfla_role_values": (),
+        "bfla_api_versions": None, "bfla_output_file": None,
+        "allow_destructive_bfla": False,
+    })
+    assert cfg.dangerous_methods == ["DELETE", "PUT", "PATCH"]
+
+
+def test_apply_function_auth_destructive_flag():
+    cfg = FunctionAuthConfig()
+    apply_function_auth_options(cfg, {
+        "bfla_admin_endpoints": (), "bfla_dangerous_methods": None,
+        "bfla_role_fields": (), "bfla_role_values": (),
+        "bfla_api_versions": None, "bfla_output_file": "/tmp/out.json",
+        "allow_destructive_bfla": True,
+    })
+    assert cfg.allow_destructive is True
+    assert cfg.bfla_output_file == "/tmp/out.json"
+
+
+def test_apply_function_auth_api_versions_comma_parsed():
+    cfg = FunctionAuthConfig()
+    apply_function_auth_options(cfg, {
+        "bfla_admin_endpoints": (), "bfla_dangerous_methods": None,
+        "bfla_role_fields": (), "bfla_role_values": (),
+        "bfla_api_versions": "v1,v2,v3",
+        "bfla_output_file": None, "allow_destructive_bfla": False,
+    })
+    assert cfg.api_versions == ["v1", "v2", "v3"]
+
+
+def test_apply_business_flow_defaults_preserve_config():
+    cfg = BusinessFlowConfig()
+    original_patterns = list(cfg.sensitive_flow_patterns)
+    apply_business_flow_options(cfg, {
+        "flow_patterns": (), "flow_repetitions": None,
+        "flow_check_quota": True, "flow_quota_fields": (),
+        "flow_delay_ms": None,
+    })
+    assert cfg.sensitive_flow_patterns == original_patterns
+    assert cfg.repetition_limit == 50
+    assert cfg.check_quota_decrement is True
+    assert cfg.inter_request_delay_ms == 0
+
+
+def test_apply_business_flow_patterns_replaced():
+    cfg = BusinessFlowConfig()
+    apply_business_flow_options(cfg, {
+        "flow_patterns": ("/buy", "/bid"),
+        "flow_repetitions": None, "flow_check_quota": True,
+        "flow_quota_fields": (), "flow_delay_ms": None,
+    })
+    assert cfg.sensitive_flow_patterns == ["/buy", "/bid"]
+
+
+def test_apply_business_flow_repetitions_and_delay():
+    cfg = BusinessFlowConfig()
+    apply_business_flow_options(cfg, {
+        "flow_patterns": (), "flow_repetitions": 200,
+        "flow_check_quota": False, "flow_quota_fields": (),
+        "flow_delay_ms": 1100,
+    })
+    assert cfg.repetition_limit == 200
+    assert cfg.check_quota_decrement is False
+    assert cfg.inter_request_delay_ms == 1100
+
+
+def test_apply_business_flow_quota_fields_replaced():
+    cfg = BusinessFlowConfig()
+    apply_business_flow_options(cfg, {
+        "flow_patterns": (), "flow_repetitions": None,
+        "flow_check_quota": True,
+        "flow_quota_fields": ("ticketsLeft", "creditsRemaining"),
+        "flow_delay_ms": None,
+    })
+    assert cfg.quota_fields == ["ticketsLeft", "creditsRemaining"]
+
+
+def test_apply_property_defaults_preserve_config():
+    cfg = PropertyTestingConfig()
+    original_sensitive = list(cfg.sensitive_fields)
+    original_mass = list(cfg.mass_assignment_fields)
+    apply_property_options(cfg, {
+        "property_sensitive_fields": (),
+        "property_mass_assignment_fields": (),
+    })
+    assert cfg.sensitive_fields == original_sensitive
+    assert cfg.mass_assignment_fields == original_mass
+
+
+def test_apply_property_fields_replaced():
+    cfg = PropertyTestingConfig()
+    apply_property_options(cfg, {
+        "property_sensitive_fields": ("iban", "cvv"),
+        "property_mass_assignment_fields": ("balance",),
+    })
+    assert cfg.sensitive_fields == ["iban", "cvv"]
+    assert cfg.mass_assignment_fields == ["balance"]
+
+
+def test_apply_resource_defaults_preserve_config():
+    cfg = ResourceTestingConfig()
+    apply_resource_options(cfg, {
+        "resource_burst_size": None,
+        "resource_payload_sizes": None,
+        "resource_json_depth": None,
+    })
+    assert cfg.burst_size == 100
+    assert cfg.json_depth_limit == 1000
+
+
+def test_apply_resource_burst_size():
+    cfg = ResourceTestingConfig()
+    apply_resource_options(cfg, {
+        "resource_burst_size": 250,
+        "resource_payload_sizes": None,
+        "resource_json_depth": None,
+    })
+    assert cfg.burst_size == 250
+
+
+def test_apply_resource_payload_sizes_comma_parsed():
+    cfg = ResourceTestingConfig()
+    apply_resource_options(cfg, {
+        "resource_burst_size": None,
+        "resource_payload_sizes": "524288,5242880",
+        "resource_json_depth": None,
+    })
+    assert cfg.large_payload_sizes == [524288, 5242880]
+
+
+def test_apply_resource_json_depth():
+    cfg = ResourceTestingConfig()
+    apply_resource_options(cfg, {
+        "resource_burst_size": None,
+        "resource_payload_sizes": None,
+        "resource_json_depth": 2000,
+    })
+    assert cfg.json_depth_limit == 2000
+
+
+def test_apply_security_misconfig_defaults_preserve_config():
+    cfg = SecurityMisconfigConfig()
+    original = list(cfg.required_headers)
+    apply_security_misconfig_options(cfg, {"misconfig_required_headers": ()})
+    assert cfg.required_headers == original
+
+
+def test_apply_security_misconfig_headers_replaced():
+    cfg = SecurityMisconfigConfig()
+    apply_security_misconfig_options(cfg, {
+        "misconfig_required_headers": ("Strict-Transport-Security", "Permissions-Policy"),
+    })
+    assert cfg.required_headers == ["Strict-Transport-Security", "Permissions-Policy"]
+
+
+def test_apply_inventory_defaults_preserve_config():
+    cfg = InventoryConfig()
+    apply_inventory_options(cfg, {"inventory_detect_deprecated": True})
+    assert cfg.detect_deprecated is True
+
+
+def test_apply_inventory_deprecated_disabled():
+    cfg = InventoryConfig()
+    apply_inventory_options(cfg, {"inventory_detect_deprecated": False})
+    assert cfg.detect_deprecated is False
+
+
+def test_apply_unsafe_consumption_defaults_preserve_config():
+    cfg = UnsafeConsumptionConfig()
+    original_indicators = list(cfg.upstream_indicators)
+    original_payloads = list(cfg.malformed_payloads)
+    apply_unsafe_consumption_options(cfg, {
+        "unsafe_upstream_indicators": (),
+        "unsafe_payloads": (),
+        "unsafe_check_redirects": True,
+        "unsafe_redirect_url": None,
+        "unsafe_check_cleartext": True,
+    })
+    assert cfg.upstream_indicators == original_indicators
+    assert cfg.malformed_payloads == original_payloads
+    assert cfg.check_redirects is True
+    assert cfg.check_cleartext_upstream is True
+
+
+def test_apply_unsafe_consumption_indicators_replaced():
+    cfg = UnsafeConsumptionConfig()
+    apply_unsafe_consumption_options(cfg, {
+        "unsafe_upstream_indicators": ("fetch", "webhook"),
+        "unsafe_payloads": (),
+        "unsafe_check_redirects": True,
+        "unsafe_redirect_url": None,
+        "unsafe_check_cleartext": True,
+    })
+    assert cfg.upstream_indicators == ["fetch", "webhook"]
+
+
+def test_apply_unsafe_consumption_redirect_url_and_toggles():
+    cfg = UnsafeConsumptionConfig()
+    apply_unsafe_consumption_options(cfg, {
+        "unsafe_upstream_indicators": (),
+        "unsafe_payloads": (),
+        "unsafe_check_redirects": False,
+        "unsafe_redirect_url": "https://xyz.interact.sh",
+        "unsafe_check_cleartext": False,
+    })
+    assert cfg.check_redirects is False
+    assert cfg.redirect_test_url == "https://xyz.interact.sh"
+    assert cfg.check_cleartext_upstream is False
+
+
+def test_apply_ssrf_callback_url():
+    cfg = SSRFConfig()
+    apply_ssrf_options(cfg, {
+        "ssrf_callback_url": "https://xyz.interact.sh",
+        "ssrf_internal_targets": (),
+        "ssrf_schemes": (),
+        "ssrf_scan_ports": None,
+        "ssrf_body_injection": False,
+        "ssrf_body_methods": None,
+        "ssrf_body_field": (),
+        "burp_xml": None,
+        "har": None,
+        "allow_aggressive_ssrf": False,
+        "ssrf_require_signature": False,
+        "ssrf_match_status": None,
+        "openapi": (),
+        "postman": (),
+    })
+    assert cfg.callback_url == "https://xyz.interact.sh"
+
+
+def test_apply_ssrf_internal_targets_merged():
+    cfg = SSRFConfig()
+    apply_ssrf_options(cfg, {
+        "ssrf_callback_url": None,
+        "ssrf_internal_targets": ("10.0.0.1", "172.16.0.1"),
+        "ssrf_schemes": (),
+        "ssrf_scan_ports": None,
+        "ssrf_body_injection": False,
+        "ssrf_body_methods": None,
+        "ssrf_body_field": (),
+        "burp_xml": None, "har": None,
+        "allow_aggressive_ssrf": False,
+        "ssrf_require_signature": False,
+        "ssrf_match_status": None,
+        "openapi": (), "postman": (),
+    })
+    assert "10.0.0.1" in cfg.additional_internal_targets
+    assert "172.16.0.1" in cfg.additional_internal_targets
+
+
+def test_apply_ssrf_scan_ports_comma_parsed():
+    cfg = SSRFConfig()
+    apply_ssrf_options(cfg, {
+        "ssrf_callback_url": None,
+        "ssrf_internal_targets": (),
+        "ssrf_schemes": (),
+        "ssrf_scan_ports": "22,80,443,8080",
+        "ssrf_body_injection": False,
+        "ssrf_body_methods": None,
+        "ssrf_body_field": (),
+        "burp_xml": None, "har": None,
+        "allow_aggressive_ssrf": False,
+        "ssrf_require_signature": False,
+        "ssrf_match_status": None,
+        "openapi": (), "postman": (),
+    })
+    assert cfg.scan_ports == [22, 80, 443, 8080]
+
+
+def test_apply_ssrf_body_methods_implies_body_injection():
+    cfg = SSRFConfig()
+    apply_ssrf_options(cfg, {
+        "ssrf_callback_url": None,
+        "ssrf_internal_targets": (),
+        "ssrf_schemes": (),
+        "ssrf_scan_ports": None,
+        "ssrf_body_injection": False,
+        "ssrf_body_methods": "POST,PUT,PATCH",
+        "ssrf_body_field": (),
+        "burp_xml": None, "har": None,
+        "allow_aggressive_ssrf": False,
+        "ssrf_require_signature": False,
+        "ssrf_match_status": None,
+        "openapi": (), "postman": (),
+    })
+    assert cfg.body_injection is True
+    assert cfg.body_injection_methods == ["POST", "PUT", "PATCH"]
+
+
+def test_apply_ssrf_aggressive_enables_port_scan_gate():
+    cfg = SSRFConfig()
+    apply_ssrf_options(cfg, {
+        "ssrf_callback_url": None,
+        "ssrf_internal_targets": (),
+        "ssrf_schemes": (),
+        "ssrf_scan_ports": None,
+        "ssrf_body_injection": False,
+        "ssrf_body_methods": None,
+        "ssrf_body_field": (),
+        "burp_xml": None, "har": None,
+        "allow_aggressive_ssrf": True,
+        "ssrf_require_signature": False,
+        "ssrf_match_status": None,
+        "openapi": (), "postman": (),
+    })
+    assert cfg.allow_port_scan is True
+
+
+def test_apply_ssrf_match_status_comma_parsed():
+    cfg = SSRFConfig()
+    apply_ssrf_options(cfg, {
+        "ssrf_callback_url": None,
+        "ssrf_internal_targets": (),
+        "ssrf_schemes": (),
+        "ssrf_scan_ports": None,
+        "ssrf_body_injection": False,
+        "ssrf_body_methods": None,
+        "ssrf_body_field": (),
+        "burp_xml": None, "har": None,
+        "allow_aggressive_ssrf": False,
+        "ssrf_require_signature": False,
+        "ssrf_match_status": "200,201,301",
+        "openapi": (), "postman": (),
+    })
+    assert 200 in cfg.success_status_codes
+    assert 201 in cfg.success_status_codes
+    assert 301 in cfg.success_status_codes

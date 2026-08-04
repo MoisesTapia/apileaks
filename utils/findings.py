@@ -107,7 +107,11 @@ class FindingsCollector:
         "FUNCTION_LEVEL_BYPASS": Severity.HIGH,
         "CORS_MISCONFIGURATION": Severity.HIGH,
         "BUSINESS_FLOW_NO_LIMIT": Severity.HIGH,
+        "BUSINESS_FLOW_QUOTA_NOT_ENFORCED": Severity.HIGH,
+        "BUSINESS_FLOW_MULTI_STEP_BYPASS": Severity.HIGH,
         "UNSAFE_UPSTREAM_DATA": Severity.HIGH,
+        "UNSAFE_BLIND_REDIRECT": Severity.HIGH,
+        "UNSAFE_CLEARTEXT_UPSTREAM": Severity.MEDIUM,
 
         # Medium severity - moderate security risk
         "MISSING_RATE_LIMITING": Severity.MEDIUM,
@@ -252,6 +256,8 @@ class FindingsCollector:
         "FUNCTION_LEVEL_BYPASS": "API5",
         "HTTP_METHOD_BYPASS": "API5",
         "BUSINESS_FLOW_NO_LIMIT": "API6",
+        "BUSINESS_FLOW_QUOTA_NOT_ENFORCED": "API6",
+        "BUSINESS_FLOW_MULTI_STEP_BYPASS": "API6",
         "SSRF_INTERNAL_ACCESS": "API7",
         "SSRF_BLIND": "API7",
         "FILE_PROTOCOL_ACCESS": "API7",
@@ -262,6 +268,8 @@ class FindingsCollector:
         "DEPRECATED_API_VERSION": "API9",
         "UNDOCUMENTED_API_VERSION": "API9",
         "UNSAFE_UPSTREAM_DATA": "API10",
+        "UNSAFE_BLIND_REDIRECT": "API10",
+        "UNSAFE_CLEARTEXT_UPSTREAM": "API10",
 
         # ------------------------------------------------------------------
         # Hardened-capability categories (Req 22.2, 22.4, 26.1). OWASP

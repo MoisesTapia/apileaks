@@ -76,7 +76,7 @@ def _invoke_capturing_config(args, env=None):
 
         return _noop()
 
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
     ), patch.object(
@@ -304,7 +304,7 @@ def test_config_file_supplies_target_and_timeout_over_default():
 
     **Validates: Requirements 10.1, 10.4**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("cfg.yaml", "w", encoding="utf-8") as handle:
             handle.write(_write_config(base_url=CONFIG_TARGET, timeout=33))
@@ -335,7 +335,7 @@ def test_cli_option_overrides_config_file():
 
     **Validates: Requirements 10.4**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("cfg.yaml", "w", encoding="utf-8") as handle:
             handle.write(_write_config(base_url=CONFIG_TARGET, timeout=33))
@@ -374,7 +374,7 @@ def test_malformed_config_exits_nonzero_naming_file():
 
     **Validates: Requirements 10.5**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("broken.yaml", "w", encoding="utf-8") as handle:
             handle.write("::: not valid yaml :::\n\t- broken: [")
@@ -398,7 +398,7 @@ def test_nonexistent_config_exits_nonzero_naming_file():
 
     **Validates: Requirements 10.5**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with patch.object(apileaks, "run_enhanced_apileak") as mock_run:
         result = runner.invoke(
             cli, ["--no-banner", "scan", "--config", "definitely-missing.yaml"]
