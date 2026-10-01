@@ -62,8 +62,8 @@ Registro: `apileaks.py` → `from cli.commands.jwt_cmds import jwt as _jwt_group
 | 4a | **Runner** (`run_enhanced_apileak`, `evaluate_severity_gate`, `_echo_discovery_control_status`, `SEVERITY_LADDER`) → `cli/runner.py` | ~385 | `run_enhanced_apileak` (36 patch sites) + `APILeakCore` (3) | ✅ hecho |
 | 4b-1 | **Helpers compartidos** de dir/par (auth parsers, `resolve_max_depth`, `tls_options`+validators TLS/método, `SUPPORTED_METHODS`) → `cli/parsers.py`, `cli/config_builders.py`, `cli/shared_options.py` | ~320 | ninguno (callers siguen en `apileaks`; solo re-export) | ✅ hecho |
 | 4b-2 | Cuerpos de comando **dir/par/brute** + closure (triage/scan helpers, spec-brute) → `cli/commands/discovery_cmds.py` (24 funcs + 5 consts + `ScanScopeError`) | ~3650 | migrados ~56 patch sites (`run_enhanced_apileak`→`cli.runner`, `APILeakCore`→`cli.runner`, y el resto → `cli.commands.discovery_cmds`) | ✅ hecho |
-| 5 | Familia **scan/owasp** (`scan`, `owasp`, `full`, `_build_and_run`, `_run_scan_multi_target`, `_make_module_subcommand`) | ~700 | `run_enhanced_apileak`, `_run_scoped_owasp_scan` | pendiente |
-| 6 | **Triage** (`run_interactive_triage`, `_discover_endpoints_for_triage`, `_select_records`) | ~300 | sí | pendiente |
+| 5 | Familia **scan/owasp/full/main** (`_build_and_run`, `_run_scan_multi_target`, `_make_module_subcommand`, `_resolve_modules`, etc.) → `cli/commands/scan_cmds.py`; **replay** → `cli/commands/replay_cmds.py` | ~1150 | mínimo (`run_enhanced_apileak` ya en `cli.runner`; `ConfigurationManager` re-exportado) | ✅ hecho |
+| 6 | **Triage** interactivo | — | ya movido como parte del closure dir/par (Fase 4b-2) | ✅ incluido en 4b-2 |
 | — | `run_enhanced_apileak` (núcleo, 36 patches) | ~313 | el más acoplado → se decide al final (posible `core/` o `cli/runner.py` con actualización masiva de patches) | pendiente |
 
 Cada fase: extraer → re-importar/registrar → actualizar patches si aplica → `ruff` + suite → commit.
@@ -94,4 +94,24 @@ Cada fase: extraer → re-importar/registrar → actualizar patches si aplica �
   - **Step A:** `run_enhanced_apileak` patch-location-independent — todos los callers lo invocan como `runner.run_enhanced_apileak(...)` y los 39 patch sites → `cli.runner`.
   - **Step B:** mover el closure, registrar `dir`/`par`/`brute` vía `cli.add_command`, re-exportar nombres públicos (con `# noqa`), y migrar los patch sites restantes (`APILeakCore`→`cli.runner`; `_discover_*`/`_build_discovery_progress`/`_resolve_par_candidates`/`dir`/`par`/`_run_dir_triage`/`run_interactive_triage`/`_run_scoped_owasp_scan`/`_run_targeted_follow_up_scan`/`DEFAULT_PARAMETER_WORDLIST`→`cli.commands.discovery_cmds`), cubriendo las 3 formas (`patch.object`, `setattr`, `patch("...")` incl. multilínea). Fix de `_DEFAULT_SPEC_WORDLIST` (ruta relativa a `__file__`, ahora resuelta al project root).
 - **Acumulado:** `apileaks.py` 8331 → **1414 LOC (−83%)**. Suite 2332 passed; gate `ruff` verde.
-- **Estado del monolito:** `apileaks.py` queda como capa delgada (grupo `cli`, comandos `scan`/`owasp`/`full`/`replay`/`main`, `_build_and_run` y config/registro). Fases 5-6 (scan/owasp/triage) opcionales a futuro.
+- **Fase 5 (scan/owasp/full/main + replay):** ✅ movido el cluster scan/owasp (15 funcs + `_ORCHESTRATOR_EXTRA_OPTIONS` + el loop de registro de subcomandos owasp) a `cli/commands/scan_cmds.py`, y `replay` a `cli/commands/replay_cmds.py`. Acoplamiento mínimo (`run_enhanced_apileak` ya canónico en `cli.runner`; `ConfigurationManager` re-exportado para los 28 patches de método de clase). Se arregló además un reverse-import de producción: `utils/discovery_session.py` ahora importa `parse_status_codes` de `cli.parsers` en vez de `apileaks`.
+- **RESULTADO FINAL:** `apileaks.py` **8331 → 281 LOC (−96.6%)**. El entrypoint es ya una capa delgada pura: define el grupo raíz `cli`, importa y registra las familias de comandos (`cli.add_command`), y re-exporta la superficie pública. Toda la lógica vive en `cli/` (`parsers`, `output`, `shared_options`, `config_builders`, `runner`, y `cli/commands/{jwt,wordlist,discovery,scan,replay}_cmds.py`). Suite **2332 passed** en cada fase; gate `ruff` verde.
+
+## Estructura final
+
+```
+apileaks.py                         # 281 LOC — grupo cli + registro + re-exports
+cli/
+  parsers.py                        # parseo/validación de entrada CLI
+  output.py                         # render de consola
+  shared_options.py                 # option groups + validadores + tls
+  config_builders.py                # construcción del config dict
+  runner.py                         # run_enhanced_apileak + severity gate
+  module_options.py / owasp_descriptors.py
+  commands/
+    jwt_cmds.py                     # familia jwt (14 subcmds)
+    wordlist_cmds.py                # familia wordlist
+    discovery_cmds.py               # dir / par / brute + triage/spec-brute
+    scan_cmds.py                    # scan / owasp / full / main
+    replay_cmds.py                  # replay
+```

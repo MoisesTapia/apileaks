@@ -353,9 +353,10 @@ def parse_status_filter(raw: str) -> StatusFilter | None:
     if token.lower() in STATUS_CLASSES:
         return StatusFilter(status_class=token.lower())
 
-    # Reuse the existing CLI parser for explicit codes/ranges. Imported lazily to
-    # avoid a circular import (apileaks.py imports the utils package).
-    from apileaks import parse_status_codes
+    # Reuse the existing CLI parser for explicit codes/ranges. Imported from
+    # cli.parsers (its home after the apileaks.py decomposition); kept lazy to
+    # avoid importing the CLI layer at module load.
+    from cli.parsers import parse_status_codes
 
     codes = parse_status_codes(token)
     for code in codes:
