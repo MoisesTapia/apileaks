@@ -255,8 +255,7 @@ def test_basic_auth_and_jwt_conflict_errors_with_no_discovery():
     **Validates: Requirements 24.5**
     """
     runner = CliRunner()
-    with patch("cli.runner.run_enhanced_apileak") as discovery, patch.object(
-        apileaks, "_discover_endpoints_for_triage"
+    with patch("cli.runner.run_enhanced_apileak") as discovery, patch("cli.commands.discovery_cmds._discover_endpoints_for_triage"
     ) as triage_discovery:
         result = runner.invoke(
             cli,
@@ -288,8 +287,7 @@ def test_basic_auth_without_colon_errors_with_no_discovery():
     """
     bad_value = "alicenocolon"
     runner = CliRunner()
-    with patch("cli.runner.run_enhanced_apileak") as discovery, patch.object(
-        apileaks, "_discover_endpoints_for_triage"
+    with patch("cli.runner.run_enhanced_apileak") as discovery, patch("cli.commands.discovery_cmds._discover_endpoints_for_triage"
     ) as triage_discovery:
         result = runner.invoke(
             cli,
@@ -426,8 +424,7 @@ def test_reloaded_session_performs_no_discovery_and_no_header_options(tmp_path):
     session_path = _write_session(tmp_path / "session.json")
 
     runner = CliRunner()
-    with patch.object(
-        apileaks, "_discover_endpoints_for_triage"
+    with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage"
     ) as triage_discovery, patch("cli.runner.run_enhanced_apileak"
     ) as discovery, patch.object(
         apileaks.ConfigurationManager, "load_config_from_dict"

@@ -65,8 +65,7 @@ def _invoke_asserting_atomicity(args):
     checked here.
     """
     runner = CliRunner()
-    with patch("cli.runner.run_enhanced_apileak") as mock_run, patch.object(
-        apileaks, "APILeakCore"
+    with patch("cli.runner.run_enhanced_apileak") as mock_run, patch("cli.runner.APILeakCore"
     ) as mock_core:
         result = runner.invoke(cli, ["--no-banner", *args])
 

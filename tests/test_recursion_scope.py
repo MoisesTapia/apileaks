@@ -110,7 +110,7 @@ class _patch_discovery_entrypoints:
         from unittest.mock import patch
 
         self._p1 = patch("cli.runner.run_enhanced_apileak")
-        self._p2 = patch.object(apileaks, "_run_dir_triage")
+        self._p2 = patch("cli.commands.discovery_cmds._run_dir_triage")
         return self._p1.start(), self._p2.start()
 
     def __exit__(self, *exc):

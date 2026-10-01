@@ -252,7 +252,7 @@ def test_cli_scan_scope_drives_scoped_scan_with_selected_set(tmp_path):
         captured["selected_records"] = selected_records
 
     runner = CliRunner()
-    with patch.object(apileaks, "_run_scoped_owasp_scan", _capture):
+    with patch("cli.commands.discovery_cmds._run_scoped_owasp_scan", _capture):
         result = runner.invoke(
             cli,
             [
@@ -293,7 +293,7 @@ def test_ci_mode_scan_scope_drives_scoped_scan_without_prompt(tmp_path):
         captured["selected_records"] = selected_records
 
     runner = CliRunner()
-    with patch.object(apileaks, "_run_scoped_owasp_scan", _capture):
+    with patch("cli.commands.discovery_cmds._run_scoped_owasp_scan", _capture):
         # No stdin is provided; if the command blocked on an interactive prompt
         # it would consume input/EOF instead of running the scoped scan.
         result = runner.invoke(
@@ -546,7 +546,7 @@ def test_cli_invalid_scan_scope_errors_with_no_scan(tmp_path):
 
     runner = CliRunner()
     with patch("cli.runner.run_enhanced_apileak") as run_scan:
-        with patch.object(apileaks, "_run_scoped_owasp_scan") as scoped:
+        with patch("cli.commands.discovery_cmds._run_scoped_owasp_scan") as scoped:
             result = runner.invoke(
                 cli,
                 [

@@ -79,8 +79,8 @@ def test_dir_triage_save_export_filter_table_and_ci_non_blocking(tmp_path):
     session_path = tmp_path / "session.json"
     export_path = tmp_path / "export.md"
 
-    with patch("apileaks._discover_endpoints_for_triage", _fake_discover), patch(
-        "apileaks._run_targeted_follow_up_scan"
+    with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage", _fake_discover), patch(
+        "cli.commands.discovery_cmds._run_targeted_follow_up_scan"
     ) as follow_up:
         result = runner.invoke(
             cli,
@@ -132,7 +132,7 @@ def test_dir_triage_load_session_round_trip(tmp_path):
     session_path = tmp_path / "session.json"
 
     # Phase 1: save a session from mocked discovery.
-    with patch("apileaks._discover_endpoints_for_triage", _fake_discover):
+    with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage", _fake_discover):
         save_result = runner.invoke(
             cli,
             [
@@ -148,7 +148,7 @@ def test_dir_triage_load_session_round_trip(tmp_path):
     expected = set(DiscoveryResult.from_endpoint(e) for e in _mock_endpoints())
 
     # Phase 2: reload the session (no discovery) and confirm an equal record set.
-    with patch("apileaks._discover_endpoints_for_triage") as never_discover:
+    with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage") as never_discover:
         load_result = runner.invoke(
             cli,
             [
@@ -186,7 +186,7 @@ def test_dir_triage_interactive_selection_launches_one_follow_up(tmp_path):
         results=records,
     ).save(str(session_path))
 
-    with patch("apileaks._run_targeted_follow_up_scan") as follow_up:
+    with patch("cli.commands.discovery_cmds._run_targeted_follow_up_scan") as follow_up:
         result = runner.invoke(
             cli,
             [
