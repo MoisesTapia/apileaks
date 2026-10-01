@@ -152,7 +152,7 @@ def _reset_doubles():
 @pytest.fixture
 def spy_engine(monkeypatch):
     """Patch the engine + shared HTTP engine used by ``jwt attack-test``."""
-    monkeypatch.setattr(apileaks, "JWTAttackEngine", _SpyEngine)
+    monkeypatch.setattr("cli.commands.jwt_cmds.JWTAttackEngine", _SpyEngine)
     import utils.http_client as http_client_mod
     monkeypatch.setattr(http_client_mod, "HTTPRequestEngine", _FakeHTTPEngine)
     return _SpyEngine

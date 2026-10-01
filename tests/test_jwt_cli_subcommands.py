@@ -160,7 +160,7 @@ def _reset_spy():
 @pytest.fixture
 def spy_engine(monkeypatch):
     """Patch ``apileaks.JWTAttackEngine`` with the spy for the duration of a test."""
-    monkeypatch.setattr(apileaks, "JWTAttackEngine", _SpyEngine)
+    monkeypatch.setattr("cli.commands.jwt_cmds.JWTAttackEngine", _SpyEngine)
     return _SpyEngine
 
 

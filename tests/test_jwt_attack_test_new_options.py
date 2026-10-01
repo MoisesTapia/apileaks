@@ -108,7 +108,7 @@ def _reset_spy():
 
 @pytest.fixture
 def spy_engine(monkeypatch):
-    monkeypatch.setattr(apileaks, "JWTAttackEngine", _SpyEngine)
+    monkeypatch.setattr("cli.commands.jwt_cmds.JWTAttackEngine", _SpyEngine)
     import utils.http_client as http_client_mod
     monkeypatch.setattr(http_client_mod, "HTTPRequestEngine", _FakeHTTPEngine)
     return _SpyEngine
