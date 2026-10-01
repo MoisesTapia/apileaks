@@ -2728,8 +2728,8 @@ async def _discover_endpoints_for_triage(
         if fuzzer is not None and fuzzer.streaming_output_handle is not None:
             try:
                 fuzzer.streaming_output_handle.close()
-            except Exception:
-                pass
+            except OSError as exc:
+                get_logger("dir").debug("Failed to close streaming output handle", error=str(exc))
             fuzzer.streaming_output_handle = None
 
     _echo_discovery_control_status(core)
@@ -7849,8 +7849,9 @@ def jwt_login(ctx, url, body, method, header, token_field, save, no_ssl_verify, 
                     f"  exp: {datetime.datetime.fromtimestamp(exp).strftime('%Y-%m-%d %H:%M:%S')}"
                 )
             click.echo(f"   alg={alg}  sub={sub}{exp_str}")
-        except Exception:
-            pass  # Non-critical — still output the raw token
+        except (ValueError, TypeError, OverflowError, OSError) as exc:
+            # Non-critical — still output the raw token below.
+            get_logger("jwt").debug("Could not render decoded JWT claims", error=str(exc))
 
         # Save to file if requested
         if save:

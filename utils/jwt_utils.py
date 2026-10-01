@@ -13,6 +13,7 @@ from typing import Any
 
 import click
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
@@ -382,7 +383,8 @@ def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
     if public_key is None:
         try:
             public_key = serialization.load_ssh_public_key(raw_stripped)
-        except Exception:
+        except (ValueError, TypeError, UnsupportedAlgorithm):
+            # Not a valid OpenSSH public key — fall through to other formats.
             pass
 
     if public_key is None:
@@ -401,7 +403,8 @@ def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
         ssh_bytes = public_key.public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
         if not is_ssh_key or ssh_bytes.strip() != raw_stripped:
             variants.append(("ssh_serialized", ssh_bytes))
-    except Exception:
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        # Key type does not support OpenSSH serialization — skip this variant.
         pass
 
     # PEM SubjectPublicKeyInfo (with and without the trailing newline).
@@ -411,21 +414,24 @@ def _public_key_variants(material: str | bytes) -> list[tuple[str, bytes]]:
         pem_without_nl = pem_with_nl[:-1]
         variants.append(("pem_with_newline", pem_with_nl))
         variants.append(("pem_without_newline", pem_without_nl))
-    except Exception:
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        # Key type does not support PEM SubjectPublicKeyInfo — skip this variant.
         pass
 
     # DER SubjectPublicKeyInfo bytes.
     try:
         der = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
         variants.append(("der", der))
-    except Exception:
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        # Key type does not support DER SubjectPublicKeyInfo — skip this variant.
         pass
 
     # Certificate-derived (x5c) bytes — only producible from a certificate.
     if certificate is not None:
         try:
             variants.append(("x5c_cert_der", certificate.public_bytes(Encoding.DER)))
-        except Exception:
+        except (ValueError, TypeError, UnsupportedAlgorithm):
+            # Certificate cannot be serialized to DER — skip this variant.
             pass
 
     return variants

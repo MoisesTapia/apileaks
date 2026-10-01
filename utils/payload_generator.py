@@ -374,7 +374,9 @@ class PayloadGenerator:
                 variations.extend(self._insert_comments(payload))
             elif technique == ObfuscationType.CONCATENATION:
                 variations.extend(self._generate_concatenations(payload))
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
+            # A specific obfuscation technique failed for this payload; return
+            # whatever variations were produced so far rather than aborting.
             pass
 
         return variations
