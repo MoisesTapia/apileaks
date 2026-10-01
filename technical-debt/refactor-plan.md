@@ -56,8 +56,8 @@ Registro: `apileaks.py` → `from cli.commands.jwt_cmds import jwt as _jwt_group
 
 | Fase | Cluster | LOC aprox | Acoplamiento de patch | Estado |
 |---|---|---|---|---|
-| 1 | Familia **JWT** (`jwt` + 14 subcmds + `_make_jwt_engine`, `_run_jwt_vector`, `_build_jwt_http_engine`, `_load_public_key_material_cli`) | ~1594 | solo `JWTAttackEngine` (3 tests) | 🔄 en curso |
-| 2 | Familia **wordlist** (`wordlist` + list/cache/fetch) | ~110 | ninguno | pendiente |
+| 1 | Familia **JWT** (`jwt` + 14 subcmds + `_make_jwt_engine`, `_run_jwt_vector`, `_build_jwt_http_engine`, `_load_public_key_material_cli`) | ~1594 | solo `JWTAttackEngine` (3 tests) | ✅ hecho (`cli/commands/jwt_cmds.py`) |
+| 2 | Familia **wordlist** (`wordlist` + list/cache/fetch) | ~110 | ninguno | ✅ hecho (`cli/commands/wordlist_cmds.py`) |
 | 3 | **Config builders** (`create_enhanced_config`, `create_default_config`, `_apply_transversal_overrides`, `_collect_module_configs`, `_load_spec_schema`) | ~500 | `create_*_config` (34 tests) → mover juntos y actualizar patches | pendiente |
 | 4 | Familia **dir/par** (`dir`, `par`, `_run_dir_core`, `_run_dir_triage`, `_run_*_multi_target`, `_resolve_*_candidates`) | ~1400 | `run_enhanced_apileak`, `_discover_*`, `_resolve_par_candidates` | pendiente |
 | 5 | Familia **scan/owasp** (`scan`, `owasp`, `full`, `_build_and_run`, `_run_scan_multi_target`, `_make_module_subcommand`) | ~700 | `run_enhanced_apileak`, `_run_scoped_owasp_scan` | pendiente |
@@ -77,3 +77,10 @@ Cada fase: extraer → re-importar/registrar → actualizar patches si aplica �
 - Actualizar 3 tests que hacen `monkeypatch.setattr(apileaks, "JWTAttackEngine", ...)` →
   `cli.commands.jwt_cmds` (donde ahora se resuelve el símbolo).
 - Verificado: cluster 100% autocontenido (0 callers no-cluster), sin imports circulares.
+
+## Progreso
+
+- **Fase 1 (JWT):** ✅ `cli/commands/jwt_cmds.py` (19 funcs). `apileaks.py` 8331 → 6426 LOC.
+- **Fase 2 (wordlist):** ✅ `cli/commands/wordlist_cmds.py` (4 funcs, sin acoplamiento de patch). `apileaks.py` 6426 → 6290 LOC.
+- **Acumulado:** `apileaks.py` 8331 → ~6290 LOC (−~2040, ~25%). Suite 2332 passed en cada fase; gate `ruff` verde.
+- **Siguiente:** Fase 3 (config builders) — requiere mover `create_enhanced_config`/`create_default_config` juntos y actualizar sus sitios de patch (34 tests), por lo que conviene su propia tanda cuidadosa.
