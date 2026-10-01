@@ -328,7 +328,7 @@ def test_confirm_hits_invalid_value_rejected_and_no_discovery(value):
     """
     runner = CliRunner()
 
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [

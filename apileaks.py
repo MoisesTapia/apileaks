@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 import click
 
+from cli import runner
 from cli.commands.jwt_cmds import jwt
 from cli.commands.wordlist_cmds import wordlist_group
 from cli.config_builders import (
@@ -55,7 +56,6 @@ from cli.runner import (
     SEVERITY_LADDER,  # noqa: F401  re-exported (public surface / tests)
     _echo_discovery_control_status,
     evaluate_severity_gate,  # noqa: F401  re-exported (public surface / tests)
-    run_enhanced_apileak,
 )
 from cli.shared_options import (
     _validate_ca_bundle,  # noqa: F401  re-exported (public surface / tests)
@@ -2384,7 +2384,7 @@ def _run_targeted_follow_up_scan(
             click.echo(f"Error: {error}", err=True)
         return
 
-    asyncio.run(run_enhanced_apileak(apileak_config))
+    asyncio.run(runner.run_enhanced_apileak(apileak_config))
 
 
 def _run_scoped_owasp_scan(
@@ -2520,7 +2520,7 @@ def _run_scoped_owasp_scan(
 
     # Thread the selected set into the engine scan path so the OWASP modules
     # consume exactly the seeded endpoints (Requirements 36.3, 36.8).
-    asyncio.run(run_enhanced_apileak(apileak_config, scope_endpoints=selected_records))
+    asyncio.run(runner.run_enhanced_apileak(apileak_config, scope_endpoints=selected_records))
 
 
 # ---------------------------------------------------------------------------
@@ -2886,7 +2886,7 @@ def _run_dir_core(
 
         discovery_progress = _build_discovery_progress(ci_mode, apileak_config.fuzzing.max_requests)
         _asyncio.run(
-            run_enhanced_apileak(
+            runner.run_enhanced_apileak(
                 apileak_config,
                 ci_mode=ci_mode,
                 fail_on="critical",
@@ -3682,7 +3682,7 @@ def par(
             sys.exit(1)
 
         # Run the scan
-        asyncio.run(run_enhanced_apileak(apileak_config))
+        asyncio.run(runner.run_enhanced_apileak(apileak_config))
 
     except Exception as e:
         logger.error("Parameter fuzzing failed", error=str(e))
@@ -4252,7 +4252,7 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
                 cfg.fuzzing.headers.enabled = False
 
         asyncio.run(
-            run_enhanced_apileak(
+            runner.run_enhanced_apileak(
                 cfg,
                 opts.get("ci_mode", False),
                 opts.get("fail_on", "high"),
@@ -4682,7 +4682,7 @@ async def run_apileak(config):
         config: APILeak configuration
     """
     # Delegate to enhanced version with default CI settings
-    await run_enhanced_apileak(config, ci_mode=False, fail_on="critical")
+    await runner.run_enhanced_apileak(config, ci_mode=False, fail_on="critical")
 
 
 # =============================================================================

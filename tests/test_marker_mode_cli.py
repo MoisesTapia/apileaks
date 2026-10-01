@@ -46,7 +46,7 @@ def _invoke_dir(args):
     configuration performs NO Endpoint_Discovery (Requirement 46.7).
     """
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(cli, ["--no-banner", "dir", *args])
     return result, discovery
 

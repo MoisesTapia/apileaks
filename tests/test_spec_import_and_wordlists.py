@@ -460,7 +460,7 @@ def test_unparseable_spec_errors_and_runs_no_discovery(tmp_path):
     spec.write_text("{not valid: [json or yaml", encoding="utf-8")
 
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             ["--no-banner", "dir", "--target", TARGET, "--openapi", str(spec)],
@@ -486,7 +486,7 @@ def test_empty_merged_candidate_set_reports_and_runs_no_discovery(tmp_path):
     wl2.write_text("# another comment\n", encoding="utf-8")
 
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [

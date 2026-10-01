@@ -59,7 +59,7 @@ def test_invalid_control_value_rejected_and_no_discovery(command, flag, value):
 
     # Patch the single discovery entry point shared by dir/full so we can prove
     # validation fails *before* any discovery is performed.
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [

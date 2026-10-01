@@ -72,8 +72,7 @@ def _invoke_capturing_config(args):
     runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-    ), patch.object(
-        apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)
+    ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)
     ) as mock_run:
         result = runner.invoke(cli, ["--no-banner", *args])
     return result, captured.get("config"), mock_run

@@ -324,7 +324,7 @@ def test_malformed_baseline_exits_nonzero_naming_file_with_no_scan():
         with open("bad_baseline.json", "w", encoding="utf-8") as handle:
             handle.write("{ this is not valid json ]")
 
-        with patch.object(apileaks, "run_enhanced_apileak") as mock_run, patch.object(
+        with patch("cli.runner.run_enhanced_apileak") as mock_run, patch.object(
             apileaks, "APILeakCore"
         ) as mock_core:
             result = runner.invoke(
@@ -351,7 +351,7 @@ def test_unreadable_baseline_directory_exits_nonzero_with_no_scan():
 
         os.mkdir("baseline_dir")
 
-        with patch.object(apileaks, "run_enhanced_apileak") as mock_run, patch.object(
+        with patch("cli.runner.run_enhanced_apileak") as mock_run, patch.object(
             apileaks, "APILeakCore"
         ) as mock_core:
             result = runner.invoke(

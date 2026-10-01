@@ -80,8 +80,7 @@ def _invoke_capturing_config(args, env=None):
     runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-    ), patch.object(
-        apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)
+    ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)
     ) as mock_run:
         result = runner.invoke(cli, ["--no-banner", *args])
     return result, captured.get("config"), mock_run
@@ -322,7 +321,7 @@ def test_config_file_supplies_target_and_timeout_over_default():
 
         with patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-        ), patch.object(apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)):
+        ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)):
             result = runner.invoke(cli, ["--no-banner", "scan", "--config", "cfg.yaml"])
 
     assert result.exit_code == 0, result.output
@@ -353,7 +352,7 @@ def test_cli_option_overrides_config_file():
 
         with patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-        ), patch.object(apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)):
+        ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)):
             result = runner.invoke(
                 cli,
                 ["--no-banner", "scan", "--config", "cfg.yaml",
@@ -380,7 +379,7 @@ def test_malformed_config_exits_nonzero_naming_file():
         with open("broken.yaml", "w", encoding="utf-8") as handle:
             handle.write("::: not valid yaml :::\n\t- broken: [")
 
-        with patch.object(apileaks, "run_enhanced_apileak") as mock_run:
+        with patch("cli.runner.run_enhanced_apileak") as mock_run:
             result = runner.invoke(
                 cli, ["--no-banner", "scan", "--config", "broken.yaml"]
             )
@@ -400,7 +399,7 @@ def test_nonexistent_config_exits_nonzero_naming_file():
     **Validates: Requirements 10.5**
     """
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as mock_run:
+    with patch("cli.runner.run_enhanced_apileak") as mock_run:
         result = runner.invoke(
             cli, ["--no-banner", "scan", "--config", "definitely-missing.yaml"]
         )

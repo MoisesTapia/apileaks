@@ -67,7 +67,7 @@ def _invoke_full_capturing_config(args):
     runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-    ), patch.object(apileaks, "run_enhanced_apileak", _capture):
+    ), patch("cli.runner.run_enhanced_apileak", _capture):
         result = runner.invoke(
             cli,
             ["--no-banner", "full", "--target", TARGET, *args],

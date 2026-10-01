@@ -100,7 +100,7 @@ def _invoke_full_capturing_config(args):
     runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-    ), patch.object(apileaks, "run_enhanced_apileak", _capture):
+    ), patch("cli.runner.run_enhanced_apileak", _capture):
         result = runner.invoke(
             cli,
             ["--no-banner", "full", "--target", TARGET, *args],
@@ -262,7 +262,7 @@ def test_full_aborts_before_request_on_unparseable_spec(tmp_path):
     bad_path.write_text("{ not valid json ]")
 
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as scan:
+    with patch("cli.runner.run_enhanced_apileak") as scan:
         result = runner.invoke(
             cli,
             ["--no-banner", "full", "--target", TARGET,
@@ -283,7 +283,7 @@ def test_full_aborts_before_request_on_missing_spec_file(tmp_path):
     missing = str(tmp_path / "does-not-exist.json")
 
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as scan:
+    with patch("cli.runner.run_enhanced_apileak") as scan:
         result = runner.invoke(
             cli,
             ["--no-banner", "full", "--target", TARGET,

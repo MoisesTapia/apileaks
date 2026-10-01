@@ -880,9 +880,7 @@ class HTTPRequestEngine:
         # via click.echo so it always shows regardless of log level and degrades
         # gracefully when piped (broken-pipe/encoding handled by click).
         if status_code == 0:
-            click.echo(
-                f'{color}{symbol} HTTP Request: {method} {url} "{status_message}"{RESET}'
-            )
+            click.echo(f'{color}{symbol} HTTP Request: {method} {url} "{status_message}"{RESET}')
         else:
             click.echo(
                 f'{color}{symbol} HTTP Request: {method} {url} "HTTP/1.1 {status_message}"{RESET}'

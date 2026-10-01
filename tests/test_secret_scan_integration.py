@@ -327,7 +327,7 @@ def test_cli_invalid_secret_patterns_file_rejected_no_discovery(tmp_path):
     runner = CliRunner()
     from unittest.mock import patch
 
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [

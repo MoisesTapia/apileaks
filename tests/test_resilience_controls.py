@@ -469,7 +469,7 @@ def test_invalid_timeout_rejected_and_no_discovery(command, value):
     **Validates: Requirements 28.6**
     """
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [
@@ -510,7 +510,7 @@ def test_invalid_retries_rejected_and_no_discovery(command, value):
     **Validates: Requirements 28.7**
     """
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [

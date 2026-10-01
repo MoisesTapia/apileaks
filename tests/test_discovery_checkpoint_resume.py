@@ -247,7 +247,7 @@ class TestDirResumeBadCheckpointNoDiscovery:
     def _invoke_resume(self, resume_path):
         """Invoke `dir --resume <path>` with every discovery entry point patched."""
         runner = CliRunner()
-        with patch.object(apileaks, "run_enhanced_apileak") as enhanced, patch.object(
+        with patch("cli.runner.run_enhanced_apileak") as enhanced, patch.object(
             apileaks, "_discover_endpoints_for_triage"
         ) as triage:
             result = runner.invoke(

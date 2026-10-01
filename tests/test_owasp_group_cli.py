@@ -286,7 +286,7 @@ def _invoke_owasp_capturing_config(subcommand_args):
     runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-    ), patch.object(apileaks, "run_enhanced_apileak", _capture) as mock_run:
+    ), patch("cli.runner.run_enhanced_apileak", _capture) as mock_run:
         result = runner.invoke(cli, ["--no-banner", "owasp", *subcommand_args])
     return result, captured.get("config"), mock_run
 
@@ -335,7 +335,7 @@ def test_foreign_specific_option_rejected_before_any_request():
     **Validates: Requirements 2.7**
     """
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as mock_run:
+    with patch("cli.runner.run_enhanced_apileak") as mock_run:
         result = runner.invoke(
             cli,
             ["--no-banner", "owasp", "auth", "--target", TARGET, "--bola-composite"],
