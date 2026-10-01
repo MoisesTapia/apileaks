@@ -14,9 +14,12 @@
 | Duplicado adicional `_normalise_catalogue` en `utils/wordlist_manager.py` | ✅ Resuelto (stub muerto eliminado) |
 | #2 Gate de CI (`ruff`) en rojo (2427 errores) | ✅ **Verde** — `ruff check` y `ruff format --check` pasan |
 | #4 Imports duplicados/muertos (F401/F811) | ✅ Resueltos |
-| #5 `except Exception` que silencian con `pass` | ⏳ Pendiente (6 casos) |
-| #3 Monolito del entrypoint / funciones > 200 líneas | ⏳ Pendiente (refactor mayor) |
-| #6-#9 (tipado legacy, formato, prints, `Any`) | ✅ Autofixables resueltos / ⏳ `Any` y prints pendientes |
+| #5 `except Exception` que silencian con `pass` | ✅ Resuelto — los 8 catches amplios se acotaron a excepciones específicas (+ log debug donde aplica) |
+| XXE latente en parseo XML (import_sources + ci-cd) | ✅ Resuelto — `defusedxml` (verificado: bloquea entidades externas) |
+| #3 Monolito del entrypoint / funciones > 200 líneas | ⏳ Pendiente (refactor mayor — recomendado por separado) |
+| #8 `print()` en producción (33) | ⏳ Pendiente (bajo impacto) |
+| #9 Uso extendido de `Any` (206) | ⏳ Pendiente (bajo impacto) |
+| #6-#7 (tipado legacy, formato) | ✅ Resueltos vía ruff |
 
 **Verificación:** suite completa en verde (2332 passed, 5 skipped, 0 failed) antes y después de los cambios. Único test excluido: `tests/test_aws_security_hub.py` (requiere `boto3`, dependencia no declarada en `requirements.txt`).
 
