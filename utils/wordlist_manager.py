@@ -10,8 +10,8 @@ Design principles:
   files are cached until explicitly refreshed with ``--refresh``.
 - The ``--wordlist assetnote:<name>`` syntax in ``dir`` / ``par`` triggers
   an auto-download when the file is not already cached.
-- Zero new third-party dependencies: uses ``httpx`` (already a requirement)
-  and the stdlib only.
+- Zero new third-party dependencies: uses ``httpx`` and ``click`` (both already
+  requirements) and the stdlib only.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+
+import click
 
 from core.logging import get_logger
 
@@ -294,7 +296,7 @@ def resolve_wordlist(
     # Download
     _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     if show_progress:
-        print(f"Downloading Assetnote wordlist '{match['alias']}' ({match['filesize']})…")
+        click.echo(f"Downloading Assetnote wordlist '{match['alias']}' ({match['filesize']})…")
 
     try:
         import httpx
@@ -307,7 +309,7 @@ def resolve_wordlist(
                         fh.write(chunk)
         if show_progress:
             size_kb = cache_path.stat().st_size // 1024
-            print(f"  ✓ Cached to {cache_path}  ({size_kb} KB)")
+            click.echo(f"  ✓ Cached to {cache_path}  ({size_kb} KB)")
         logger.info("Wordlist downloaded", alias=match["alias"], path=str(cache_path))
     except Exception as exc:
         import sys

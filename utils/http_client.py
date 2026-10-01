@@ -12,6 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+import click
 import httpx
 
 from core.config import AuthContext, AuthType, RateLimitConfig
@@ -875,17 +876,16 @@ class HTTPRequestEngine:
 
             status_message = status_messages.get(status_code, f"{status_code}")
 
-        # Print colored request log directly to stdout (bypassing structlog)
-        # This ensures it always shows regardless of log level
+        # Write the colored request log directly to stdout (bypassing structlog)
+        # via click.echo so it always shows regardless of log level and degrades
+        # gracefully when piped (broken-pipe/encoding handled by click).
         if status_code == 0:
-            print(
-                f'{color}{symbol} HTTP Request: {method} {url} "{status_message}"{RESET}',
-                flush=True,
+            click.echo(
+                f'{color}{symbol} HTTP Request: {method} {url} "{status_message}"{RESET}'
             )
         else:
-            print(
-                f'{color}{symbol} HTTP Request: {method} {url} "HTTP/1.1 {status_message}"{RESET}',
-                flush=True,
+            click.echo(
+                f'{color}{symbol} HTTP Request: {method} {url} "HTTP/1.1 {status_message}"{RESET}'
             )
 
     def set_auth_context(self, auth: AuthContext) -> None:

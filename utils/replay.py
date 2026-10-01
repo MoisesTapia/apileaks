@@ -8,7 +8,7 @@ the exact request — optionally forwarding through an intercepting proxy
 (Burp/Caido/Hetty) for manual inspection.
 
 Design goals:
-- Zero new dependencies beyond what apileaks already uses (httpx).
+- Zero new dependencies beyond what apileaks already uses (httpx, click).
 - Works with both "discovered_endpoints" and "findings" sections.
 - Reconstructs the request as faithfully as the report allows: method,
   headers, query params, and JSON body (when available in finding metadata).
@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+import click
 
 from core.logging import get_logger
 
@@ -315,14 +317,14 @@ def _print_replay_dump(
     sep = "─" * 60
 
     # ---- REQUEST -----------------------------------------------------------
-    print(f"\n{_BOLD}{_CYAN}{'═' * 60}")
-    print("  REPLAY REQUEST")
-    print(f"{'═' * 60}{_RESET}")
+    click.echo(f"\n{_BOLD}{_CYAN}{'═' * 60}")
+    click.echo("  REPLAY REQUEST")
+    click.echo(f"{'═' * 60}{_RESET}")
 
     parsed = urlparse(url)
     path_qs = parsed.path + (f"?{parsed.query}" if parsed.query else "")
-    print(f"{_BOLD}{_MAGENTA}{method}{_RESET} {path_qs}  {_GRAY}HTTP/1.1{_RESET}")
-    print(f"{_GRAY}Host: {parsed.netloc}{_RESET}")
+    click.echo(f"{_BOLD}{_MAGENTA}{method}{_RESET} {path_qs}  {_GRAY}HTTP/1.1{_RESET}")
+    click.echo(f"{_GRAY}Host: {parsed.netloc}{_RESET}")
 
     for name, value in sorted(req_headers.items()):
         # Redact auth values in output
@@ -333,30 +335,30 @@ def _print_replay_dump(
                 if len(parts) > 1 and len(parts[1]) > 12
                 else (parts[1] if len(parts) > 1 else "")
             )
-            print(f"{_GRAY}{name}: {parts[0]} {token_preview}{_RESET}")
+            click.echo(f"{_GRAY}{name}: {parts[0]} {token_preview}{_RESET}")
         else:
-            print(f"{_GRAY}{name}: {value}{_RESET}")
+            click.echo(f"{_GRAY}{name}: {value}{_RESET}")
 
     if req_body:
-        print()
-        print(json.dumps(req_body, indent=2))
+        click.echo()
+        click.echo(json.dumps(req_body, indent=2))
 
     # ---- RESPONSE ----------------------------------------------------------
     col = _status_color(status)
-    print(f"\n{_BOLD}{_CYAN}{sep}")
-    print("  RESPONSE")
-    print(f"{sep}{_RESET}")
-    print(f"{col}{_BOLD}HTTP/1.1 {status}{_RESET}  {_GRAY}({elapsed:.3f}s){_RESET}")
+    click.echo(f"\n{_BOLD}{_CYAN}{sep}")
+    click.echo("  RESPONSE")
+    click.echo(f"{sep}{_RESET}")
+    click.echo(f"{col}{_BOLD}HTTP/1.1 {status}{_RESET}  {_GRAY}({elapsed:.3f}s){_RESET}")
 
     # Print response headers (truncated)
     SKIP_HEADERS = {"transfer-encoding", "connection"}
     for name, value in sorted(resp_headers.items()):
         if name.lower() in SKIP_HEADERS:
             continue
-        print(f"{_GRAY}{name}: {value}{_RESET}")
+        click.echo(f"{_GRAY}{name}: {value}{_RESET}")
 
     # Print response body (truncated at 4 KB)
-    print()
+    click.echo()
     MAX_BODY = 4096
     body_preview = resp_body[:MAX_BODY] if resp_body else ""
     if len(resp_body or "") > MAX_BODY:
@@ -365,20 +367,20 @@ def _print_replay_dump(
     # Try pretty-print JSON body
     try:
         parsed_body = json.loads(body_preview)
-        print(json.dumps(parsed_body, indent=2, ensure_ascii=False))
+        click.echo(json.dumps(parsed_body, indent=2, ensure_ascii=False))
     except (json.JSONDecodeError, ValueError):
-        print(body_preview)
+        click.echo(body_preview)
 
-    print(f"{_BOLD}{_CYAN}{'═' * 60}{_RESET}\n")
+    click.echo(f"{_BOLD}{_CYAN}{'═' * 60}{_RESET}\n")
 
 
 def print_request_list(requests: list[dict[str, Any]]) -> None:
     """Print an indexed list of replayable requests to stdout."""
     if not requests:
-        print("No replayable requests found in report.")
+        click.echo("No replayable requests found in report.")
         return
-    print(f"\n{_BOLD}{'#':>4}  {'SRC':<9} {'METHOD':<7} {'STATUS':<7} URL{_RESET}")
-    print("─" * 80)
+    click.echo(f"\n{_BOLD}{'#':>4}  {'SRC':<9} {'METHOD':<7} {'STATUS':<7} URL{_RESET}")
+    click.echo("─" * 80)
     for i, req in enumerate(requests):
         src = req["source"]
         method = req["method"]
@@ -389,5 +391,5 @@ def print_request_list(requests: list[dict[str, Any]]) -> None:
         # Truncate long URLs
         url_display = url if len(url) <= 55 else url[:52] + "…"
         src_col = _CYAN if src == "endpoint" else _MAGENTA
-        print(f"{i:>4}  {src_col}{src:<9}{_RESET} {method:<7} {str(status):<7} {url_display}")
-    print()
+        click.echo(f"{i:>4}  {src_col}{src:<9}{_RESET} {method:<7} {str(status):<7} {url_display}")
+    click.echo()
