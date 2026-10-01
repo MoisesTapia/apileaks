@@ -16,7 +16,7 @@
 | #4 Imports duplicados/muertos (F401/F811) | ✅ Resueltos |
 | #5 `except Exception` que silencian con `pass` | ✅ Resuelto — los 8 catches amplios se acotaron a excepciones específicas (+ log debug donde aplica) |
 | XXE latente en parseo XML (import_sources + ci-cd) | ✅ Resuelto — `defusedxml` (verificado: bloquea entidades externas) |
-| #3 Monolito del entrypoint / funciones > 200 líneas | ⏳ Pendiente (refactor mayor — recomendado por separado) |
+| #3 Monolito del entrypoint / funciones > 200 líneas | 🔄 En progreso — 3 extracciones a `cli/` (−~590 LOC); patrón seguro establecido, resto incremental |
 | #8 `print()` en producción (33) | ✅ Resuelto — 27 migrados a `click.echo`; 6 en el healthcheck standalone se conservan a propósito |
 | #9 Uso extendido de `Any` (206) | ✅ Evaluado — mayormente legítimo (JSON/fuzzing/interfaces desacopladas); sin acción, `mypy` no está enforced |
 | #6-#7 (tipado legacy, formato) | ✅ Resueltos vía ruff |
@@ -90,7 +90,18 @@ Lo más grave: las dos copias de `_run_dir_core` (líneas **3376** y **3853**, ~
 
 ### 🟠 Media
 
-#### 3. Monolito del entrypoint — ⏳ PENDIENTE (refactor mayor)
+#### 3. Monolito del entrypoint — 🔄 EN PROGRESO (refactor incremental)
+
+> **Avance (decomposición segura, verificada test-a-test):** se estableció un patrón de extracción seguro — mover helpers a módulos de `cli/` y re-importarlos en `apileaks.py` para preservar la superficie pública (incluidos los targets de monkeypatch de los tests). Restricción clave respetada: los tests parchean muchos símbolos vía el namespace `apileaks`, así que solo se extraen funciones **no parcheadas** y que **no llaman** a otros locales de `apileaks`, re-importando por nombre.
+>
+> Incrementos aplicados (cada uno con la suite completa en verde, 2332 passed):
+> 1. `cli/parsers.py` — 13 helpers puros de parseo/validación de entrada CLI.
+> 2. `cli/output.py` — 7 helpers de salida/render de consola (banner, resúmenes, listados).
+> 3. `cli/shared_options.py` — 5 *option groups* de Click reubicados junto a sus `_validate_*`.
+>
+> **Resultado:** `apileaks.py` 8925 → ~8331 LOC. **Pendiente:** continuar extrayendo clusters más acoplados (builders de engine JWT, resolución de módulos OWASP, helpers de spec-schema) y partir las funciones de comando > 200 líneas. Es trabajo incremental; mantener la regla de "no extraer símbolos parcheados sin re-exportarlos" (un fallo de este tipo lo detectó la suite y se corrigió re-exportando los `_validate_*`).
+
+#### 3-bis. (original) Monolito del entrypoint
 `apileaks.py` concentra 8334 líneas, 127 funciones y una sola clase. Varias funciones son enormes:
 
 | Función | Líneas |
@@ -165,7 +176,7 @@ Todo autofijable con `ruff` + `ruff format`.
 3. ✅ Resolver manualmente F401/F811 restantes y los imports duplicados.
 4. ✅ Acotar los `except Exception: pass` (8 casos) y añadir logging donde aplica.
 5. ✅ **(Seguridad)** Reparar el XXE en el parseo de XML no confiable (`defusedxml`).
-6. ⏳ **A medio plazo:** descomponer `apileaks.py` moviendo lógica a los paquetes existentes y partir las funciones > 200 líneas (refactor mayor — hacer con la suite de tests delante).
+6. 🔄 **En progreso:** descomponer `apileaks.py` moviendo lógica a `cli/` (3 incrementos hechos, −~590 LOC, suite verde). Resto incremental: clusters acoplados (JWT engine, resolución OWASP, spec-schema) y funciones de comando > 200 líneas.
 7. ✅ Migrar los `print()` de producción a `click.echo` (27; el healthcheck standalone conserva `print`).
 8. ✅ Evaluar el uso de `Any` → mayormente legítimo; sin acción (ver #9). Pendiente real opcional: configurar `mypy` + baseline si se quiere seguridad de tipos.
 
