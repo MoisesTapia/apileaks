@@ -29,30 +29,31 @@
 
 ## Veredicto
 
-El proyecto es **parcialmente mantenible**. Tiene bases sólidas (arquitectura modular por paquetes, 2337 tests que colectan, tipado presente, 0 `TODO/FIXME` y 0 `except:` desnudos), pero arrastra **deuda técnica significativa** que degrada la mantenibilidad:
+**Estado inicial (auditoría):** parcialmente mantenible. Bases sólidas (arquitectura modular por paquetes, ~2337 tests, tipado presente, 0 `TODO/FIXME`, 0 `except:` desnudos) pero con deuda técnica significativa: gate de CI en rojo (2427 errores de `ruff`), monolito `apileaks.py` con código muerto duplicado y divergente, y un XXE latente en el parseo de XML.
 
-- El **gate de calidad de CI está en rojo**: `ruff check .` reporta **2427 errores** con la misma configuración que usa el workflow `code-quality.yml`.
-- El entrypoint `apileaks.py` es un **monolito de 8334 líneas** con **12 funciones definidas dos veces**, y al menos una pareja (`_run_dir_core`) **ya divergió** — es decir, hay código muerto que se desincronizó de su copia activa.
+**Estado tras remediación:** sustancialmente más mantenible. El gate de CI está **verde**, se eliminó el código muerto duplicado, se acotó el manejo de errores silencioso y se reparó el XXE. Queda como principal deuda estructural pendiente la **descomposición del monolito `apileaks.py`** (refactor mayor, recomendado por separado).
 
-Conclusión: el núcleo funcional es recuperable, pero `apileaks.py` y el linting necesitan intervención antes de considerarlo "mantenible" sin reservas.
+Conclusión: el núcleo funcional está saneado y el proyecto pasa su propio gate de calidad; la única pieza que impide calificarlo de "plenamente mantenible" es el tamaño del entrypoint, que es un refactor arquitectónico a planificar aparte.
 
 ---
 
-## Métricas generales
+## Métricas generales (antes → después)
 
-| Métrica | Valor |
-|---|---|
-| LOC de producción (sin venv/tests) | ~58 600 |
-| Archivos Python de producción | 12 archivos > 1000 LOC |
-| Archivo más grande | `apileaks.py` — 8334 LOC |
-| Funciones de producción | 1217 |
-| Funciones > 100 líneas | 84 |
-| Funciones > 200 líneas | 13 |
-| Errores de `ruff` (config del repo) | 2427 (2137 autofijables) |
-| `except Exception` amplios | 333 |
-| `except Exception` que silencian con `pass` | 6 |
-| `print()` en código de producción | 33 |
-| Archivos de test | 197 (2337 tests colectados) |
+| Métrica | Antes | Después |
+|---|---|---|
+| Errores de `ruff` (scope del CI) | 2427 | **0** ✅ |
+| `ruff format --check` | falla | **pasa** ✅ |
+| Funciones duplicadas a nivel de módulo | 10 (9 en `apileaks.py` + 1 en `wordlist_manager.py`) | **0** ✅ |
+| Código muerto duplicado eliminado | — | ~871 líneas |
+| `except Exception: pass` (silenciosos amplios) | 8 | **0** ✅ |
+| XXE en parseo de XML no confiable | presente | **mitigado** (`defusedxml`) ✅ |
+| Imports duplicados/muertos (F401/F811) | 151 | **0** ✅ |
+| LOC de producción (sin venv/tests) | ~58 600 | ~59 400¹ |
+| Archivo más grande | `apileaks.py` 8334 LOC | `apileaks.py` 8925 LOC¹ |
+| Funciones > 200 líneas | 13 | 14¹ |
+| Suite de tests | 2337 colectados | **2332 passed, 5 skipped, 0 failed** ✅ |
+
+¹ El aumento de LOC/funciones largas se debe al reformateo de `ruff format` (un argumento por línea en llamadas largas, literales expandidos), no a lógica nueva: el código muerto sí se eliminó (0 duplicados verificado por AST). El tamaño del monolito sigue siendo deuda pendiente.
 
 ---
 
@@ -60,7 +61,7 @@ Conclusión: el núcleo funcional es recuperable, pero `apileaks.py` y el lintin
 
 ### 🔴 Alta
 
-#### 1. Funciones duplicadas (y divergentes) en `apileaks.py`
+#### 1. Funciones duplicadas (y divergentes) en `apileaks.py` — ✅ RESUELTO
 Hay **12 funciones definidas dos veces** en el mismo archivo; Python se queda con la última definición, dejando la primera como **código muerto**:
 
 ```
@@ -73,14 +74,23 @@ Lo más grave: las dos copias de `_run_dir_core` (líneas **3376** y **3853**, ~
 
 **Acción:** eliminar las copias muertas, consolidar en una sola definición y verificar con tests.
 
-#### 2. Gate de calidad de CI fallando
+> **Resuelto:** del listado inicial de 12 nombres, el análisis por *scope* reveló que `_run`, `_probe` y `_scan_one` **no** eran duplicados reales (helpers anidados en funciones distintas o dentro de padres duplicados). Los **9 duplicados reales a nivel de módulo** se consolidaron conservando la copia viva (la segunda, que Python ejecuta) y eliminando la muerta — en todos los casos la copia viva era igual o superior (p. ej. `_run_spec_brute` tenía 47 líneas extra con el `return` y el resumen que a la muerta le faltaban). Se detectó y eliminó además un 10º duplicado fuera de `apileaks.py` (`_normalise_catalogue` en `utils/wordlist_manager.py`, cuya primera copia era un stub vacío). Verificado por AST (0 duplicados) y con la suite completa.
+
+#### 2. Gate de calidad de CI fallando — ✅ RESUELTO
 `.github/workflows/code-quality.yml` ejecuta `ruff check .` y `ruff format --check` con exclusiones `venv,tests,.hypothesis,ci-cd,examples`. Con **2427 errores**, ese job está (o debería estar) en rojo en cada push a `main`. Un gate que no pasa pierde su valor como control de calidad.
 
 **Acción:** aplicar `ruff check . --fix` (2137 autofijables) y revisar manualmente el resto, luego mantener el gate verde.
 
+> **Resuelto:** `ruff check . --fix` + `ruff format .` + ~20 arreglos manuales → **0 errores**; `ruff check` y `ruff format --check` pasan con el scope exacto del CI.
+
+#### S1. XXE latente en el parseo de XML no confiable — ✅ RESUELTO (seguridad)
+`utils/import_sources.py` parsea exports XML de Burp Suite **subidos por el usuario** (entrada no confiable). Por un orden de imports accidental, el alias `ET` resolvía a `xml.etree.ElementTree` (stdlib) en vez de `defusedxml`, dejando el parseo expuesto a **XXE / expansión de entidades externas** (p. ej. exfiltración de `file:///etc/passwd` o SSRF vía entidades). El import de `defusedxml` estaba presente pero quedaba sombreado y sin uso.
+
+**Acción / Resuelto:** el parseo ahora usa `defusedxml.ElementTree` (bloquea DTD y entidades externas por defecto); `xml.etree.ElementTree` se conserva únicamente para la anotación de tipo `Element`. Se endureció también `ci-cd/scripts/report_generator.py` (parseo de JUnit XML) con `defusedxml` como defensa en profundidad. `utils/report_generator.py` solo serializa XML generado por nosotros (no es vector) y queda igual. **Verificado**: un payload con entidad externa es rechazado con `EntitiesForbidden`.
+
 ### 🟠 Media
 
-#### 3. Monolito del entrypoint
+#### 3. Monolito del entrypoint — ⏳ PENDIENTE (refactor mayor)
 `apileaks.py` concentra 8334 líneas, 127 funciones y una sola clase. Varias funciones son enormes:
 
 | Función | Líneas |
@@ -96,35 +106,37 @@ Lo más grave: las dos copias de `_run_dir_core` (líneas **3376** y **3853**, ~
 
 **Acción:** extraer la lógica de los comandos CLI a los paquetes `cli/`, `core/` y `modules/` (que ya existen), dejando `apileaks.py` como capa delgada de orquestación.
 
-#### 4. Imports duplicados y muertos
+#### 4. Imports duplicados y muertos — ✅ RESUELTO
 - **F811** (redefinición de import sin usar): 45 casos. Bloques de import enteros aparecen repetidos — por ejemplo en `apileaks.py` (`import_schema`, `import_postman_schema` listados dos veces) y en `modules/owasp/function_level_auth.py` (todo el bloque `json, re, uuid, dataclass, ...` re-importado en las líneas 43-49). Son artefactos de merge.
 - **F401** (imports sin usar): 106 casos. Peores ofensores: `modules/owasp/auth_testing.py` (10), `utils/replay.py` (7), `modules/owasp/bola_testing.py` (7).
 
-#### 5. Manejo de errores demasiado amplio
-333 bloques `except Exception`, de los cuales 6 silencian con `pass`. Capturar `Exception` de forma genérica oculta fallos reales y complica el debugging. (Positivo: no hay `except:` desnudos.)
+#### 5. Manejo de errores demasiado amplio — ✅ RESUELTO (los silenciosos)
+333 bloques `except Exception`, de los cuales 8 silencian con `pass` (`except Exception: pass`). Capturar `Exception` de forma genérica oculta fallos reales y complica el debugging. (Positivo: no hay `except:` desnudos.)
 
 **Acción:** acotar a excepciones específicas donde sea posible y, como mínimo, loguear antes de continuar.
 
+> **Resuelto:** los **8** `except Exception: pass` amplios se acotaron a excepciones específicas (`jwt_utils` → `(ValueError, TypeError, UnsupportedAlgorithm)`; `apileaks.py` → `OSError` / `(ValueError, TypeError, OverflowError, OSError)` + log debug; `payload_generator` → `(ValueError, TypeError, AttributeError)`). Los ~323 `except Exception` restantes **sí** manejan el error (logean o retornan) y no se tocaron. Los `except` con excepción específica + `pass` (p. ej. `except json.JSONDecodeError: pass`) son un patrón best-effort legítimo y se dejaron como están.
+
 ### 🟡 Baja
 
-#### 6. API de tipado obsoleta (pre-PEP 585/604)
+#### 6. API de tipado obsoleta (pre-PEP 585/604) — ✅ RESUELTO (vía `ruff`)
 - **UP006** (622): `Dict`/`List` de `typing` en vez de `dict`/`list`.
 - **UP045** (208) / **UP007** (3): `Optional[X]`/`Union` en vez de `X | None`.
 - **UP035** (126): imports deprecados de `typing`.
 
 El proyecto declara `requires-python = ">=3.11"`, así que la sintaxis moderna está disponible. Mayormente autofijable.
 
-#### 7. Ruido de formato
+#### 7. Ruido de formato — ✅ RESUELTO (vía `ruff format`)
 - **W293** (1122): líneas en blanco con espacios.
 - **W291/W292** (92): espacios finales / falta newline al final del archivo.
 - **I001** (44): imports sin ordenar.
 
 Todo autofijable con `ruff` + `ruff format`.
 
-#### 8. `print()` en producción
+#### 8. `print()` en producción — ⏳ PENDIENTE (bajo impacto)
 33 `print()` fuera de `examples/`/`ci-cd/`. El proyecto usa `structlog`; conviene centralizar la salida en el logger.
 
-#### 9. Uso extendido de `Any`
+#### 9. Uso extendido de `Any` — ⏳ PENDIENTE (bajo impacto)
 206 apariciones de `Any`/`Dict[str, Any]` en firmas. Reduce el valor del tipado estático (hay `mypy` en dependencias de dev). Oportunidad de reforzar contratos con modelos Pydantic (ya en uso).
 
 ---
@@ -139,13 +151,14 @@ Todo autofijable con `ruff` + `ruff format`.
 
 ---
 
-## Plan de remediación sugerido (orden recomendado)
+## Plan de remediación (estado)
 
-1. **Eliminar las 12 funciones duplicadas de `apileaks.py`** y verificar con la suite de tests (alta prioridad: hay divergencia real).
-2. **`ruff check . --fix` + `ruff format .`** para liquidar los ~2137 autofijables y poner el CI en verde.
-3. Resolver manualmente F401/F811 restantes y los imports duplicados (artefactos de merge).
-4. Acotar los `except Exception` que silencian con `pass` (6 casos) y añadir logging.
-5. A medio plazo: descomponer `apileaks.py` moviendo lógica a los paquetes existentes y partir las funciones > 200 líneas.
-6. Reforzar tipos: reducir `Any`, migrar a PEP 585/604.
+1. ✅ **Eliminar las funciones duplicadas de `apileaks.py`** y verificar con la suite (9 reales consolidadas + 1 en `wordlist_manager.py`).
+2. ✅ **`ruff check . --fix` + `ruff format .`** → CI en verde (0 errores).
+3. ✅ Resolver manualmente F401/F811 restantes y los imports duplicados.
+4. ✅ Acotar los `except Exception: pass` (8 casos) y añadir logging donde aplica.
+5. ✅ **(Seguridad)** Reparar el XXE en el parseo de XML no confiable (`defusedxml`).
+6. ⏳ **A medio plazo:** descomponer `apileaks.py` moviendo lógica a los paquetes existentes y partir las funciones > 200 líneas (refactor mayor — hacer con la suite de tests delante).
+7. ⏳ Reforzar tipos (reducir `Any`, 206 usos) y mover los 33 `print()` de producción a `structlog` (bajo impacto).
 
-> Nota: los puntos 1-4 son de bajo riesgo y alto impacto; el punto 5 es un refactor mayor que conviene hacer con cobertura de tests delante.
+> Nota: los puntos 1-5 ya están aplicados (bajo riesgo, alto impacto, suite verde). Los puntos 6-7 quedan como deuda pendiente; el 6 es un refactor arquitectónico a planificar aparte.
