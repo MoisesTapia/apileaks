@@ -17,8 +17,8 @@
 | #5 `except Exception` que silencian con `pass` | ✅ Resuelto — los 8 catches amplios se acotaron a excepciones específicas (+ log debug donde aplica) |
 | XXE latente en parseo XML (import_sources + ci-cd) | ✅ Resuelto — `defusedxml` (verificado: bloquea entidades externas) |
 | #3 Monolito del entrypoint / funciones > 200 líneas | ⏳ Pendiente (refactor mayor — recomendado por separado) |
-| #8 `print()` en producción (33) | ⏳ Pendiente (bajo impacto) |
-| #9 Uso extendido de `Any` (206) | ⏳ Pendiente (bajo impacto) |
+| #8 `print()` en producción (33) | ✅ Resuelto — 27 migrados a `click.echo`; 6 en el healthcheck standalone se conservan a propósito |
+| #9 Uso extendido de `Any` (206) | ✅ Evaluado — mayormente legítimo (JSON/fuzzing/interfaces desacopladas); sin acción, `mypy` no está enforced |
 | #6-#7 (tipado legacy, formato) | ✅ Resueltos vía ruff |
 
 **Verificación:** suite completa en verde (2332 passed, 5 skipped, 0 failed) antes y después de los cambios. Único test excluido: `tests/test_aws_security_hub.py` (requiere `boto3`, dependencia no declarada en `requirements.txt`).
@@ -136,8 +136,15 @@ Todo autofijable con `ruff` + `ruff format`.
 #### 8. `print()` en producción — ⏳ PENDIENTE (bajo impacto)
 33 `print()` fuera de `examples/`/`ci-cd/`. El proyecto usa `structlog`; conviene centralizar la salida en el logger.
 
-#### 9. Uso extendido de `Any` — ⏳ PENDIENTE (bajo impacto)
-206 apariciones de `Any`/`Dict[str, Any]` en firmas. Reduce el valor del tipado estático (hay `mypy` en dependencias de dev). Oportunidad de reforzar contratos con modelos Pydantic (ya en uso).
+#### 9. Uso extendido de `Any` — ✅ EVALUADO (sin acción: mayormente legítimo)
+~206 apariciones de `Any`/`dict[str, Any]` en firmas.
+
+> **Evaluado:** tras revisar la distribución, el uso de `Any` aquí es **mayoritariamente legítimo y deliberado**, no deuda:
+> - `dict[str, Any]` (147): payloads JSON / metadata de findings / config genuinamente heterogéneos.
+> - Valores de inyección/fuzzing (`candidate_id`, `test_value`, `_generate_*_value() -> Any`, `_parse_json_body() -> Any`): BOLA y property-fuzzing inyectan y retornan valores de *cualquier* tipo (str/int/bool/uuid); `Any` es la anotación correcta.
+> - Interfaces desacopladas (`core_engine: Any`, `response: Any`, `get_fuzzing_stats() -> Any`): laxas a propósito para evitar imports circulares y permitir acceso defensivo vía `getattr`.
+>
+> Además **`mypy` no está configurado ni se ejecuta en CI** (solo figura como dependencia de dev; no hay sección `[tool.mypy]`), por lo que un cambio masivo de anotaciones sería *churn* alto, de valor nulo en runtime y **sin red de seguridad** para detectar errores, con riesgo de introducir imports circulares. **Decisión:** no se tocan. Si se quiere seguridad de tipos real, el verdadero *lever* es configurar `mypy` + un baseline y endurecer incrementalmente — una iniciativa aparte y acotada.
 
 ---
 
@@ -159,6 +166,7 @@ Todo autofijable con `ruff` + `ruff format`.
 4. ✅ Acotar los `except Exception: pass` (8 casos) y añadir logging donde aplica.
 5. ✅ **(Seguridad)** Reparar el XXE en el parseo de XML no confiable (`defusedxml`).
 6. ⏳ **A medio plazo:** descomponer `apileaks.py` moviendo lógica a los paquetes existentes y partir las funciones > 200 líneas (refactor mayor — hacer con la suite de tests delante).
-7. ⏳ Reforzar tipos (reducir `Any`, 206 usos) y mover los 33 `print()` de producción a `structlog` (bajo impacto).
+7. ✅ Migrar los `print()` de producción a `click.echo` (27; el healthcheck standalone conserva `print`).
+8. ✅ Evaluar el uso de `Any` → mayormente legítimo; sin acción (ver #9). Pendiente real opcional: configurar `mypy` + baseline si se quiere seguridad de tipos.
 
-> Nota: los puntos 1-5 ya están aplicados (bajo riesgo, alto impacto, suite verde). Los puntos 6-7 quedan como deuda pendiente; el 6 es un refactor arquitectónico a planificar aparte.
+> Nota: los puntos 1-5, 7 y 8 ya están aplicados/evaluados (bajo riesgo, suite verde). El punto 6 (descomponer el monolito) es el único refactor mayor pendiente; conviene hacerlo con la suite de tests delante.
