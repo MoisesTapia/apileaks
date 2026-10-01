@@ -20,6 +20,7 @@ from cli.config_builders import (
     _load_spec_schema,
     create_default_config,
     create_enhanced_config,
+    resolve_max_depth,
 )
 from cli.module_options import auth_options, bola_options
 from cli.output import (
@@ -39,10 +40,14 @@ from cli.parsers import (
     _require_target_or_config,
     _validate_confirm_hits,
     load_user_agents_from_file,
+    parse_auth_context_option,
+    parse_basic_auth,
+    parse_header_options,
     parse_response_codes,
     parse_status_codes,
     parse_target_file,
     prepare_output_filename,
+    validate_basic_auth_options,
     validate_header_options,
     validate_user_agent_options,
 )
@@ -53,9 +58,13 @@ from cli.runner import (
     run_enhanced_apileak,
 )
 from cli.shared_options import (
+    _validate_ca_bundle,  # noqa: F401  re-exported (public surface / tests)
+    _validate_client_cert,  # noqa: F401  re-exported (public surface / tests)
     _validate_concurrency,  # noqa: F401  re-exported: tests patch via apileaks namespace
     _validate_depth,
     _validate_max_requests,  # noqa: F401  re-exported
+    _validate_methods,
+    _validate_resolve,  # noqa: F401  re-exported (public surface / tests)
     _validate_retries,  # noqa: F401  re-exported
     _validate_timeout,  # noqa: F401  re-exported
     concurrency_options,
@@ -63,11 +72,12 @@ from cli.shared_options import (
     matcher_filter_options,
     request_context_options,
     resilience_options,
+    tls_options,
     transversal_options,
 )
 from core import APILeakCore, ConfigurationManager, setup_logging
 from core import __version__ as APILEAK_VERSION
-from core.config import AuthContext, AuthType, load_actor_profiles, load_unauthorized_assertions
+from core.config import load_actor_profiles, load_unauthorized_assertions
 from core.logging import get_logger
 from modules.fuzzing.markers import (
     FuzzMode,
@@ -104,7 +114,6 @@ from utils.discovery_session import (
     parse_status_filter,
     status_code_class,
 )
-from utils.http_client import parse_resolve
 from utils.jwt_attack_engine import JWTAttackEngine  # noqa: F401  re-exported (public surface)
 from utils.response_selector import (
     DiscoveryResultEx,
@@ -132,87 +141,6 @@ from utils.triage_table import render_triage_table
 # truth — BUG-013 fix). They are used directly by the Click option decorators
 # on the ``dir`` and ``par`` commands below.
 # ---------------------------------------------------------------------------
-
-
-SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
-
-
-def _validate_methods(ctx, param, value):
-    """Click callback: parse/normalize --methods and reject invalid values.
-
-    ``--methods`` is a comma-separated list of HTTP methods that drives the
-    ParameterFuzzer's injection-point selection (query-carrying vs body-carrying
-    methods). Supported tokens are ``{GET, POST, PUT, PATCH, DELETE}``,
-    case-insensitive. An empty/whitespace-only value is rejected (Requirement
-    6.4) and a value containing no supported HTTP method is rejected while naming
-    the offending value (Requirement 6.5), both before any request is issued.
-    Unsupported tokens are ignored only when at least one supported token is
-    present. Returns the normalized (upper-cased, de-duplicated, order-preserving)
-    list of supported methods written to ``fuzzing.parameters.methods``
-    (Requirement 6.1).
-    """
-    if value is None or not value.strip():
-        raise click.BadParameter("--methods must not be empty or whitespace-only")
-    tokens = [tok.strip().upper() for tok in value.split(",") if tok.strip()]
-    normalized = []
-    for tok in tokens:
-        if tok in SUPPORTED_METHODS and tok not in normalized:
-            normalized.append(tok)
-    if not normalized:
-        raise click.BadParameter(
-            f"--methods contains no supported HTTP method (got {value!r}); "
-            f"supported methods are {', '.join(SUPPORTED_METHODS)}"
-        )
-    return normalized
-
-
-def _validate_client_cert(ctx, param, value):
-    """Click callback: validate --client-cert and return the parsed value.
-
-    Accepts either a single ``PATH`` (combined cert+key PEM) or a ``cert:key``
-    pair. Each referenced path must exist and be readable, otherwise a
-    descriptive error names the unreadable path and no Endpoint_Discovery runs
-    (Requirement 29.6). Returns either the path string or a ``(cert, key)`` tuple
-    suitable for httpx's ``cert`` kwarg (Requirement 29.1).
-    """
-    if value is None:
-        return None
-    if ":" in value:
-        cert_path, key_path = value.split(":", 1)
-        _assert_readable(cert_path, "--client-cert")
-        _assert_readable(key_path, "--client-cert key")
-        return (cert_path, key_path)
-    _assert_readable(value, "--client-cert")
-    return value
-
-
-def _validate_ca_bundle(ctx, param, value):
-    """Click callback: validate --ca-bundle path readability before discovery.
-
-    The custom CA bundle path must exist and be readable; otherwise a descriptive
-    error names the unreadable path and no Endpoint_Discovery runs (Requirement
-    29.6). Returns the path unchanged (Requirement 29.2).
-    """
-    if value is None:
-        return None
-    _assert_readable(value, "--ca-bundle")
-    return value
-
-
-def _validate_resolve(ctx, param, value):
-    """Click callback: validate --resolve as a host:ip pair before discovery.
-
-    Delegates to ``parse_resolve`` so a value not expressed as ``host:ip`` is
-    rejected with a descriptive error naming the value and no Endpoint_Discovery
-    runs (Requirement 29.7). Returns the parsed ``(host, ip)`` tuple (Requirement
-    29.4).
-    """
-    if value is None:
-        return None
-    try:
-        return parse_resolve(value)
-    except ValueError as exc:
-        raise click.BadParameter(str(exc)) from exc
 
 
 def _validate_secret_patterns(ctx, param, value):
@@ -259,133 +187,6 @@ def _validate_secret_patterns(ctx, param, value):
             ) from exc
         patterns[name] = pattern
     return patterns
-
-
-def resolve_max_depth(cli_depth: int | None) -> int:
-    """Resolve the effective recursion depth with documented precedence.
-
-    Precedence: explicit CLI ``--depth`` value > ``APILEAK_MAX_DEPTH`` env var >
-    default 3 (Requirements 17.6, 17.7, 17.8).
-    """
-    if cli_depth is not None:  # CLI wins (17.6)
-        return cli_depth
-    return int(os.getenv("APILEAK_MAX_DEPTH", "3"))  # env, else default 3 (17.7, 17.8)
-
-
-def parse_header_options(header):
-    """Parse repeatable ``-H``/``--header`` ``Name: Value`` strings into a dict.
-
-    Each value is split on the first colon; the name and value are stripped.
-    Later values for the same header name win. The resulting dict is merged into
-    ``HeaderFuzzingConfig.custom_headers`` so the headers ride the existing
-    custom-header plumbing and are applied to every Discovery_Request
-    (Requirement 24.2).
-    """
-    parsed = {}
-    for raw in header or ():
-        name, sep, value = raw.partition(":")
-        # A missing separator yields a valueless header name; the malformed-value
-        # validation lives in the conflict-validation subtask (Requirement 24.6
-        # is scoped to --basic-auth).
-        parsed[name.strip()] = value.strip() if sep else ""
-    return parsed
-
-
-def parse_basic_auth(basic_auth):
-    """Split a ``--basic-auth`` ``user:pass`` value into ``(username, password)``.
-
-    Returns ``None`` when no value is supplied. The colon-separator validation
-    (Requirement 24.6) and the ``--jwt`` conflict check (Requirement 24.5) are
-    handled by the conflict-validation subtask before any discovery runs; this
-    helper only parses an already-accepted value.
-    """
-    if not basic_auth:
-        return None
-    username, _, password = basic_auth.partition(":")
-    return (username, password)
-
-
-def parse_auth_context_option(values):
-    """Build one :class:`AuthContext` per ``--auth-context`` option value.
-
-    Format: ``user:token[:privilege]`` (Requirement 20.1).
-
-    - Each value is split on ``:`` with ``maxsplit=2`` so a token that itself
-      contains ``:`` (e.g. a JWT is dot-delimited, but bearer values may embed
-      colons) survives intact in the second segment.
-    - When a third ``:privilege`` segment is present, it sets the AuthContext
-      ``privilege_level`` (Requirement 20.3); otherwise the privilege defaults
-      to ``1``.
-    - A value that omits the ``:`` separator between user and token is rejected
-      with a descriptive :class:`click.BadParameter` BEFORE any request is
-      issued (Requirement 20.5).
-
-    Returns a ``List[AuthContext]`` — one context per supplied value
-    (Requirement 20.2). An empty/unspecified ``values`` yields an empty list so
-    the caller can preserve the existing single-``--jwt`` behavior
-    (Requirements 20.4, 26.2).
-    """
-    contexts = []
-    for value in values or ():
-        if ":" not in value:
-            raise click.BadParameter(
-                f"--auth-context must be in the form user:token[:privilege] "
-                f"(got {value!r}): missing ':' separator between user and token."
-            )
-        parts = value.split(":", 2)
-        name, token = parts[0], parts[1]
-        privilege_level = 1
-        if len(parts) == 3 and parts[2] != "":
-            try:
-                privilege_level = int(parts[2])
-            except ValueError:
-                raise click.BadParameter(
-                    f"--auth-context privilege suffix must be an integer "
-                    f"(got {parts[2]!r} in {value!r})."
-                ) from None
-        contexts.append(
-            AuthContext(
-                name=name,
-                type=AuthType.BEARER,
-                token=token,
-                privilege_level=privilege_level,
-            )
-        )
-    return contexts
-
-
-def validate_basic_auth_options(basic_auth, jwt):
-    """Validate ``--basic-auth`` against conflicts and malformed values.
-
-    Mirrors :func:`validate_user_agent_options`' exit-before-discovery pattern:
-    on a problem it prints a descriptive error to stderr and ``sys.exit(1)`` so
-    NO Endpoint_Discovery is performed.
-
-    - ``--basic-auth`` together with ``--jwt`` is rejected as a conflicting set
-      of authentication options (Requirement 24.5); they would otherwise fight
-      over the single anonymous ``authentication.contexts[0]`` (the standard
-      ``if jwt:`` override would clobber the basic context to ``bearer``).
-    - A ``--basic-auth`` value without a ``:`` separating the user from the
-      password is rejected as malformed (Requirement 24.6).
-    """
-    if not basic_auth:
-        return
-
-    if jwt:
-        click.echo(
-            "Error: Conflicting authentication options: --basic-auth and --jwt "
-            "cannot be used together.",
-            err=True,
-        )
-        sys.exit(1)
-
-    if ":" not in basic_auth:
-        click.echo(
-            f"Error: Malformed --basic-auth value '{basic_auth}': expected "
-            "'user:pass' with a ':' separating the username from the password.",
-            err=True,
-        )
-        sys.exit(1)
 
 
 def _read_wordlist_entries(source):
@@ -593,37 +394,6 @@ def _resolve_par_candidates(wordlists):
 # Each stack applies its options bottom-up so that when it is used as a single
 # decorator the resulting option display/registration order matches the order
 # in which the options are written here (top to bottom).
-
-
-def tls_options(f):
-    """Shared TLS-transport options: ``--client-cert``, ``--ca-bundle``, ``--resolve``."""
-    f = click.option(
-        "--resolve",
-        "resolve",
-        metavar="host:ip",
-        default=None,
-        callback=_validate_resolve,
-        help="Override DNS resolution for the named host to the supplied IP for every "
-        "discovery request (e.g. api.example.com:127.0.0.1).",
-    )(f)
-    f = click.option(
-        "--ca-bundle",
-        "ca_bundle",
-        metavar="PATH",
-        default=None,
-        callback=_validate_ca_bundle,
-        help="Custom CA bundle used to verify target certificates for every discovery request.",
-    )(f)
-    f = click.option(
-        "--client-cert",
-        "client_cert",
-        metavar="PATH[:KEY]",
-        default=None,
-        callback=_validate_client_cert,
-        help="Client certificate for mutual TLS, presented on every discovery request. "
-        "A combined cert+key PEM PATH, or a cert:key pair of paths.",
-    )(f)
-    return f
 
 
 @click.group()

@@ -16,6 +16,11 @@ from pathlib import Path
 
 import click
 
+from core.config import (
+    AuthContext,
+    AuthType,
+)
+
 
 def parse_response_codes(response_filter: str) -> list:
     """Parse response code filter string into list of integers"""
@@ -308,3 +313,124 @@ def _count_by_severity(findings):
         if name in counts:
             counts[name] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Authentication option parsing (shared by dir/par/scan/spec-brute)
+# ---------------------------------------------------------------------------
+
+
+def parse_header_options(header):
+    """Parse repeatable ``-H``/``--header`` ``Name: Value`` strings into a dict.
+
+    Each value is split on the first colon; the name and value are stripped.
+    Later values for the same header name win. The resulting dict is merged into
+    ``HeaderFuzzingConfig.custom_headers`` so the headers ride the existing
+    custom-header plumbing and are applied to every Discovery_Request
+    (Requirement 24.2).
+    """
+    parsed = {}
+    for raw in header or ():
+        name, sep, value = raw.partition(":")
+        # A missing separator yields a valueless header name; the malformed-value
+        # validation lives in the conflict-validation subtask (Requirement 24.6
+        # is scoped to --basic-auth).
+        parsed[name.strip()] = value.strip() if sep else ""
+    return parsed
+
+
+def parse_basic_auth(basic_auth):
+    """Split a ``--basic-auth`` ``user:pass`` value into ``(username, password)``.
+
+    Returns ``None`` when no value is supplied. The colon-separator validation
+    (Requirement 24.6) and the ``--jwt`` conflict check (Requirement 24.5) are
+    handled by the conflict-validation subtask before any discovery runs; this
+    helper only parses an already-accepted value.
+    """
+    if not basic_auth:
+        return None
+    username, _, password = basic_auth.partition(":")
+    return (username, password)
+
+
+def parse_auth_context_option(values):
+    """Build one :class:`AuthContext` per ``--auth-context`` option value.
+
+    Format: ``user:token[:privilege]`` (Requirement 20.1).
+
+    - Each value is split on ``:`` with ``maxsplit=2`` so a token that itself
+      contains ``:`` (e.g. a JWT is dot-delimited, but bearer values may embed
+      colons) survives intact in the second segment.
+    - When a third ``:privilege`` segment is present, it sets the AuthContext
+      ``privilege_level`` (Requirement 20.3); otherwise the privilege defaults
+      to ``1``.
+    - A value that omits the ``:`` separator between user and token is rejected
+      with a descriptive :class:`click.BadParameter` BEFORE any request is
+      issued (Requirement 20.5).
+
+    Returns a ``List[AuthContext]`` — one context per supplied value
+    (Requirement 20.2). An empty/unspecified ``values`` yields an empty list so
+    the caller can preserve the existing single-``--jwt`` behavior
+    (Requirements 20.4, 26.2).
+    """
+    contexts = []
+    for value in values or ():
+        if ":" not in value:
+            raise click.BadParameter(
+                f"--auth-context must be in the form user:token[:privilege] "
+                f"(got {value!r}): missing ':' separator between user and token."
+            )
+        parts = value.split(":", 2)
+        name, token = parts[0], parts[1]
+        privilege_level = 1
+        if len(parts) == 3 and parts[2] != "":
+            try:
+                privilege_level = int(parts[2])
+            except ValueError:
+                raise click.BadParameter(
+                    f"--auth-context privilege suffix must be an integer "
+                    f"(got {parts[2]!r} in {value!r})."
+                ) from None
+        contexts.append(
+            AuthContext(
+                name=name,
+                type=AuthType.BEARER,
+                token=token,
+                privilege_level=privilege_level,
+            )
+        )
+    return contexts
+
+
+def validate_basic_auth_options(basic_auth, jwt):
+    """Validate ``--basic-auth`` against conflicts and malformed values.
+
+    Mirrors :func:`validate_user_agent_options`' exit-before-discovery pattern:
+    on a problem it prints a descriptive error to stderr and ``sys.exit(1)`` so
+    NO Endpoint_Discovery is performed.
+
+    - ``--basic-auth`` together with ``--jwt`` is rejected as a conflicting set
+      of authentication options (Requirement 24.5); they would otherwise fight
+      over the single anonymous ``authentication.contexts[0]`` (the standard
+      ``if jwt:`` override would clobber the basic context to ``bearer``).
+    - A ``--basic-auth`` value without a ``:`` separating the user from the
+      password is rejected as malformed (Requirement 24.6).
+    """
+    if not basic_auth:
+        return
+
+    if jwt:
+        click.echo(
+            "Error: Conflicting authentication options: --basic-auth and --jwt "
+            "cannot be used together.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if ":" not in basic_auth:
+        click.echo(
+            f"Error: Malformed --basic-auth value '{basic_auth}': expected "
+            "'user:pass' with a ':' separating the username from the password.",
+            err=True,
+        )
+        sys.exit(1)

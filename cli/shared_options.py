@@ -21,6 +21,11 @@ This module contains no OWASP detection logic; it only declares CLI options.
 
 import click
 
+from cli.parsers import _assert_readable
+from utils.http_client import parse_resolve
+
+SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
 # ---------------------------------------------------------------------------
 # Validation callbacks (copied verbatim from apileaks.py so validation behavior
 # on every command that accepts Transversal_Options is byte-identical to the
@@ -449,5 +454,119 @@ def machine_output_options(f):
         "output_format",
         type=click.Choice(["csv", "jsonl"]),
         help="Write a machine-readable discovery output in the selected format (csv or jsonl)",
+    )(f)
+    return f
+
+
+# ---------------------------------------------------------------------------
+# TLS / method / secret validators and the tls_options group (dir/par)
+# ---------------------------------------------------------------------------
+
+
+def _validate_methods(ctx, param, value):
+    """Click callback: parse/normalize --methods and reject invalid values.
+
+    ``--methods`` is a comma-separated list of HTTP methods that drives the
+    ParameterFuzzer's injection-point selection (query-carrying vs body-carrying
+    methods). Supported tokens are ``{GET, POST, PUT, PATCH, DELETE}``,
+    case-insensitive. An empty/whitespace-only value is rejected (Requirement
+    6.4) and a value containing no supported HTTP method is rejected while naming
+    the offending value (Requirement 6.5), both before any request is issued.
+    Unsupported tokens are ignored only when at least one supported token is
+    present. Returns the normalized (upper-cased, de-duplicated, order-preserving)
+    list of supported methods written to ``fuzzing.parameters.methods``
+    (Requirement 6.1).
+    """
+    if value is None or not value.strip():
+        raise click.BadParameter("--methods must not be empty or whitespace-only")
+    tokens = [tok.strip().upper() for tok in value.split(",") if tok.strip()]
+    normalized = []
+    for tok in tokens:
+        if tok in SUPPORTED_METHODS and tok not in normalized:
+            normalized.append(tok)
+    if not normalized:
+        raise click.BadParameter(
+            f"--methods contains no supported HTTP method (got {value!r}); "
+            f"supported methods are {', '.join(SUPPORTED_METHODS)}"
+        )
+    return normalized
+
+
+def _validate_client_cert(ctx, param, value):
+    """Click callback: validate --client-cert and return the parsed value.
+
+    Accepts either a single ``PATH`` (combined cert+key PEM) or a ``cert:key``
+    pair. Each referenced path must exist and be readable, otherwise a
+    descriptive error names the unreadable path and no Endpoint_Discovery runs
+    (Requirement 29.6). Returns either the path string or a ``(cert, key)`` tuple
+    suitable for httpx's ``cert`` kwarg (Requirement 29.1).
+    """
+    if value is None:
+        return None
+    if ":" in value:
+        cert_path, key_path = value.split(":", 1)
+        _assert_readable(cert_path, "--client-cert")
+        _assert_readable(key_path, "--client-cert key")
+        return (cert_path, key_path)
+    _assert_readable(value, "--client-cert")
+    return value
+
+
+def _validate_ca_bundle(ctx, param, value):
+    """Click callback: validate --ca-bundle path readability before discovery.
+
+    The custom CA bundle path must exist and be readable; otherwise a descriptive
+    error names the unreadable path and no Endpoint_Discovery runs (Requirement
+    29.6). Returns the path unchanged (Requirement 29.2).
+    """
+    if value is None:
+        return None
+    _assert_readable(value, "--ca-bundle")
+    return value
+
+
+def _validate_resolve(ctx, param, value):
+    """Click callback: validate --resolve as a host:ip pair before discovery.
+
+    Delegates to ``parse_resolve`` so a value not expressed as ``host:ip`` is
+    rejected with a descriptive error naming the value and no Endpoint_Discovery
+    runs (Requirement 29.7). Returns the parsed ``(host, ip)`` tuple (Requirement
+    29.4).
+    """
+    if value is None:
+        return None
+    try:
+        return parse_resolve(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def tls_options(f):
+    """Shared TLS-transport options: ``--client-cert``, ``--ca-bundle``, ``--resolve``."""
+    f = click.option(
+        "--resolve",
+        "resolve",
+        metavar="host:ip",
+        default=None,
+        callback=_validate_resolve,
+        help="Override DNS resolution for the named host to the supplied IP for every "
+        "discovery request (e.g. api.example.com:127.0.0.1).",
+    )(f)
+    f = click.option(
+        "--ca-bundle",
+        "ca_bundle",
+        metavar="PATH",
+        default=None,
+        callback=_validate_ca_bundle,
+        help="Custom CA bundle used to verify target certificates for every discovery request.",
+    )(f)
+    f = click.option(
+        "--client-cert",
+        "client_cert",
+        metavar="PATH[:KEY]",
+        default=None,
+        callback=_validate_client_cert,
+        help="Client certificate for mutual TLS, presented on every discovery request. "
+        "A combined cert+key PEM PATH, or a cert:key pair of paths.",
     )(f)
     return f

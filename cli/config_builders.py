@@ -521,3 +521,14 @@ def _collect_module_configs(descriptors, opts):
                 }
             module_configs["bola_testing"] = bola_testing
     return module_configs
+
+
+def resolve_max_depth(cli_depth: int | None) -> int:
+    """Resolve the effective recursion depth with documented precedence.
+
+    Precedence: explicit CLI ``--depth`` value > ``APILEAK_MAX_DEPTH`` env var >
+    default 3 (Requirements 17.6, 17.7, 17.8).
+    """
+    if cli_depth is not None:  # CLI wins (17.6)
+        return cli_depth
+    return int(os.getenv("APILEAK_MAX_DEPTH", "3"))  # env, else default 3 (17.7, 17.8)
