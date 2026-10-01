@@ -47,11 +47,16 @@ from cli.parsers import (
     validate_user_agent_options,
 )
 from cli.shared_options import (
-    _validate_concurrency,
+    _validate_concurrency,  # noqa: F401  re-exported: tests patch via apileaks namespace
     _validate_depth,
-    _validate_max_requests,
-    _validate_retries,
-    _validate_timeout,
+    _validate_max_requests,  # noqa: F401  re-exported
+    _validate_retries,  # noqa: F401  re-exported
+    _validate_timeout,  # noqa: F401  re-exported
+    concurrency_options,
+    machine_output_options,
+    matcher_filter_options,
+    request_context_options,
+    resilience_options,
     transversal_options,
 )
 from core import APILeakCore, ConfigurationManager, setup_logging
@@ -1064,75 +1069,6 @@ def create_default_config(
 # in which the options are written here (top to bottom).
 
 
-def request_context_options(f):
-    """Shared request-context options: ``--header``/``-H``, ``--cookie``, ``--basic-auth``."""
-    f = click.option(
-        "--basic-auth",
-        "basic_auth",
-        metavar="user:pass",
-        help="HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.",
-    )(f)
-    f = click.option(
-        "--cookie",
-        "cookie",
-        metavar="COOKIE",
-        help="Raw Cookie header string applied to every discovery request.",
-    )(f)
-    f = click.option(
-        "--header",
-        "-H",
-        "header",
-        multiple=True,
-        metavar='"Name: Value"',
-        help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.',
-    )(f)
-    return f
-
-
-def resilience_options(f):
-    """Shared resilience options: ``--timeout``, ``--retries``."""
-    f = click.option(
-        "--retries",
-        "retries",
-        type=int,
-        default=None,
-        callback=_validate_retries,
-        help="Number of automatic retries for each failed discovery request "
-        "(must be >= 0; default: 2).",
-    )(f)
-    f = click.option(
-        "--timeout",
-        "timeout",
-        type=float,
-        default=None,
-        callback=_validate_timeout,
-        help="Per-request timeout in seconds applied to every discovery request "
-        "(must be > 0; default: 10).",
-    )(f)
-    return f
-
-
-def concurrency_options(f):
-    """Shared concurrency options: ``--max-requests``, ``--concurrency``."""
-    f = click.option(
-        "--concurrency",
-        "concurrency",
-        type=int,
-        default=None,
-        callback=_validate_concurrency,
-        help="Max concurrent in-flight discovery requests (default: 50).",
-    )(f)
-    f = click.option(
-        "--max-requests",
-        "max_requests",
-        type=int,
-        default=None,
-        callback=_validate_max_requests,
-        help="Global request budget for discovery (default: unbounded).",
-    )(f)
-    return f
-
-
 def tls_options(f):
     """Shared TLS-transport options: ``--client-cert``, ``--ca-bundle``, ``--resolve``."""
     f = click.option(
@@ -1160,98 +1096,6 @@ def tls_options(f):
         callback=_validate_client_cert,
         help="Client certificate for mutual TLS, presented on every discovery request. "
         "A combined cert+key PEM PATH, or a cert:key pair of paths.",
-    )(f)
-    return f
-
-
-def matcher_filter_options(f):
-    """Shared response matcher/filter options: ``--match-*`` and ``--filter-*``."""
-    f = click.option(
-        "--filter-time",
-        "filter_time",
-        multiple=True,
-        metavar="EXPR",
-        help="Exclude results whose response time (seconds) satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--filter-regex",
-        "filter_regex",
-        multiple=True,
-        metavar="REGEX",
-        help="Exclude results whose response body matches the regular expression REGEX. Repeatable.",
-    )(f)
-    f = click.option(
-        "--filter-lines",
-        "filter_lines",
-        multiple=True,
-        metavar="EXPR",
-        help="Exclude results whose response line count satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--filter-words",
-        "filter_words",
-        multiple=True,
-        metavar="EXPR",
-        help="Exclude results whose response word count satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--filter-size",
-        "filter_size",
-        multiple=True,
-        metavar="EXPR",
-        help="Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--match-time",
-        "match_time",
-        multiple=True,
-        metavar="EXPR",
-        help="Match results whose response time (seconds) satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--match-regex",
-        "match_regex",
-        multiple=True,
-        metavar="REGEX",
-        help="Match results whose response body matches the regular expression REGEX. Repeatable.",
-    )(f)
-    f = click.option(
-        "--match-lines",
-        "match_lines",
-        multiple=True,
-        metavar="EXPR",
-        help="Match results whose response line count satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--match-words",
-        "match_words",
-        multiple=True,
-        metavar="EXPR",
-        help="Match results whose response word count satisfies EXPR. Repeatable.",
-    )(f)
-    f = click.option(
-        "--match-size",
-        "match_size",
-        multiple=True,
-        metavar="EXPR",
-        help="Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.",
-    )(f)
-    return f
-
-
-def machine_output_options(f):
-    """Shared machine-readable output options: ``--output-format``, ``--output-file``."""
-    f = click.option(
-        "--output-file",
-        "output_file",
-        type=click.Path(),
-        help="Destination path for the machine-readable output (extension selects the format)",
-    )(f)
-    f = click.option(
-        "--output-format",
-        "output_format",
-        type=click.Choice(["csv", "jsonl"]),
-        help="Write a machine-readable discovery output in the selected format (csv or jsonl)",
     )(f)
     return f
 
