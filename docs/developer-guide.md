@@ -127,7 +127,7 @@ pip install mkdocs mkdocs-material
 
 #### APILeak Core Orchestrator
 - **Purpose**: Central coordination of all testing modules
-- **Location**: `core/apileak_core.py`
+- **Location**: `core/engine.py`
 - **Responsibilities**:
   - Module lifecycle management
   - Configuration distribution
@@ -136,7 +136,7 @@ pip install mkdocs mkdocs-material
 
 #### HTTP Request Engine
 - **Purpose**: Handles all HTTP communications
-- **Location**: `core/http_engine.py`
+- **Location**: `utils/http_client.py`
 - **Features**:
   - Async request handling with httpx
   - Connection pooling
@@ -146,7 +146,7 @@ pip install mkdocs mkdocs-material
 
 #### Configuration Manager
 - **Purpose**: Centralized configuration handling
-- **Location**: `core/config_manager.py`
+- **Location**: `core/config.py` (CLI config assembly in `cli/config_builders.py`)
 - **Features**:
   - YAML/JSON configuration parsing
   - Pydantic validation
@@ -155,7 +155,7 @@ pip install mkdocs mkdocs-material
 
 #### Response Analyzer
 - **Purpose**: Analyzes HTTP responses for vulnerabilities
-- **Location**: `core/response_analyzer.py`
+- **Location**: `utils/response_analyzer.py`
 - **Features**:
   - Pattern matching with regex
   - Timing analysis
@@ -167,59 +167,50 @@ pip install mkdocs mkdocs-material
 ### Directory Structure
 
 ```
-apileak/
+apileaks/
+├── apileaks.py              # Thin entry point: root Click group + command registration
+├── cli/                     # CLI layer (decomposed from the old apileaks.py monolith)
+│   ├── parsers.py           # CLI input parsing/validation helpers
+│   ├── output.py            # Console rendering (banner, summaries, listings)
+│   ├── shared_options.py    # Reusable Click option groups + validators (TLS, methods…)
+│   ├── config_builders.py   # Assemble the config dict from CLI inputs
+│   ├── runner.py            # run_enhanced_apileak (scan execution) + CI severity gate
+│   ├── module_options.py    # OWASP module CLI options
+│   ├── owasp_descriptors.py # OWASP module descriptors/metadata
+│   └── commands/            # One module per command family
+│       ├── jwt_cmds.py          # `jwt` group (decode/encode/attacks)
+│       ├── wordlist_cmds.py     # `wordlist` group (list/fetch/cache)
+│       ├── discovery_cmds.py    # `dir` / `par` / `brute` + triage/spec-brute
+│       ├── scan_cmds.py         # `scan` / `owasp` / `full` / `main`
+│       └── replay_cmds.py       # `replay`
 ├── core/                    # Core engine components
-│   ├── __init__.py
-│   ├── apileak_core.py     # Main orchestrator
-│   ├── config_manager.py   # Configuration handling
-│   ├── http_engine.py      # HTTP request engine
-│   ├── response_analyzer.py # Response analysis
-│   └── findings_collector.py # Results aggregation
+│   ├── engine.py            # Main orchestrator (APILeakCore)
+│   ├── config.py            # Configuration manager + typed config models
+│   ├── orchestrator.py      # Scan orchestration
+│   ├── logging.py           # Structured logging (structlog)
+│   └── monitoring.py        # Metrics/monitoring
 ├── modules/                 # Testing modules
-│   ├── __init__.py
-│   ├── fuzzing/            # Traditional fuzzing modules
-│   │   ├── endpoint_fuzzer.py
-│   │   ├── parameter_fuzzer.py
-│   │   └── header_fuzzer.py
-│   ├── owasp/              # OWASP-specific modules
-│   │   ├── bola_testing.py
-│   │   ├── auth_testing.py
-│   │   ├── property_auth.py
-│   │   ├── function_auth.py
-│   │   ├── resource_testing.py
-│   │   └── ssrf_testing.py
-│   └── advanced/           # Advanced features
-│       ├── waf_detection.py
-│       ├── framework_detection.py
-│       ├── payload_generator.py
-│       └── subdomain_discovery.py
-├── utils/                   # Utility functions
-│   ├── __init__.py
-│   ├── logging_utils.py
-│   ├── validation_utils.py
-│   └── encoding_utils.py
-├── templates/              # Report templates
-│   ├── html/
-│   ├── xml/
-│   └── json/
-├── wordlists/              # Testing wordlists
-│   ├── endpoints/
-│   ├── parameters/
-│   ├── headers/
-│   └── payloads/
-├── tests/                  # Test suite
-│   ├── unit/
-│   ├── integration/
-│   └── property/
-├── docs/                   # Documentation
-├── config/                 # Configuration examples
-└── reports/               # Generated reports
+│   ├── fuzzing/             # Traditional fuzzing (orchestrator.py, markers.py)
+│   ├── owasp/               # OWASP modules (bola/auth/property/function/resource/
+│   │                        #   ssrf/business_flows/inventory/security_misconfig/
+│   │                        #   unsafe_consumption + registry.py)
+│   └── advanced/            # WAF detection, framework detection, version fuzzing,
+│                            #   subdomain discovery, CORS/headers analyzers, throttling
+├── utils/                   # Utilities: http_client, response_analyzer, findings,
+│                            #   report_generator, jwt_* , discovery_* , spec_import,
+│                            #   replay, wordlist_manager, secret_scanner, etc.
+├── templates/               # Report templates
+├── wordlists/               # Testing wordlists
+├── tests/                   # Test suite (unit + integration + property-based)
+├── docs/                    # Documentation
+├── config/                  # Configuration examples
+└── reports/                 # Generated reports (gitignored)
 ```
 
 ### Naming Conventions
 
 #### Files and Directories
-- Use snake_case for Python files: `http_engine.py`
+- Use snake_case for Python files: `http_client.py`
 - Use lowercase for directories: `modules/owasp/`
 - Use descriptive names: `bola_testing.py` not `bt.py`
 
@@ -308,24 +299,19 @@ repos:
 
 ### Test Organization
 
+The suite is a flat set of ~200 `test_*.py` modules under `tests/` (plus a
+`tests/support/` package of shared helpers). Unit, integration, and
+property-based (Hypothesis) tests coexist in the same directory; the test type
+is conveyed by the file/function name rather than by subdirectories, e.g.:
+
 ```
 tests/
-├── unit/                   # Unit tests
-│   ├── test_config_manager.py
-│   ├── test_http_engine.py
-│   └── test_response_analyzer.py
-├── integration/            # Integration tests
-│   ├── test_fuzzing_flow.py
-│   ├── test_owasp_modules.py
-│   └── test_report_generation.py
-├── property/              # Property-based tests
-│   ├── test_config_properties.py
-│   ├── test_http_properties.py
-│   └── test_analysis_properties.py
-└── fixtures/              # Test fixtures
-    ├── sample_configs/
-    ├── mock_responses/
-    └── test_data/
+├── test_cli_config_env_precedence.py   # CLI behavior / integration
+├── test_bola_testing.py                # OWASP module unit tests
+├── test_status_class_partition_properties.py  # property-based (Hypothesis)
+├── test_dir_triage_e2e.py              # end-to-end flows
+├── ...                                 # ~200 modules total
+└── support/                            # shared test helpers/fixtures
 ```
 
 ### Unit Testing Guidelines

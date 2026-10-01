@@ -158,8 +158,22 @@ docker run -it --rm \
 ## Project Structure
 
 ```
-apileak/
-├── apileaks.py              # Main CLI entry point
+apileaks/
+├── apileaks.py              # Thin entry point: root Click group + command registration
+├── cli/                     # CLI layer (parsing, options, output, runner, commands)
+│   ├── parsers.py          # CLI input parsing/validation
+│   ├── output.py           # Console rendering
+│   ├── shared_options.py   # Reusable Click option groups + validators
+│   ├── config_builders.py  # Build the config dict from CLI inputs
+│   ├── runner.py           # run_enhanced_apileak + CI severity gate
+│   ├── module_options.py   # OWASP module CLI options
+│   ├── owasp_descriptors.py# OWASP module descriptors
+│   └── commands/           # One module per command family
+│       ├── jwt_cmds.py         # `jwt`
+│       ├── wordlist_cmds.py    # `wordlist`
+│       ├── discovery_cmds.py   # `dir` / `par` / `brute`
+│       ├── scan_cmds.py        # `scan` / `owasp` / `full` / `main`
+│       └── replay_cmds.py      # `replay`
 ├── core/                    # Core engine and configuration
 │   ├── __init__.py
 │   ├── engine.py           # Main orchestrator
