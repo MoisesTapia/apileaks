@@ -4,42 +4,38 @@ Implements OWASP API2 - Broken Authentication testing
 """
 
 import asyncio
-import re
-import json
 import base64
-import hmac
 import hashlib
+import hmac
+import json
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from .registry import OWASPModule
-from utils.findings import Finding, FindingsCollector
-from utils.http_client import HTTPRequestEngine, Request, Response
-from utils.safe_mode import SafeModeGuard, SAFE_METHODS, STATE_CHANGING_METHODS
-from utils.authz_baseline import (
-    extract_identifying_fields,
-    responses_identify_same_object,
-    responses_equivalent,
-    NegativeControlMixin,
-    NegativeControlBaseline,
-)
+from core.config import AuthContext, AuthTestingConfig, AuthType, Severity
+from core.logging import get_logger
 from utils import jwt_utils
-from utils.jwt_attack_response_analyzer import JWTAttackResponseAnalyzer
+from utils.authz_baseline import (
+    NegativeControlMixin,
+    responses_equivalent,
+    responses_identify_same_object,
+)
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine, Request, Response
 from utils.jwt_attack_models import (
     AttackType,
     BaselineResponse,
     RequestDetails,
     ResponseDetails,
 )
-from core.config import AuthTestingConfig, AuthContext, AuthType, Severity
+from utils.jwt_attack_response_analyzer import JWTAttackResponseAnalyzer
+from utils.safe_mode import SafeModeGuard
 from utils.typed_payload import apply_actor_profile
-from core.logging import get_logger
 
+from .registry import OWASPModule
 
 # Sentinel used to distinguish "public key not yet resolved" from a resolved
 # value of ``None`` (no public key available) so resolution runs at most once.
@@ -49,14 +45,15 @@ _UNRESOLVED = object()
 @dataclass
 class JWTToken:
     """Represents a JWT token with parsed components"""
+
     raw_token: str
-    header: Dict[str, Any]
-    payload: Dict[str, Any]
+    header: dict[str, Any]
+    payload: dict[str, Any]
     signature: str
     algorithm: str
     is_valid: bool = True
-    vulnerabilities: List[str] = None
-    
+    vulnerabilities: list[str] = None
+
     def __post_init__(self):
         if self.vulnerabilities is None:
             self.vulnerabilities = []
@@ -65,16 +62,17 @@ class JWTToken:
 @dataclass
 class AuthTestResult:
     """Result of an authentication test"""
+
     endpoint: str
     method: str
     test_type: str
-    auth_context: Optional[str]
+    auth_context: str | None
     status_code: int
     response_size: int
     response_time: float
     accessible: bool
     evidence: str
-    vulnerability_type: Optional[str] = None
+    vulnerability_type: str | None = None
 
 
 @dataclass
@@ -91,17 +89,18 @@ class OAuthFlowInputs:
     indicates whether the authorization request carries a ``state`` parameter;
     when ``False`` the missing-state sub-probe reports a finding (Req 41.4).
     """
+
     authorize_url: str
     registered_redirect_uri: str
     attacker_redirect_uri: str
-    foreign_aud_token: Optional[str] = None
+    foreign_aud_token: str | None = None
     state_present: bool = True
 
 
 class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMixin):
     """
     Authentication Testing Module for detecting Broken Authentication
-    
+
     This module implements comprehensive testing for OWASP API Security Top 10 #2:
     - Analyzes JWT vulnerabilities (weak algorithms, algorithm confusion)
     - Tests token expiration validation
@@ -109,20 +108,29 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     - Verifies weak secrets in JWT against wordlist
     - Detects endpoints accessible without authentication
     """
-    
+
     # Algorithms that are inherently weak regardless of context. Only 'none'    # qualifies: it bypasses signature verification entirely. HS256/RS256 are
     # NOT inherently weak and are labeled weak only when a weakness is
     # demonstrated (e.g. a recovered HMAC secret) - see ``_is_weak_algorithm``
     # (Requirements 9.1, 9.2).
-    WEAK_ALGORITHMS = ['none']
+    WEAK_ALGORITHMS = ["none"]
 
     # Credential-bearing query-parameter names probed by the secret-in-URL test
     # (Requirement 38.1). A VALID authentication secret is placed into each of
     # these parameters in turn and the endpoint is observed for whether the
     # URL-borne secret is accepted as valid authentication (Requirement 38.2).
     SECRET_URL_PARAM_NAMES = [
-        'access_token', 'token', 'api_key', 'apikey', 'auth',
-        'auth_token', 'jwt', 'session', 'sessionid', 'key', 'secret',
+        "access_token",
+        "token",
+        "api_key",
+        "apikey",
+        "auth",
+        "auth_token",
+        "jwt",
+        "session",
+        "sessionid",
+        "key",
+        "secret",
     ]
 
     # Response field names (lowercased) that indicate protected/personal data.
@@ -130,55 +138,91 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # severity are driven by the kind and amount of exposed data rather than the
     # presence of a single keyword such as ``email`` (Requirements 7.2, 7.3).
     PROTECTED_DATA_FIELDS = {
-        'email', 'phone', 'phone_number', 'address', 'ssn', 'password',
-        'token', 'access_token', 'refresh_token', 'api_key', 'apikey',
-        'secret', 'user_id', 'userid', 'account_id', 'accountid', 'owner_id',
-        'role', 'roles', 'permissions', 'credit_card', 'card_number',
-        'first_name', 'last_name', 'full_name', 'dob', 'date_of_birth',
-        'salary', 'balance',
+        "email",
+        "phone",
+        "phone_number",
+        "address",
+        "ssn",
+        "password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "apikey",
+        "secret",
+        "user_id",
+        "userid",
+        "account_id",
+        "accountid",
+        "owner_id",
+        "role",
+        "roles",
+        "permissions",
+        "credit_card",
+        "card_number",
+        "first_name",
+        "last_name",
+        "full_name",
+        "dob",
+        "date_of_birth",
+        "salary",
+        "balance",
     }
 
     # Subset of PROTECTED_DATA_FIELDS whose exposure is credential-grade and
     # therefore always escalates anonymous-access severity to CRITICAL.
     CREDENTIAL_DATA_FIELDS = {
-        'password', 'token', 'access_token', 'refresh_token', 'api_key',
-        'apikey', 'secret', 'credit_card', 'card_number', 'ssn',
+        "password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "apikey",
+        "secret",
+        "credit_card",
+        "card_number",
+        "ssn",
     }
-    
+
     # Common JWT header parameters
     JWT_HEADER_PARAMS = [
-        'alg',  # Algorithm
-        'typ',  # Type
-        'kid',  # Key ID
-        'jku',  # JWK Set URL
-        'jwk',  # JSON Web Key
-        'x5u',  # X.509 URL
-        'x5c',  # X.509 Certificate Chain
-        'x5t',  # X.509 Certificate SHA-1 Thumbprint
-        'crit'  # Critical
+        "alg",  # Algorithm
+        "typ",  # Type
+        "kid",  # Key ID
+        "jku",  # JWK Set URL
+        "jwk",  # JSON Web Key
+        "x5u",  # X.509 URL
+        "x5c",  # X.509 Certificate Chain
+        "x5t",  # X.509 Certificate SHA-1 Thumbprint
+        "crit",  # Critical
     ]
-    
+
     # Common JWT payload claims
     JWT_PAYLOAD_CLAIMS = [
-        'iss',  # Issuer
-        'sub',  # Subject
-        'aud',  # Audience
-        'exp',  # Expiration Time
-        'nbf',  # Not Before
-        'iat',  # Issued At
-        'jti',  # JWT ID
-        'scope',  # Scope
-        'role',   # Role
-        'permissions'  # Permissions
+        "iss",  # Issuer
+        "sub",  # Subject
+        "aud",  # Audience
+        "exp",  # Expiration Time
+        "nbf",  # Not Before
+        "iat",  # Issued At
+        "jti",  # JWT ID
+        "scope",  # Scope
+        "role",  # Role
+        "permissions",  # Permissions
     ]
-    
+
     # Unauthorized_Endpoint_Assertion classification for this module (Req 55.2,
     # 56.2): the Auth module emits within API2.
     UNAUTHORIZED_ASSERTION_CATEGORY = "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS"
     UNAUTHORIZED_ASSERTION_OWASP = "API2"
 
-    def __init__(self, config: AuthTestingConfig, http_client: HTTPRequestEngine, 
-                 auth_contexts: List[AuthContext], spec_schema=None):
+    def __init__(
+        self,
+        config: AuthTestingConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+        spec_schema=None,
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -198,7 +242,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         # Create auth context mapping
         self.auth_context_map = {ctx.name: ctx for ctx in auth_contexts}
-        
+
         # Load weak secrets wordlist
         self.weak_secrets = self._load_weak_secrets_wordlist()
 
@@ -206,7 +250,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # is reused as a known signing key to construct a validly-signed-but-
         # expired token (Requirement 8.1) and to demonstrate a weak HMAC
         # algorithm (Requirement 9.1).
-        self._recovered_secret: Optional[str] = None
+        self._recovered_secret: str | None = None
 
         # Cached resolved public-key bytes for the algorithm-confusion attack.
         # ``_UNRESOLVED`` means resolution has not run yet; ``None`` means no
@@ -214,7 +258,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self._public_key_bytes: Any = _UNRESOLVED
 
         # Track tested tokens to avoid duplicates
-        self.tested_tokens: Set[str] = set()
+        self.tested_tokens: set[str] = set()
 
         # Lazily-created BOLA redactor used to reuse the shared ``redact_secrets``
         # helper for secret-in-URL / MFA evidence (Requirements 38.3). It is
@@ -228,59 +272,69 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # the exact analyzer implementation is reused, never recreated.
         self._predictability_analyzer: Any = None
 
-        self.logger.info("Authentication Testing Module initialized",
-                        auth_contexts=len(self.auth_contexts),
-                        weak_secrets_loaded=len(self.weak_secrets),
-                        jwt_testing_enabled=config.jwt_testing)
-    
+        self.logger.info(
+            "Authentication Testing Module initialized",
+            auth_contexts=len(self.auth_contexts),
+            weak_secrets_loaded=len(self.weak_secrets),
+            jwt_testing_enabled=config.jwt_testing,
+        )
+
     def get_module_name(self) -> str:
         """Get module name"""
         return "auth_testing"
-    
-    async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
+
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
         """
         Execute authentication tests on discovered endpoints
-        
+
         Args:
             endpoints: List of discovered endpoints
-            
+
         Returns:
             List of authentication findings
         """
         self.logger.info("Starting authentication testing", endpoints_count=len(endpoints))
-        
+
         findings = []
-        
+
         try:
             # Step 1: Test endpoints accessible without authentication
             anonymous_findings = await self._test_anonymous_access(endpoints)
             findings.extend(anonymous_findings)
-            self.logger.debug("Anonymous access testing completed", findings=len(anonymous_findings))
-            
+            self.logger.debug(
+                "Anonymous access testing completed", findings=len(anonymous_findings)
+            )
+
             # Step 2: Analyze JWT tokens if JWT testing is enabled
             if self.config.jwt_testing:
                 jwt_findings = await self._test_jwt_vulnerabilities(endpoints)
                 findings.extend(jwt_findings)
                 self.logger.debug("JWT vulnerability testing completed", findings=len(jwt_findings))
-            
+
             # Step 3: Test token expiration validation
             expiration_findings = await self._test_token_expiration(endpoints)
             findings.extend(expiration_findings)
-            self.logger.debug("Token expiration testing completed", findings=len(expiration_findings))
-            
+            self.logger.debug(
+                "Token expiration testing completed", findings=len(expiration_findings)
+            )
+
             # Step 4: Test logout token invalidation. Gating (config flag and
             # Safe Mode) is handled inside the method (Requirements 9.3, 9.5).
             logout_findings = await self._test_logout_invalidation(endpoints)
             findings.extend(logout_findings)
-            self.logger.debug("Logout invalidation testing completed", findings=len(logout_findings))
+            self.logger.debug(
+                "Logout invalidation testing completed", findings=len(logout_findings)
+            )
 
             # Step 5: Declarative Unauthorized_Endpoint_Assertions (Req 55). Only
             # runs when an auth context carries operator-declared patterns;
             # otherwise the module behaves exactly as before (Req 55.5).
             assertion_findings = await self._run_unauthorized_assertions(endpoints)
             findings.extend(assertion_findings)
-            self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
-                              findings=len(assertion_findings))
+            self.logger.debug(
+                "Unauthorized-endpoint assertion evaluation completed",
+                findings=len(assertion_findings),
+            )
 
             # Step 6: Advanced auth attack probes (Levels 2, 3 & Expert).
             # Gated by allow_aggressive + Safe_Mode; no-op when either gate is
@@ -288,51 +342,63 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             # spraying, and timing/Content-Length oracle probes.
             advanced_findings = await self._run_advanced_auth_probes(endpoints)
             findings.extend(advanced_findings)
-            self.logger.debug("Advanced auth probes completed",
-                              findings=len(advanced_findings))
+            self.logger.debug("Advanced auth probes completed", findings=len(advanced_findings))
 
         except Exception as e:
             self.logger.error("Authentication testing failed during execution", error=str(e))
             raise
-        
-        self.logger.info("Authentication testing completed",
-                        total_findings=len(findings),
-                        critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]))
-        
+
+        self.logger.info(
+            "Authentication testing completed",
+            total_findings=len(findings),
+            critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]),
+        )
+
         return findings
-    
-    def _load_weak_secrets_wordlist(self) -> List[str]:
+
+    def _load_weak_secrets_wordlist(self) -> list[str]:
         """Load weak secrets wordlist for JWT testing"""
         wordlist_path = Path(self.config.weak_secrets_wordlist)
         weak_secrets = []
-        
+
         try:
             if wordlist_path.exists():
-                with open(wordlist_path, 'r', encoding='utf-8') as f:
+                with open(wordlist_path, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
-                        if line and not line.startswith('#'):
+                        if line and not line.startswith("#"):
                             weak_secrets.append(line)
-                
-                self.logger.info("Weak secrets wordlist loaded", 
-                               path=str(wordlist_path),
-                               secrets_count=len(weak_secrets))
+
+                self.logger.info(
+                    "Weak secrets wordlist loaded",
+                    path=str(wordlist_path),
+                    secrets_count=len(weak_secrets),
+                )
             else:
                 self.logger.warning("Weak secrets wordlist not found", path=str(wordlist_path))
                 # Add some default weak secrets
                 weak_secrets = [
-                    'secret', 'password', '123456', 'admin', 'test', 'key',
-                    'jwt', 'token', 'your-256-bit-secret', 'your-secret-key'
+                    "secret",
+                    "password",
+                    "123456",
+                    "admin",
+                    "test",
+                    "key",
+                    "jwt",
+                    "token",
+                    "your-256-bit-secret",
+                    "your-secret-key",
                 ]
-        
+
         except Exception as e:
             self.logger.error("Failed to load weak secrets wordlist", error=str(e))
-            weak_secrets = ['secret', 'password', '123456']
-        
+            weak_secrets = ["secret", "password", "123456"]
+
         return weak_secrets
 
-    def _is_weak_algorithm(self, algorithm: Optional[str],
-                           recovered_secret: Optional[str] = None) -> bool:
+    def _is_weak_algorithm(
+        self, algorithm: str | None, recovered_secret: str | None = None
+    ) -> bool:
         """Context-aware weak-algorithm classification (Requirements 9.1, 9.2).
 
         An algorithm is classified as weak ONLY when:
@@ -354,13 +420,13 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         if not algorithm:
             return False
         alg = str(algorithm).lower()
-        if alg == 'none':
+        if alg == "none":
             return True
-        if alg.startswith('hs') and recovered_secret:
+        if alg.startswith("hs") and recovered_secret:
             return True
         return False
 
-    async def _test_anonymous_access(self, endpoints: List[Any]) -> List[Finding]:
+    async def _test_anonymous_access(self, endpoints: list[Any]) -> list[Finding]:
         """
         Test endpoints accessible without authentication (Requirement 7)
 
@@ -388,8 +454,8 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         valid_context = self._select_valid_auth_context()
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
 
             # Anonymous access testing is a read-only comparison probe. In Safe
             # Mode an endpoint's declared State_Changing_Method must never be
@@ -401,8 +467,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 self.http_client.current_auth_context = None
                 anon_response = await self.http_client.request(method, endpoint_url)
             except Exception as e:
-                self.logger.debug("Anonymous access test failed",
-                                  endpoint=endpoint_url, method=method, error=str(e))
+                self.logger.debug(
+                    "Anonymous access test failed",
+                    endpoint=endpoint_url,
+                    method=method,
+                    error=str(e),
+                )
                 continue
 
             # Skip when the anonymous response is not a successful, data-bearing
@@ -414,23 +484,28 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             if not has_protected:
                 # Without protected data we cannot conclude an authorization
                 # weakness (Requirement 7.3).
-                self.logger.debug("Anonymous response exposed no protected data; not reported",
-                                  endpoint=endpoint_url)
+                self.logger.debug(
+                    "Anonymous response exposed no protected data; not reported",
+                    endpoint=endpoint_url,
+                )
                 continue
 
             # Obtain an authenticated baseline for the same endpoint and compare.
             auth_response = None
-            equivalent: Optional[bool] = None
+            equivalent: bool | None = None
             if valid_context is not None:
                 try:
                     self.http_client.set_auth_context(valid_context)
                     params, _ = apply_actor_profile(valid_context, endpoint_url)
-                    request_kwargs = {'params': params} if params else {}
-                    auth_response = await self.http_client.request(method, endpoint_url, **request_kwargs)
+                    request_kwargs = {"params": params} if params else {}
+                    auth_response = await self.http_client.request(
+                        method, endpoint_url, **request_kwargs
+                    )
                     equivalent = self._anon_auth_equivalent(anon_response, auth_response)
                 except Exception as e:
-                    self.logger.debug("Authenticated baseline request failed",
-                                      endpoint=endpoint_url, error=str(e))
+                    self.logger.debug(
+                        "Authenticated baseline request failed", endpoint=endpoint_url, error=str(e)
+                    )
                     auth_response = None
                 finally:
                     self.http_client.current_auth_context = None
@@ -438,8 +513,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             # Classify "does not require auth" only when protected data is present
             # AND (when a baseline exists) the responses are equivalent.
             if auth_response is not None and not equivalent:
-                self.logger.debug("Anonymous and authenticated responses differ; not reported",
-                                  endpoint=endpoint_url)
+                self.logger.debug(
+                    "Anonymous and authenticated responses differ; not reported",
+                    endpoint=endpoint_url,
+                )
                 continue
 
             severity = self._classify_anonymous_access_severity(
@@ -452,9 +529,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
             finding = Finding(
                 id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_ANONYMOUS_ACCESS',
-                owasp_category='API2',
+                scan_id="",
+                category="AUTH_ANONYMOUS_ACCESS",
+                owasp_category="API2",
                 severity=severity,
                 endpoint=endpoint_url,
                 method=method,
@@ -463,21 +540,23 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 response_time=anon_response.elapsed,
                 evidence=evidence,
                 recommendation="Implement proper authentication checks for all protected endpoints. "
-                             "Ensure sensitive operations require valid authentication tokens.",
-                response_snippet=anon_response.text[:500] if anon_response.text else None
+                "Ensure sensitive operations require valid authentication tokens.",
+                response_snippet=anon_response.text[:500] if anon_response.text else None,
             )
             findings.append(finding)
 
-            self.logger.warning("Anonymous access detected",
-                                endpoint=endpoint_url,
-                                method=method,
-                                status_code=anon_response.status_code,
-                                severity=severity.value,
-                                protected_fields=protected_fields)
+            self.logger.warning(
+                "Anonymous access detected",
+                endpoint=endpoint_url,
+                method=method,
+                status_code=anon_response.status_code,
+                severity=severity.value,
+                protected_fields=protected_fields,
+            )
 
         return findings
 
-    def _select_valid_auth_context(self) -> Optional[AuthContext]:
+    def _select_valid_auth_context(self) -> AuthContext | None:
         """Return a valid Auth_Context to use as an authenticated baseline.
 
         Picks the first context carrying a non-empty token. Returns None when no
@@ -485,11 +564,11 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         falls back to protected-data presence alone.
         """
         for ctx in self.auth_contexts:
-            if getattr(ctx, 'token', None):
+            if getattr(ctx, "token", None):
                 return ctx
         return None
 
-    def _response_contains_protected_data(self, response: Response) -> Tuple[bool, List[str]]:
+    def _response_contains_protected_data(self, response: Response) -> tuple[bool, list[str]]:
         """Detect protected/personal data in a response body (Requirement 7.3).
 
         Parses the JSON body and collects the recognized protected/identifying
@@ -497,7 +576,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         ``(has_protected, field_names)``. Non-JSON or unparseable bodies degrade
         to ``(False, [])`` rather than raising.
         """
-        if not response or not getattr(response, 'text', None):
+        if not response or not getattr(response, "text", None):
             return (False, [])
 
         try:
@@ -505,7 +584,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         except (ValueError, TypeError):
             return (False, [])
 
-        found: Set[str] = set()
+        found: set[str] = set()
 
         def _walk(node: Any, depth: int = 0) -> None:
             if depth > 6:
@@ -538,10 +617,13 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             return True
         return anon_response.text == auth_response.text
 
-    def _build_anonymous_access_evidence(self, anon_response: Response,
-                                         auth_response: Optional[Response],
-                                         equivalent: Optional[bool],
-                                         protected_fields: List[str]) -> str:
+    def _build_anonymous_access_evidence(
+        self,
+        anon_response: Response,
+        auth_response: Response | None,
+        equivalent: bool | None,
+        protected_fields: list[str],
+    ) -> str:
         """Build the embedded comparison evidence for an AUTH_ANONYMOUS_ACCESS
         finding (Requirement 7.4)."""
         parts = [
@@ -556,17 +638,19 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 f"anonymous vs authenticated responses equivalent: {bool(equivalent)}."
             )
         else:
-            parts.append("No authenticated baseline available; "
-                         "classification based on protected-data exposure.")
+            parts.append(
+                "No authenticated baseline available; "
+                "classification based on protected-data exposure."
+            )
         return " ".join(parts)
-    
+
     def _is_endpoint_accessible_anonymously(self, response: Response) -> bool:
         """
         Determine if an endpoint is accessible without authentication
-        
+
         Args:
             response: HTTP response to analyze
-            
+
         Returns:
             True if endpoint appears accessible anonymously
         """
@@ -574,51 +658,66 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # - Status code is 2xx (success)
         # - Status code is 3xx (redirect, but not auth-related)
         # - Response has substantial content (not just error message)
-        
+
         if response.status_code == 0:  # Request failed
             return False
-        
+
         # Definitely not accessible if auth-related error codes
         if response.status_code in [401, 403]:
             return False
-        
+
         # Success codes indicate accessibility
         if 200 <= response.status_code < 300:
             # Additional check: response should have meaningful content
             if len(response.content) > 100:  # More than just error message
                 return True
-            
+
             # Check if response looks like actual data vs error message
             if response.text:
                 auth_error_indicators = [
-                    'unauthorized', 'forbidden', 'authentication required',
-                    'access denied', 'login required', 'token required',
-                    'invalid token', 'missing token', 'expired token'
+                    "unauthorized",
+                    "forbidden",
+                    "authentication required",
+                    "access denied",
+                    "login required",
+                    "token required",
+                    "invalid token",
+                    "missing token",
+                    "expired token",
                 ]
                 response_lower = response.text.lower()
-                
+
                 # If response contains auth error indicators, not accessible
                 if any(indicator in response_lower for indicator in auth_error_indicators):
                     return False
-                
+
                 # If response contains data indicators, likely accessible
                 data_indicators = [
-                    'data', 'result', 'response', 'success', 'items',
-                    'users', 'accounts', 'orders', 'products', 'api'
+                    "data",
+                    "result",
+                    "response",
+                    "success",
+                    "items",
+                    "users",
+                    "accounts",
+                    "orders",
+                    "products",
+                    "api",
                 ]
                 if any(indicator in response_lower for indicator in data_indicators):
                     return True
-        
+
         # Redirects might indicate accessibility (but not auth redirects)
         if 300 <= response.status_code < 400:
-            location = response.headers.get('location', '').lower()
-            if 'login' not in location and 'auth' not in location:
+            location = response.headers.get("location", "").lower()
+            if "login" not in location and "auth" not in location:
                 return True
-        
+
         return False
-    
-    def _classify_anonymous_access_severity(self, endpoint: str, response: Response,
-                                            protected_fields: Optional[List[str]] = None) -> Severity:
+
+    def _classify_anonymous_access_severity(
+        self, endpoint: str, response: Response, protected_fields: list[str] | None = None
+    ) -> Severity:
         """
         Classify severity of anonymous access from response evidence and
         endpoint sensitivity (Requirement 7.2).
@@ -646,35 +745,43 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         # Sensitive endpoints (admin/management/user/account/payment data).
         critical_patterns = [
-            '/admin', '/management', '/dashboard', '/config',
-            '/users', '/accounts', '/orders', '/payments',
-            '/api/admin', '/api/management', '/api/users'
+            "/admin",
+            "/management",
+            "/dashboard",
+            "/config",
+            "/users",
+            "/accounts",
+            "/orders",
+            "/payments",
+            "/api/admin",
+            "/api/management",
+            "/api/users",
         ]
         if any(pattern in endpoint_lower for pattern in critical_patterns):
             return Severity.CRITICAL
 
         # API endpoints exposing personal data to anonymous callers are HIGH.
-        high_patterns = ['/api/', '/v1/', '/v2/', '/rest/', 'profile', 'settings', 'data']
+        high_patterns = ["/api/", "/v1/", "/v2/", "/rest/", "profile", "settings", "data"]
         if any(pattern in endpoint_lower for pattern in high_patterns) and exposed:
             return Severity.HIGH
 
         # Any other endpoint exposing protected data anonymously is at least
         # MEDIUM.
         return Severity.MEDIUM
-    
-    async def _test_jwt_vulnerabilities(self, endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_jwt_vulnerabilities(self, endpoints: list[Any]) -> list[Finding]:
         """
         Test JWT vulnerabilities (Requirements 2.1, 2.4)
-        
+
         Args:
             endpoints: List of endpoints to test
-            
+
         Returns:
             List of findings for JWT vulnerabilities
         """
         findings = []
         self.logger.info("Testing JWT vulnerabilities")
-        
+
         # Collect JWT tokens from auth contexts
         jwt_tokens = []
         for auth_context in self.auth_contexts:
@@ -684,11 +791,11 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     if jwt_token:
                         jwt_tokens.append((auth_context, jwt_token))
                         self.tested_tokens.add(auth_context.token)
-        
+
         if not jwt_tokens:
             self.logger.info("No JWT tokens found in auth contexts")
             return findings
-        
+
         # Test each JWT token for vulnerabilities
         for auth_context, jwt_token in jwt_tokens:
             # Test 1: Weak algorithm detection
@@ -696,146 +803,149 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 auth_context, jwt_token, endpoints
             )
             findings.extend(algorithm_findings)
-            
+
             # Test 2: Weak secret detection
-            if jwt_token.algorithm.startswith('HS'):  # HMAC algorithms
+            if jwt_token.algorithm.startswith("HS"):  # HMAC algorithms
                 secret_findings = await self._test_jwt_weak_secrets(
                     auth_context, jwt_token, endpoints
                 )
                 findings.extend(secret_findings)
-            
+
             # Test 3: Algorithm confusion attack
             confusion_findings = await self._test_jwt_algorithm_confusion(
                 auth_context, jwt_token, endpoints
             )
             findings.extend(confusion_findings)
-        
+
         return findings
-    
-    def _parse_jwt_token(self, token: str) -> Optional[JWTToken]:
+
+    def _parse_jwt_token(self, token: str) -> JWTToken | None:
         """
         Parse JWT token into components
-        
+
         Args:
             token: JWT token string
-            
+
         Returns:
             JWTToken object or None if parsing fails
         """
         try:
             # Remove 'Bearer ' prefix if present
-            if token.startswith('Bearer '):
+            if token.startswith("Bearer "):
                 token = token[7:]
-            
+
             # JWT should have 3 parts separated by dots
-            parts = token.split('.')
+            parts = token.split(".")
             if len(parts) != 3:
                 return None
-            
+
             header_b64, payload_b64, signature = parts
-            
+
             # Decode header and payload (add padding if needed)
             def decode_base64url(data):
                 # Add padding if needed
                 padding = 4 - (len(data) % 4)
                 if padding != 4:
-                    data += '=' * padding
+                    data += "=" * padding
                 return base64.urlsafe_b64decode(data)
-            
-            header_json = decode_base64url(header_b64).decode('utf-8')
-            payload_json = decode_base64url(payload_b64).decode('utf-8')
-            
+
+            header_json = decode_base64url(header_b64).decode("utf-8")
+            payload_json = decode_base64url(payload_b64).decode("utf-8")
+
             header = json.loads(header_json)
             payload = json.loads(payload_json)
-            
-            algorithm = header.get('alg', 'unknown')
-            
+
+            algorithm = header.get("alg", "unknown")
+
             jwt_token = JWTToken(
                 raw_token=token,
                 header=header,
                 payload=payload,
                 signature=signature,
-                algorithm=algorithm
+                algorithm=algorithm,
             )
-            
-            self.logger.debug("JWT token parsed successfully",
-                            algorithm=algorithm,
-                            header_keys=list(header.keys()),
-                            payload_keys=list(payload.keys()))
-            
+
+            self.logger.debug(
+                "JWT token parsed successfully",
+                algorithm=algorithm,
+                header_keys=list(header.keys()),
+                payload_keys=list(payload.keys()),
+            )
+
             return jwt_token
-            
+
         except Exception as e:
             self.logger.debug("Failed to parse JWT token", error=str(e))
             return None
-    
-    async def _test_jwt_algorithm_vulnerabilities(self, auth_context: AuthContext, 
-                                                jwt_token: JWTToken, 
-                                                endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_jwt_algorithm_vulnerabilities(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Test JWT algorithm vulnerabilities"""
         findings = []
-        
+
         # Test 1: 'none' algorithm vulnerability
-        if jwt_token.algorithm.lower() == 'none':
+        if jwt_token.algorithm.lower() == "none":
             finding = Finding(
                 id=str(uuid.uuid4()),
-                scan_id='',
-                category='JWT_NONE_ALGORITHM',
-                owasp_category='API2',
+                scan_id="",
+                category="JWT_NONE_ALGORITHM",
+                owasp_category="API2",
                 severity=Severity.CRITICAL,
-                endpoint='JWT_TOKEN_ANALYSIS',
-                method='ANALYSIS',
+                endpoint="JWT_TOKEN_ANALYSIS",
+                method="ANALYSIS",
                 status_code=200,
                 response_size=0,
                 response_time=0.0,
                 evidence=f"JWT token uses 'none' algorithm which bypasses signature verification. "
-                        f"Token header: {json.dumps(jwt_token.header)}",
+                f"Token header: {json.dumps(jwt_token.header)}",
                 recommendation="Never use 'none' algorithm for JWT tokens in production. "
-                             "Use strong algorithms like RS256 or HS256 with proper secrets.",
-                payload=auth_context.token[:50] + "..." if len(auth_context.token) > 50 else auth_context.token
+                "Use strong algorithms like RS256 or HS256 with proper secrets.",
+                payload=auth_context.token[:50] + "..."
+                if len(auth_context.token) > 50
+                else auth_context.token,
             )
             findings.append(finding)
-            
-            self.logger.warning("JWT 'none' algorithm detected",
-                              auth_context=auth_context.name)
-        
+
+            self.logger.warning("JWT 'none' algorithm detected", auth_context=auth_context.name)
+
         # Test 2: Test if 'none' algorithm is accepted by modifying token
-        if jwt_token.algorithm != 'none':
+        if jwt_token.algorithm != "none":
             none_findings = await self._test_none_algorithm_acceptance(
                 auth_context, jwt_token, endpoints
             )
             findings.extend(none_findings)
-        
+
         return findings
-    
-    async def _test_none_algorithm_acceptance(self, auth_context: AuthContext,
-                                            jwt_token: JWTToken,
-                                            endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_none_algorithm_acceptance(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Test if endpoints accept JWT tokens with 'none' algorithm"""
         findings = []
-        
+
         try:
             # Create a modified token with 'none' algorithm
             modified_header = jwt_token.header.copy()
-            modified_header['alg'] = 'none'
-            
+            modified_header["alg"] = "none"
+
             # Encode modified header
-            header_json = json.dumps(modified_header, separators=(',', ':'))
-            header_b64 = base64.urlsafe_b64encode(header_json.encode()).decode().rstrip('=')
-            
+            header_json = json.dumps(modified_header, separators=(",", ":"))
+            header_b64 = base64.urlsafe_b64encode(header_json.encode()).decode().rstrip("=")
+
             # Keep original payload
-            payload_json = json.dumps(jwt_token.payload, separators=(',', ':'))
-            payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip('=')
-            
+            payload_json = json.dumps(jwt_token.payload, separators=(",", ":"))
+            payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
+
             # Create token with no signature (empty signature for 'none' algorithm)
             modified_token = f"{header_b64}.{payload_b64}."
-            
+
             # Test with a few endpoints
             test_endpoints = endpoints[:5] if len(endpoints) > 5 else endpoints
-            
+
             for endpoint in test_endpoints:
-                endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-                method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+                endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+                method = endpoint.method if hasattr(endpoint, "method") else "GET"
                 # Safe mode: replaying a state-changing method is forbidden; the
                 # 'none' algorithm test is a read probe, so downgrade to GET
                 # (Requirements 21.2, 21.3).
@@ -846,21 +956,21 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     name=f"{auth_context.name}_none_test",
                     type=auth_context.type,
                     token=modified_token,
-                    privilege_level=auth_context.privilege_level
+                    privilege_level=auth_context.privilege_level,
                 )
-                
+
                 self.http_client.set_auth_context(modified_auth)
-                
+
                 try:
                     response = await self.http_client.request(method, endpoint_url)
-                    
+
                     # If request succeeds with 'none' algorithm, it's a vulnerability
                     if response.is_success:
                         finding = Finding(
                             id=str(uuid.uuid4()),
-                            scan_id='',
-                            category='JWT_NONE_ALGORITHM_ACCEPTED',
-                            owasp_category='API2',
+                            scan_id="",
+                            category="JWT_NONE_ALGORITHM_ACCEPTED",
+                            owasp_category="API2",
                             severity=Severity.CRITICAL,
                             endpoint=endpoint_url,
                             method=method,
@@ -868,75 +978,73 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                             response_size=len(response.content),
                             response_time=response.elapsed,
                             evidence=f"Endpoint accepts JWT tokens with 'none' algorithm, "
-                                    f"bypassing signature verification. Original algorithm: {jwt_token.algorithm}",
+                            f"bypassing signature verification. Original algorithm: {jwt_token.algorithm}",
                             recommendation="Reject JWT tokens with 'none' algorithm. "
-                                         "Implement proper algorithm validation.",
-                            payload=modified_token[:100] + "..." if len(modified_token) > 100 else modified_token
+                            "Implement proper algorithm validation.",
+                            payload=modified_token[:100] + "..."
+                            if len(modified_token) > 100
+                            else modified_token,
                         )
                         findings.append(finding)
-                        
-                        self.logger.warning("JWT 'none' algorithm accepted",
-                                          endpoint=endpoint_url,
-                                          original_algorithm=jwt_token.algorithm)
+
+                        self.logger.warning(
+                            "JWT 'none' algorithm accepted",
+                            endpoint=endpoint_url,
+                            original_algorithm=jwt_token.algorithm,
+                        )
                         break  # Found vulnerability, no need to test more endpoints
-                
+
                 except Exception as e:
-                    self.logger.debug("None algorithm test failed",
-                                    endpoint=endpoint_url,
-                                    error=str(e))
-        
+                    self.logger.debug(
+                        "None algorithm test failed", endpoint=endpoint_url, error=str(e)
+                    )
+
         except Exception as e:
             self.logger.error("Failed to test 'none' algorithm acceptance", error=str(e))
-        
+
         return findings
-    
-    async def _test_jwt_weak_secrets(self, auth_context: AuthContext,
-                                   jwt_token: JWTToken,
-                                   endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_jwt_weak_secrets(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Test JWT tokens for weak secrets (Requirement 2.4)"""
         findings = []
-        
-        if not jwt_token.algorithm.startswith('HS'):
+
+        if not jwt_token.algorithm.startswith("HS"):
             return findings  # Only test HMAC algorithms
-        
+
         self.logger.info("Testing JWT weak secrets", algorithm=jwt_token.algorithm)
-        
+
         # Extract token parts for signature verification
-        token_parts = jwt_token.raw_token.split('.')
+        token_parts = jwt_token.raw_token.split(".")
         if len(token_parts) != 3:
             return findings
-        
+
         header_payload = f"{token_parts[0]}.{token_parts[1]}"
         original_signature = token_parts[2]
-        
+
         # Test each weak secret
         for secret in self.weak_secrets:
             try:
                 # Generate signature with weak secret
-                if jwt_token.algorithm == 'HS256':
+                if jwt_token.algorithm == "HS256":
                     signature = hmac.new(
-                        secret.encode(),
-                        header_payload.encode(),
-                        hashlib.sha256
+                        secret.encode(), header_payload.encode(), hashlib.sha256
                     ).digest()
-                elif jwt_token.algorithm == 'HS384':
+                elif jwt_token.algorithm == "HS384":
                     signature = hmac.new(
-                        secret.encode(),
-                        header_payload.encode(),
-                        hashlib.sha384
+                        secret.encode(), header_payload.encode(), hashlib.sha384
                     ).digest()
-                elif jwt_token.algorithm == 'HS512':
+                elif jwt_token.algorithm == "HS512":
                     signature = hmac.new(
-                        secret.encode(),
-                        header_payload.encode(),
-                        hashlib.sha512
+                        secret.encode(), header_payload.encode(), hashlib.sha512
                     ).digest()
                 else:
                     continue
-                
+
                 # Encode signature
-                signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip('=')
-                
+                signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+
                 # Check if signatures match
                 if signature_b64 == original_signature:
                     # Record the recovered secret so it can be reused as a known
@@ -947,38 +1055,38 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
                     finding = Finding(
                         id=str(uuid.uuid4()),
-                        scan_id='',
-                        category='JWT_WEAK_SECRET',
-                        owasp_category='API2',
+                        scan_id="",
+                        category="JWT_WEAK_SECRET",
+                        owasp_category="API2",
                         severity=Severity.HIGH,
-                        endpoint='JWT_TOKEN_ANALYSIS',
-                        method='ANALYSIS',
+                        endpoint="JWT_TOKEN_ANALYSIS",
+                        method="ANALYSIS",
                         status_code=200,
                         response_size=0,
                         response_time=0.0,
                         evidence=f"JWT token signed with weak secret: '{secret}'. "
-                                f"Algorithm: {jwt_token.algorithm}. "
-                                f"This allows token forgery and privilege escalation.",
+                        f"Algorithm: {jwt_token.algorithm}. "
+                        f"This allows token forgery and privilege escalation.",
                         recommendation="Use strong, randomly generated secrets for JWT signing. "
-                                     "Secrets should be at least 256 bits for HS256.",
-                        payload=f"Weak secret: {secret}"
+                        "Secrets should be at least 256 bits for HS256.",
+                        payload=f"Weak secret: {secret}",
                     )
                     findings.append(finding)
-                    
-                    self.logger.warning("JWT weak secret detected",
-                                      secret=secret,
-                                      algorithm=jwt_token.algorithm,
-                                      auth_context=auth_context.name)
+
+                    self.logger.warning(
+                        "JWT weak secret detected",
+                        secret=secret,
+                        algorithm=jwt_token.algorithm,
+                        auth_context=auth_context.name,
+                    )
                     break  # Found weak secret, no need to test more
-            
+
             except Exception as e:
-                self.logger.debug("Weak secret test failed",
-                                secret=secret,
-                                error=str(e))
-        
+                self.logger.debug("Weak secret test failed", secret=secret, error=str(e))
+
         return findings
-    
-    async def _resolve_public_key_bytes(self) -> Optional[bytes]:
+
+    async def _resolve_public_key_bytes(self) -> bytes | None:
         """Resolve the server's RSA public-key bytes for algorithm confusion.
 
         Key sourcing precedence (Requirements 6.1, 6.2):
@@ -996,16 +1104,16 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         if self._public_key_bytes is not _UNRESOLVED:
             return self._public_key_bytes
 
-        resolved: Optional[bytes] = None
+        resolved: bytes | None = None
 
-        material = getattr(self.config, 'public_key_material', None)
+        material = getattr(self.config, "public_key_material", None)
         if material:
             resolved = self._load_public_key_material(material)
             if resolved:
                 self.logger.debug("Resolved public key from operator-supplied material")
 
         if resolved is None:
-            jwks_url = getattr(self.config, 'jwks_url', None)
+            jwks_url = getattr(self.config, "jwks_url", None)
             if jwks_url:
                 resolved = await self._fetch_jwks_public_key(jwks_url)
                 if resolved:
@@ -1014,7 +1122,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self._public_key_bytes = resolved
         return resolved
 
-    def _load_public_key_material(self, material: str) -> Optional[bytes]:
+    def _load_public_key_material(self, material: str) -> bytes | None:
         """Load operator-supplied public-key material into raw bytes.
 
         ``material`` may be a filesystem path to a PEM/DER file or inline
@@ -1029,10 +1137,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             pass
 
         if material and material.strip():
-            return material.encode('utf-8')
+            return material.encode("utf-8")
         return None
 
-    async def _fetch_jwks_public_key(self, jwks_url: str) -> Optional[bytes]:
+    async def _fetch_jwks_public_key(self, jwks_url: str) -> bytes | None:
         """Fetch a JWKS and convert its first RSA key to PEM public-key bytes.
 
         The JWKS is fetched through the shared ``HTTPRequestEngine`` (a safe GET)
@@ -1043,16 +1151,16 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         try:
             # JWKS retrieval is unauthenticated and read-only.
             self.http_client.current_auth_context = None
-            response = await self.http_client.request('GET', jwks_url)
-            if not response or not getattr(response, 'text', None):
+            response = await self.http_client.request("GET", jwks_url)
+            if not response or not getattr(response, "text", None):
                 return None
 
             data = json.loads(response.text)
             keys = None
             if isinstance(data, dict):
-                if isinstance(data.get('keys'), list):
-                    keys = data['keys']
-                elif 'n' in data and 'e' in data:
+                if isinstance(data.get("keys"), list):
+                    keys = data["keys"]
+                elif "n" in data and "e" in data:
                     keys = [data]
 
             if not keys:
@@ -1061,28 +1169,29 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             for jwk in keys:
                 if not isinstance(jwk, dict):
                     continue
-                if str(jwk.get('kty', 'RSA')).upper() != 'RSA':
+                if str(jwk.get("kty", "RSA")).upper() != "RSA":
                     continue
-                n_b64 = jwk.get('n')
-                e_b64 = jwk.get('e')
+                n_b64 = jwk.get("n")
+                e_b64 = jwk.get("e")
                 if not n_b64 or not e_b64:
                     continue
                 pem = self._jwk_rsa_to_pem(n_b64, e_b64)
                 if pem:
                     return pem
         except Exception as e:
-            self.logger.debug("Failed to fetch/parse JWKS public key",
-                              jwks_url=jwks_url, error=str(e))
+            self.logger.debug(
+                "Failed to fetch/parse JWKS public key", jwks_url=jwks_url, error=str(e)
+            )
         return None
 
-    def _jwk_rsa_to_pem(self, n_b64: str, e_b64: str) -> Optional[bytes]:
+    def _jwk_rsa_to_pem(self, n_b64: str, e_b64: str) -> bytes | None:
         """Convert an RSA JWK (base64url ``n``/``e``) to PEM public-key bytes."""
         try:
-            from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
             from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
 
-            n = int.from_bytes(jwt_utils.base64url_decode(n_b64), 'big')
-            e = int.from_bytes(jwt_utils.base64url_decode(e_b64), 'big')
+            n = int.from_bytes(jwt_utils.base64url_decode(n_b64), "big")
+            e = int.from_bytes(jwt_utils.base64url_decode(e_b64), "big")
             public_key = RSAPublicNumbers(e, n).public_key()
             return public_key.public_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -1100,19 +1209,18 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         ``JWTAttackResponseAnalyzer`` (the single success detector, Requirement
         19.1) can compare the attack response against the baseline.
         """
-        content = getattr(response, 'content', b'') or b''
+        content = getattr(response, "content", b"") or b""
         return ResponseDetails(
-            status_code=getattr(response, 'status_code', 0),
-            headers=dict(getattr(response, 'headers', {}) or {}),
-            body=getattr(response, 'text', '') or '',
-            response_time=getattr(response, 'elapsed', 0.0) or 0.0,
+            status_code=getattr(response, "status_code", 0),
+            headers=dict(getattr(response, "headers", {}) or {}),
+            body=getattr(response, "text", "") or "",
+            response_time=getattr(response, "elapsed", 0.0) or 0.0,
             content_length=len(content),
         )
 
     async def _build_algorithm_confusion_analyzer(
-        self, sign_fn, endpoint_url: str, method: str,
-        auth_context: AuthContext
-    ) -> Optional[JWTAttackResponseAnalyzer]:
+        self, sign_fn, endpoint_url: str, method: str, auth_context: AuthContext
+    ) -> JWTAttackResponseAnalyzer | None:
         """Establish a negative-control baseline for the algorithm-confusion test.
 
         The baseline is an HS256 token whose signature is computed with a key
@@ -1137,8 +1245,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         try:
             baseline_response = await self.http_client.request(method, endpoint_url)
         except Exception as e:
-            self.logger.debug("Algorithm-confusion baseline request failed",
-                              endpoint=endpoint_url, error=str(e))
+            self.logger.debug(
+                "Algorithm-confusion baseline request failed", endpoint=endpoint_url, error=str(e)
+            )
             return None
         finally:
             self.http_client.current_auth_context = None
@@ -1149,9 +1258,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         )
         return JWTAttackResponseAnalyzer(baseline)
 
-    async def _test_jwt_algorithm_confusion(self, auth_context: AuthContext,
-                                          jwt_token: JWTToken,
-                                          endpoints: List[Any]) -> List[Finding]:
+    async def _test_jwt_algorithm_confusion(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Test JWT algorithm confusion attack (RS256 -> HS256).
 
         Iterates over every public-key representation produced by
@@ -1174,7 +1283,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         """
         findings = []
 
-        if jwt_token.algorithm != 'RS256':
+        if jwt_token.algorithm != "RS256":
             return findings  # Only test RS256 tokens
 
         self.logger.info("Testing JWT algorithm confusion attack")
@@ -1184,7 +1293,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         if not public_key_bytes:
             self.logger.info(
                 "Skipping algorithm-confusion test for lack of a public key",
-                auth_context=auth_context.name
+                auth_context=auth_context.name,
             )
             return findings
 
@@ -1198,7 +1307,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         if not variants:
             self.logger.info(
                 "No public-key representation derivable; skipping algorithm-confusion",
-                auth_context=auth_context.name
+                auth_context=auth_context.name,
             )
             return findings
 
@@ -1206,24 +1315,24 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # across every representation; only the signing key varies
         # (Requirement 60.2).
         modified_header = jwt_token.header.copy()
-        modified_header['alg'] = 'HS256'
+        modified_header["alg"] = "HS256"
 
-        header_json = json.dumps(modified_header, separators=(',', ':'))
-        header_b64 = base64.urlsafe_b64encode(header_json.encode()).decode().rstrip('=')
+        header_json = json.dumps(modified_header, separators=(",", ":"))
+        header_b64 = base64.urlsafe_b64encode(header_json.encode()).decode().rstrip("=")
 
-        payload_json = json.dumps(jwt_token.payload, separators=(',', ':'))
-        payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip('=')
+        payload_json = json.dumps(jwt_token.payload, separators=(",", ":"))
+        payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
 
         header_payload = f"{header_b64}.{payload_b64}"
 
         def _sign(key_bytes: bytes) -> str:
             signature = hmac.new(key_bytes, header_payload.encode(), hashlib.sha256).digest()
-            signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip('=')
+            signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
             return f"{header_payload}.{signature_b64}"
 
         test_endpoint = endpoints[0]
-        endpoint_url = test_endpoint.url if hasattr(test_endpoint, 'url') else str(test_endpoint)
-        method = test_endpoint.method if hasattr(test_endpoint, 'method') else 'GET'
+        endpoint_url = test_endpoint.url if hasattr(test_endpoint, "url") else str(test_endpoint)
+        method = test_endpoint.method if hasattr(test_endpoint, "method") else "GET"
 
         # Safe mode: the algorithm-confusion probe is a read; never replay a
         # state-changing method (Requirements 21.2, 21.3).
@@ -1246,15 +1355,18 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     name=f"{auth_context.name}_confused_{representation_name}",
                     type=auth_context.type,
                     token=confused_token,
-                    privilege_level=auth_context.privilege_level
+                    privilege_level=auth_context.privilege_level,
                 )
 
                 self.http_client.set_auth_context(confused_auth)
                 try:
                     response = await self.http_client.request(method, endpoint_url)
                 except Exception as e:
-                    self.logger.debug("Algorithm-confusion variant request failed",
-                                      representation=representation_name, error=str(e))
+                    self.logger.debug(
+                        "Algorithm-confusion variant request failed",
+                        representation=representation_name,
+                        error=str(e),
+                    )
                     continue
                 finally:
                     self.http_client.current_auth_context = None
@@ -1269,15 +1381,15 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
                 finding = Finding(
                     id=str(uuid.uuid4()),
-                    scan_id='',
-                    category='JWT_ALGORITHM_CONFUSION',
-                    owasp_category='API2',
+                    scan_id="",
+                    category="JWT_ALGORITHM_CONFUSION",
+                    owasp_category="API2",
                     severity=Severity.CRITICAL,
                     endpoint=endpoint_url,
                     method=method,
                     status_code=response.status_code,
-                    response_size=len(getattr(response, 'content', b'') or b''),
-                    response_time=getattr(response, 'elapsed', 0.0) or 0.0,
+                    response_size=len(getattr(response, "content", b"") or b""),
+                    response_time=getattr(response, "elapsed", 0.0) or 0.0,
                     evidence=(
                         "JWT algorithm confusion attack successful. The RS256 token "
                         "was accepted as an HS256 token signed with the server's real "
@@ -1287,14 +1399,18 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                         f"Accepted key representation: {representation_name}."
                     ),
                     recommendation="Implement strict algorithm validation. "
-                                 "Never allow algorithm switching in JWT verification.",
-                    payload=confused_token[:100] + "..." if len(confused_token) > 100 else confused_token
+                    "Never allow algorithm switching in JWT verification.",
+                    payload=confused_token[:100] + "..."
+                    if len(confused_token) > 100
+                    else confused_token,
                 )
                 findings.append(finding)
 
-                self.logger.warning("JWT algorithm confusion detected",
-                                    endpoint=endpoint_url,
-                                    representation=representation_name)
+                self.logger.warning(
+                    "JWT algorithm confusion detected",
+                    endpoint=endpoint_url,
+                    representation=representation_name,
+                )
                 # One confirmed representation is sufficient to prove the flaw.
                 break
 
@@ -1304,68 +1420,71 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             self.http_client.current_auth_context = None
 
         return findings
-    
-    async def _test_token_expiration(self, endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_token_expiration(self, endpoints: list[Any]) -> list[Finding]:
         """
         Test token expiration validation (Requirement 2.2)
-        
+
         Args:
             endpoints: List of endpoints to test
-            
+
         Returns:
             List of findings for token expiration issues
         """
         findings = []
         self.logger.info("Testing token expiration validation")
-        
+
         # Test each auth context for expiration issues
         for auth_context in self.auth_contexts:
             if auth_context.type in [AuthType.JWT, AuthType.BEARER]:
                 jwt_token = self._parse_jwt_token(auth_context.token)
-                if jwt_token and 'exp' in jwt_token.payload:
+                if jwt_token and "exp" in jwt_token.payload:
                     exp_findings = await self._test_jwt_expiration(
                         auth_context, jwt_token, endpoints
                     )
                     findings.extend(exp_findings)
-                elif jwt_token and 'exp' not in jwt_token.payload:
+                elif jwt_token and "exp" not in jwt_token.payload:
                     # Token without expiration claim
                     finding = Finding(
                         id=str(uuid.uuid4()),
-                        scan_id='',
-                        category='JWT_NO_EXPIRATION',
-                        owasp_category='API2',
+                        scan_id="",
+                        category="JWT_NO_EXPIRATION",
+                        owasp_category="API2",
                         severity=Severity.HIGH,
-                        endpoint='JWT_TOKEN_ANALYSIS',
-                        method='ANALYSIS',
+                        endpoint="JWT_TOKEN_ANALYSIS",
+                        method="ANALYSIS",
                         status_code=200,
                         response_size=0,
                         response_time=0.0,
                         evidence=f"JWT token does not contain expiration claim (exp). "
-                                f"Token payload: {json.dumps(jwt_token.payload)}",
+                        f"Token payload: {json.dumps(jwt_token.payload)}",
                         recommendation="Include expiration claim (exp) in all JWT tokens. "
-                                     "Implement proper token lifecycle management.",
-                        payload=auth_context.token[:50] + "..." if len(auth_context.token) > 50 else auth_context.token
+                        "Implement proper token lifecycle management.",
+                        payload=auth_context.token[:50] + "..."
+                        if len(auth_context.token) > 50
+                        else auth_context.token,
                     )
                     findings.append(finding)
-                    
-                    self.logger.warning("JWT token without expiration",
-                                      auth_context=auth_context.name)
-        
+
+                    self.logger.warning(
+                        "JWT token without expiration", auth_context=auth_context.name
+                    )
+
         return findings
-    
-    async def _test_jwt_expiration(self, auth_context: AuthContext,
-                                 jwt_token: JWTToken,
-                                 endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_jwt_expiration(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Test JWT token expiration validation"""
         findings = []
-        
+
         try:
-            exp_timestamp = jwt_token.payload.get('exp')
+            exp_timestamp = jwt_token.payload.get("exp")
             if not exp_timestamp:
                 return findings
-            
+
             current_timestamp = int(time.time())
-            
+
             # Check if token is already expired
             if exp_timestamp < current_timestamp:
                 # Test if expired token is still accepted
@@ -1379,44 +1498,44 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     auth_context, jwt_token, endpoints
                 )
                 findings.extend(expired_findings)
-        
+
         except Exception as e:
             self.logger.error("JWT expiration test failed", error=str(e))
-        
+
         return findings
-    
-    async def _test_expired_token_acceptance(self, auth_context: AuthContext,
-                                           jwt_token: JWTToken,
-                                           endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_expired_token_acceptance(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Test if expired tokens are still accepted"""
         findings = []
-        
+
         # Test with a few endpoints
         test_endpoints = endpoints[:3] if len(endpoints) > 3 else endpoints
-        
+
         self.http_client.set_auth_context(auth_context)
-        
+
         for endpoint in test_endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
             # Safe mode: expired-token acceptance is a read probe; never replay
             # a state-changing method (Requirements 21.2, 21.3).
             method = self.safe_read_method(method, "jwt_expired_token_acceptance")
 
             try:
                 response = await self.http_client.request(method, endpoint_url)
-                
+
                 # If expired token is accepted, it's a vulnerability
                 if response.is_success:
-                    exp_timestamp = jwt_token.payload.get('exp')
+                    exp_timestamp = jwt_token.payload.get("exp")
                     current_timestamp = int(time.time())
                     expired_duration = current_timestamp - exp_timestamp
-                    
+
                     finding = Finding(
                         id=str(uuid.uuid4()),
-                        scan_id='',
-                        category='JWT_EXPIRED_TOKEN_ACCEPTED',
-                        owasp_category='API2',
+                        scan_id="",
+                        category="JWT_EXPIRED_TOKEN_ACCEPTED",
+                        owasp_category="API2",
                         severity=Severity.HIGH,
                         endpoint=endpoint_url,
                         method=method,
@@ -1424,43 +1543,45 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                         response_size=len(response.content),
                         response_time=response.elapsed,
                         evidence=f"Expired JWT token accepted by endpoint. "
-                                f"Token expired {expired_duration} seconds ago. "
-                                f"Expiration timestamp: {exp_timestamp}, Current: {current_timestamp}",
+                        f"Token expired {expired_duration} seconds ago. "
+                        f"Expiration timestamp: {exp_timestamp}, Current: {current_timestamp}",
                         recommendation="Implement proper token expiration validation. "
-                                     "Reject all expired tokens immediately.",
-                        payload=auth_context.token[:50] + "..." if len(auth_context.token) > 50 else auth_context.token
+                        "Reject all expired tokens immediately.",
+                        payload=auth_context.token[:50] + "..."
+                        if len(auth_context.token) > 50
+                        else auth_context.token,
                     )
                     findings.append(finding)
-                    
-                    self.logger.warning("Expired JWT token accepted",
-                                      endpoint=endpoint_url,
-                                      expired_duration=expired_duration)
+
+                    self.logger.warning(
+                        "Expired JWT token accepted",
+                        endpoint=endpoint_url,
+                        expired_duration=expired_duration,
+                    )
                     break  # Found issue, no need to test more endpoints
-            
+
             except Exception as e:
-                self.logger.debug("Expired token test failed",
-                                endpoint=endpoint_url,
-                                error=str(e))
-        
+                self.logger.debug("Expired token test failed", endpoint=endpoint_url, error=str(e))
+
         return findings
-    
-    def _get_signing_secret(self) -> Optional[str]:
+
+    def _get_signing_secret(self) -> str | None:
         """Return a known HMAC signing secret, or None when none is known.
 
         Precedence (Requirement 8.1):
           1. Operator-supplied ``AuthTestingConfig.signing_secret``.
           2. A weak secret recovered by ``_test_jwt_weak_secrets``.
         """
-        secret = getattr(self.config, 'signing_secret', None)
+        secret = getattr(self.config, "signing_secret", None)
         if secret:
             return secret
         if self._recovered_secret:
             return self._recovered_secret
         return None
 
-    async def _test_with_expired_token(self, auth_context: AuthContext,
-                                     jwt_token: JWTToken,
-                                     endpoints: List[Any]) -> List[Finding]:
+    async def _test_with_expired_token(
+        self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
+    ) -> list[Finding]:
         """Construct a validly-signed-but-expired token and test acceptance.
 
         A token with a VALID HMAC signature and an ``exp`` claim in the past is
@@ -1479,7 +1600,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             self.logger.info(
                 "Skipping expiration test: no signing key known to construct a "
                 "validly-signed token",
-                auth_context=auth_context.name
+                auth_context=auth_context.name,
             )
             return findings
 
@@ -1487,12 +1608,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # signs with HMAC-SHA256, so the declared algorithm is forced to HS256 to
         # keep the signature genuinely valid (distinguishing it from a
         # broken-signature token - Requirement 8.5).
-        header = {k: v for k, v in jwt_token.header.items()}
-        header['alg'] = 'HS256'
-        header.setdefault('typ', 'JWT')
+        header = dict(jwt_token.header.items())
+        header["alg"] = "HS256"
+        header.setdefault("typ", "JWT")
 
         payload = jwt_token.payload.copy()
-        payload['exp'] = int(time.time()) - 3600  # Expired 1 hour ago
+        payload["exp"] = int(time.time()) - 3600  # Expired 1 hour ago
 
         expired_token = jwt_utils.encode_jwt(header, payload, secret)
 
@@ -1500,8 +1621,8 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             return findings
 
         test_endpoint = endpoints[0]
-        endpoint_url = test_endpoint.url if hasattr(test_endpoint, 'url') else str(test_endpoint)
-        method = test_endpoint.method if hasattr(test_endpoint, 'method') else 'GET'
+        endpoint_url = test_endpoint.url if hasattr(test_endpoint, "url") else str(test_endpoint)
+        method = test_endpoint.method if hasattr(test_endpoint, "method") else "GET"
         # Safe mode: validly-signed expired token check is a read probe; never
         # replay a state-changing method (Requirements 21.2, 21.3).
         method = self.safe_read_method(method, "jwt_validly_signed_expired")
@@ -1510,7 +1631,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             name=f"{auth_context.name}_validly_signed_expired",
             type=auth_context.type,
             token=expired_token,
-            privilege_level=auth_context.privilege_level
+            privilege_level=auth_context.privilege_level,
         )
         self.http_client.set_auth_context(expired_auth)
 
@@ -1520,19 +1641,20 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # (Requirement 8.3).
         try:
             params, _ = apply_actor_profile(auth_context, endpoint_url)
-            request_kwargs = {'params': params} if params else {}
+            request_kwargs = {"params": params} if params else {}
             response = await self.http_client.request(method, endpoint_url, **request_kwargs)
         except Exception as e:
-            self.logger.debug("Validly-signed expired token request failed",
-                              endpoint=endpoint_url, error=str(e))
+            self.logger.debug(
+                "Validly-signed expired token request failed", endpoint=endpoint_url, error=str(e)
+            )
             return findings
 
         if response.is_success:
             finding = Finding(
                 id=str(uuid.uuid4()),
-                scan_id='',
-                category='JWT_EXPIRED_TOKEN_ACCEPTED',
-                owasp_category='API2',
+                scan_id="",
+                category="JWT_EXPIRED_TOKEN_ACCEPTED",
+                owasp_category="API2",
                 severity=Severity.HIGH,
                 endpoint=endpoint_url,
                 method=method,
@@ -1540,27 +1662,29 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 response_size=len(response.content),
                 response_time=response.elapsed,
                 evidence="Validly-signed JWT with an expired 'exp' claim was accepted. "
-                        "The token signature is valid (signed with a known secret) and the "
-                        "expiration is in the past, indicating missing expiration validation.",
+                "The token signature is valid (signed with a known secret) and the "
+                "expiration is in the past, indicating missing expiration validation.",
                 recommendation="Implement proper token expiration validation. "
-                             "Reject all expired tokens immediately.",
-                payload=expired_token[:100] + "..." if len(expired_token) > 100 else expired_token
+                "Reject all expired tokens immediately.",
+                payload=expired_token[:100] + "..." if len(expired_token) > 100 else expired_token,
             )
             findings.append(finding)
 
-            self.logger.warning("Validly-signed expired JWT accepted",
-                              endpoint=endpoint_url,
-                              auth_context=auth_context.name)
+            self.logger.warning(
+                "Validly-signed expired JWT accepted",
+                endpoint=endpoint_url,
+                auth_context=auth_context.name,
+            )
 
         return findings
-    
-    async def _test_logout_invalidation(self, endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_logout_invalidation(self, endpoints: list[Any]) -> list[Finding]:
         """
         Test logout token invalidation (Requirement 2.3)
-        
+
         Args:
             endpoints: List of endpoints to test
-            
+
         Returns:
             List of findings for logout invalidation issues
         """
@@ -1569,7 +1693,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         # Preserve the configured short-circuit as an additional skip condition
         # regardless of Safe Mode (Requirement 9.5).
-        if not getattr(self.config, 'test_logout_invalidation', True):
+        if not getattr(self.config, "test_logout_invalidation", True):
             self.logger.info("Skipping logout-invalidation test (disabled by configuration)")
             return findings
 
@@ -1577,20 +1701,20 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # typically POST) and is therefore skipped under Safe Mode
         # (Requirements 9.3, 21.2). When Safe Mode is off it runs and can report
         # JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT (Requirement 9.4).
-        if self.skip_if_state_changing('POST', 'logout_invalidation'):
+        if self.skip_if_state_changing("POST", "logout_invalidation"):
             return findings
 
         # Look for logout endpoints
         logout_endpoints = []
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
             if self._is_logout_endpoint(endpoint_url):
                 logout_endpoints.append(endpoint)
-        
+
         if not logout_endpoints:
             self.logger.info("No logout endpoints found for invalidation testing")
             return findings
-        
+
         # Test each auth context
         for auth_context in self.auth_contexts:
             if auth_context.type in [AuthType.JWT, AuthType.BEARER]:
@@ -1598,62 +1722,77 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     auth_context, logout_endpoints, endpoints
                 )
                 findings.extend(invalidation_findings)
-        
+
         return findings
-    
+
     def _is_logout_endpoint(self, endpoint_url: str) -> bool:
         """Check if endpoint is a logout endpoint"""
         logout_patterns = [
-            '/logout', '/signout', '/sign-out', '/logoff',
-            '/api/logout', '/api/signout', '/api/auth/logout',
-            '/auth/logout', '/session/logout', '/user/logout'
+            "/logout",
+            "/signout",
+            "/sign-out",
+            "/logoff",
+            "/api/logout",
+            "/api/signout",
+            "/api/auth/logout",
+            "/auth/logout",
+            "/session/logout",
+            "/user/logout",
         ]
-        
+
         endpoint_lower = endpoint_url.lower()
         return any(pattern in endpoint_lower for pattern in logout_patterns)
-    
-    async def _test_token_invalidation_after_logout(self, auth_context: AuthContext,
-                                                   logout_endpoints: List[Any],
-                                                   all_endpoints: List[Any]) -> List[Finding]:
+
+    async def _test_token_invalidation_after_logout(
+        self, auth_context: AuthContext, logout_endpoints: list[Any], all_endpoints: list[Any]
+    ) -> list[Finding]:
         """Test if tokens remain valid after logout"""
         findings = []
-        
+
         # Set auth context
         self.http_client.set_auth_context(auth_context)
-        
+
         # Try to logout using each logout endpoint
         for logout_endpoint in logout_endpoints:
-            logout_url = logout_endpoint.url if hasattr(logout_endpoint, 'url') else str(logout_endpoint)
-            logout_method = logout_endpoint.method if hasattr(logout_endpoint, 'method') else 'POST'
-            
+            logout_url = (
+                logout_endpoint.url if hasattr(logout_endpoint, "url") else str(logout_endpoint)
+            )
+            logout_method = logout_endpoint.method if hasattr(logout_endpoint, "method") else "POST"
+
             try:
                 # Perform logout
                 logout_response = await self.http_client.request(logout_method, logout_url)
-                
+
                 # If logout appears successful, test if token is still valid
                 if logout_response.is_success or logout_response.status_code in [200, 204, 302]:
                     # Test token validity after logout
                     test_endpoints = all_endpoints[:3] if len(all_endpoints) > 3 else all_endpoints
-                    
+
                     for test_endpoint in test_endpoints:
-                        test_url = test_endpoint.url if hasattr(test_endpoint, 'url') else str(test_endpoint)
-                        test_method = test_endpoint.method if hasattr(test_endpoint, 'method') else 'GET'
-                        
+                        test_url = (
+                            test_endpoint.url
+                            if hasattr(test_endpoint, "url")
+                            else str(test_endpoint)
+                        )
+                        test_method = (
+                            test_endpoint.method if hasattr(test_endpoint, "method") else "GET"
+                        )
+
                         # Skip the logout endpoint itself
                         if test_url == logout_url:
                             continue
-                        
+
                         try:
                             # Use same token after logout
                             test_response = await self.http_client.request(test_method, test_url)
-                            
+
                             # If token still works after logout, it's a vulnerability
                             if test_response.is_success:
                                 finding = Finding(
                                     id=str(uuid.uuid4()),
-                                    scan_id='',
-                                    category='JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT',
-                                    owasp_category='API2',
+                                    scan_id="",
+                                    category="JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT",
+                                    owasp_category="API2",
                                     severity=Severity.HIGH,
                                     endpoint=test_url,
                                     method=test_method,
@@ -1661,30 +1800,32 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                                     response_size=len(test_response.content),
                                     response_time=test_response.elapsed,
                                     evidence=f"Token remains valid after logout. "
-                                            f"Logout endpoint: {logout_url} (status: {logout_response.status_code}). "
-                                            f"Token still grants access to: {test_url}",
+                                    f"Logout endpoint: {logout_url} (status: {logout_response.status_code}). "
+                                    f"Token still grants access to: {test_url}",
                                     recommendation="Implement proper token invalidation on logout. "
-                                                 "Maintain a blacklist of invalidated tokens or use short-lived tokens with refresh mechanism.",
-                                    payload=f"Logout endpoint: {logout_url}"
+                                    "Maintain a blacklist of invalidated tokens or use short-lived tokens with refresh mechanism.",
+                                    payload=f"Logout endpoint: {logout_url}",
                                 )
                                 findings.append(finding)
-                                
-                                self.logger.warning("Token not invalidated after logout",
-                                                  logout_endpoint=logout_url,
-                                                  test_endpoint=test_url,
-                                                  auth_context=auth_context.name)
+
+                                self.logger.warning(
+                                    "Token not invalidated after logout",
+                                    logout_endpoint=logout_url,
+                                    test_endpoint=test_url,
+                                    auth_context=auth_context.name,
+                                )
                                 break  # Found issue, no need to test more endpoints
-                        
+
                         except Exception as e:
-                            self.logger.debug("Post-logout token test failed",
-                                            test_endpoint=test_url,
-                                            error=str(e))
-            
+                            self.logger.debug(
+                                "Post-logout token test failed",
+                                test_endpoint=test_url,
+                                error=str(e),
+                            )
+
             except Exception as e:
-                self.logger.debug("Logout test failed",
-                                logout_endpoint=logout_url,
-                                error=str(e))
-        
+                self.logger.debug("Logout test failed", logout_endpoint=logout_url, error=str(e))
+
         return findings
 
     # ------------------------------------------------------------------
@@ -1702,9 +1843,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         The gate is fail-closed: aggressive probing is disabled by default because
         ``config.allow_aggressive`` defaults to ``False`` (Requirement 46.1).
         """
-        return (not self.safe_mode) and bool(
-            getattr(self.config, "allow_aggressive", False)
-        )
+        return (not self.safe_mode) and bool(getattr(self.config, "allow_aggressive", False))
 
     def _reset_request_allowed(self) -> bool:
         """State-changing password-reset gate (Safe_Mode off AND Destructive_Opt_In).
@@ -1714,11 +1853,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         when Safe_Mode is disabled AND ``config.allow_destructive`` is set; it is
         fail-closed because ``config.allow_destructive`` defaults to ``False``.
         """
-        return (not self.safe_mode) and bool(
-            getattr(self.config, "allow_destructive", False)
-        )
+        return (not self.safe_mode) and bool(getattr(self.config, "allow_destructive", False))
 
-    def _build_login_burst(self, login_endpoint: str, attempts: int) -> List[Request]:
+    def _build_login_burst(self, login_endpoint: str, attempts: int) -> list[Request]:
         """Build at most ``attempts`` login requests for the anti-automation probe.
 
         Every request targets the same login endpoint using ONE benign username
@@ -1732,19 +1869,21 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         """
         count = max(0, int(attempts))
         username = self.config.benign_username or "apileaks_benign_probe"
-        requests: List[Request] = []
+        requests: list[Request] = []
         for i in range(count):
             # Vary only the password; the username is held constant across the
             # entire burst (Requirement 37.4).
             password = f"AntiAutomationProbe-{i}-Pw!"
-            requests.append(Request(
-                method="POST",
-                url=login_endpoint,
-                json={"username": username, "password": password},
-            ))
+            requests.append(
+                Request(
+                    method="POST",
+                    url=login_endpoint,
+                    json={"username": username, "password": password},
+                )
+            )
         return requests
 
-    def _classify_throttling(self, responses: List[Response]) -> Dict[str, Any]:
+    def _classify_throttling(self, responses: list[Response]) -> dict[str, Any]:
         """Pure classifier for throttling / anti-automation signals.
 
         Returns ``{"throttled": bool, "evidence": {...}}``. The responses are
@@ -1768,10 +1907,20 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         has_429 = any(code == 429 for code in status_codes)
 
         lockout_signals = [
-            "account locked", "account has been locked", "account is locked",
-            "locked out", "lockout", "too many attempts", "too many requests",
-            "too many failed", "try again later", "rate limit", "rate-limit",
-            "temporarily locked", "temporarily blocked", "throttled",
+            "account locked",
+            "account has been locked",
+            "account is locked",
+            "locked out",
+            "lockout",
+            "too many attempts",
+            "too many requests",
+            "too many failed",
+            "try again later",
+            "rate limit",
+            "rate-limit",
+            "temporarily locked",
+            "temporarily blocked",
+            "throttled",
         ]
 
         def _is_lockout(resp: Response) -> bool:
@@ -1806,7 +1955,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         }
         return {"throttled": throttled, "evidence": evidence}
 
-    async def _test_rate_limiting(self, login_endpoint: str) -> List[Finding]:
+    async def _test_rate_limiting(self, login_endpoint: str) -> list[Finding]:
         """Anti-automation / rate-limiting probe (Requirement 37).
 
         Gated by :meth:`_aggressive_allowed`. When aggressive probing is not
@@ -1825,23 +1974,27 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         37.6), each mapped to OWASP API2, embedding the number of attempts issued and
         the observed/absent throttling responses as evidence (Requirement 37.7).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping aggressive auth probe",
-                             probe="rate_limiting",
-                             reason="opt-in absent or safe mode")
+            self.logger.info(
+                "Skipping aggressive auth probe",
+                probe="rate_limiting",
+                reason="opt-in absent or safe mode",
+            )
             return findings
 
         attempts = max(0, int(getattr(self.config, "rate_limit_attempts", 0)))
-        self.logger.info("Issuing aggressive auth probe",
-                         probe="rate_limiting",
-                         endpoint=login_endpoint,
-                         requests=attempts)
+        self.logger.info(
+            "Issuing aggressive auth probe",
+            probe="rate_limiting",
+            endpoint=login_endpoint,
+            requests=attempts,
+        )
 
         burst = self._build_login_burst(login_endpoint, attempts)
 
-        responses: List[Response] = []
+        responses: list[Response] = []
         for request in burst:
             try:
                 response = await self.http_client.request(
@@ -1851,8 +2004,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     headers=request.headers,
                 )
             except Exception as e:
-                self.logger.debug("Login burst request failed",
-                                  endpoint=login_endpoint, error=str(e))
+                self.logger.debug(
+                    "Login burst request failed", endpoint=login_endpoint, error=str(e)
+                )
                 continue
 
             responses.append(response)
@@ -1867,18 +2021,21 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 break
 
         if not responses:
-            self.logger.info("Rate-limiting probe issued no observable responses",
-                             endpoint=login_endpoint)
+            self.logger.info(
+                "Rate-limiting probe issued no observable responses", endpoint=login_endpoint
+            )
             return findings
 
         classification = self._classify_throttling(responses)
         attempts_issued = len(responses)
 
         if classification["throttled"]:
-            self.logger.info("Throttling observed; no rate-limiting finding reported",
-                             endpoint=login_endpoint,
-                             attempts_issued=attempts_issued,
-                             signals=classification["evidence"]["signals"])
+            self.logger.info(
+                "Throttling observed; no rate-limiting finding reported",
+                endpoint=login_endpoint,
+                attempts_issued=attempts_issued,
+                signals=classification["evidence"]["signals"],
+            )
             return findings
 
         evidence_detail = (
@@ -1893,33 +2050,30 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         no_rate_limit_finding = Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_NO_RATE_LIMITING',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_NO_RATE_LIMITING",
+            owasp_category="API2",
             severity=Severity.MEDIUM,
             endpoint=login_endpoint,
-            method='POST',
+            method="POST",
             status_code=last_response.status_code,
             response_size=len(last_response.content),
             response_time=last_response.elapsed,
-            evidence=(
-                "Authentication endpoint does not enforce rate limiting. "
-                + evidence_detail
-            ),
+            evidence=("Authentication endpoint does not enforce rate limiting. " + evidence_detail),
             recommendation="Enforce rate limiting and progressive delays or account "
-                           "lockout on repeated failed authentication attempts to "
-                           "prevent automated abuse.",
+            "lockout on repeated failed authentication attempts to "
+            "prevent automated abuse.",
         )
         findings.append(no_rate_limit_finding)
 
         stuffing_finding = Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_CREDENTIAL_STUFFING_EXPOSURE',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_CREDENTIAL_STUFFING_EXPOSURE",
+            owasp_category="API2",
             severity=Severity.HIGH,
             endpoint=login_endpoint,
-            method='POST',
+            method="POST",
             status_code=last_response.status_code,
             response_size=len(last_response.content),
             response_time=last_response.elapsed,
@@ -1928,14 +2082,16 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 "credential-stuffing attacks. " + evidence_detail
             ),
             recommendation="Add anti-automation controls (rate limiting, CAPTCHA, "
-                           "device/IP reputation, MFA) so the endpoint cannot be used "
-                           "for high-volume credential-stuffing.",
+            "device/IP reputation, MFA) so the endpoint cannot be used "
+            "for high-volume credential-stuffing.",
         )
         findings.append(stuffing_finding)
 
-        self.logger.warning("No rate limiting detected on authentication endpoint",
-                            endpoint=login_endpoint,
-                            attempts_issued=attempts_issued)
+        self.logger.warning(
+            "No rate limiting detected on authentication endpoint",
+            endpoint=login_endpoint,
+            attempts_issued=attempts_issued,
+        )
 
         return findings
 
@@ -1962,8 +2118,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    async def _issue_revocation_protected(self, token: str,
-                                          protected_endpoint: str) -> Response:
+    async def _issue_revocation_protected(self, token: str, protected_endpoint: str) -> Response:
         """Issue one protected-resource request bearing ``token`` (read-only GET).
 
         Raced concurrently against the logout to observe whether the token is
@@ -1975,8 +2130,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    async def _test_revocation_race(self, token: str, logout_endpoint: str,
-                                    protected_endpoint: str) -> List[Finding]:
+    async def _test_revocation_race(
+        self, token: str, logout_endpoint: str, protected_endpoint: str
+    ) -> list[Finding]:
         """Token-revocation race probe (Requirement 42).
 
         Gated by :meth:`_aggressive_allowed` - the probe runs only when BOTH the
@@ -1997,18 +2153,22 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         (OWASP API2, Requirement 42.3). The finding embeds the concurrent-request
         evidence showing post-logout acceptance (Requirement 42.4).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping aggressive auth probe",
-                             probe="revocation_race",
-                             reason="opt-in absent or safe mode")
+            self.logger.info(
+                "Skipping aggressive auth probe",
+                probe="revocation_race",
+                reason="opt-in absent or safe mode",
+            )
             return findings
 
         if not token:
-            self.logger.debug("Revocation-race probe skipped; no token supplied",
-                              logout_endpoint=logout_endpoint,
-                              protected_endpoint=protected_endpoint)
+            self.logger.debug(
+                "Revocation-race probe skipped; no token supplied",
+                logout_endpoint=logout_endpoint,
+                protected_endpoint=protected_endpoint,
+            )
             return findings
 
         # Bound the concurrency by the operator-configured request count. One
@@ -2017,17 +2177,21 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         budget = max(0, int(getattr(self.config, "revocation_race_requests", 0)))
         num_protected = budget - 1
         if num_protected < 1:
-            self.logger.info("Revocation-race probe skipped; configured bound too small",
-                             logout_endpoint=logout_endpoint,
-                             protected_endpoint=protected_endpoint,
-                             revocation_race_requests=budget)
+            self.logger.info(
+                "Revocation-race probe skipped; configured bound too small",
+                logout_endpoint=logout_endpoint,
+                protected_endpoint=protected_endpoint,
+                revocation_race_requests=budget,
+            )
             return findings
 
-        self.logger.info("Issuing aggressive auth probe",
-                         probe="revocation_race",
-                         logout_endpoint=logout_endpoint,
-                         protected_endpoint=protected_endpoint,
-                         requests=budget)
+        self.logger.info(
+            "Issuing aggressive auth probe",
+            probe="revocation_race",
+            logout_endpoint=logout_endpoint,
+            protected_endpoint=protected_endpoint,
+            requests=budget,
+        )
 
         # Schedule the logout and the protected requests to run CONCURRENTLY so
         # the protected requests race against the revocation (Requirement 42.1).
@@ -2047,8 +2211,8 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # acceptance of the token to be meaningful.
         logout_issued = logout_response is not None and 200 <= logout_response.status_code < 400
 
-        accepted: List[Response] = []
-        protected_statuses: List[Optional[int]] = []
+        accepted: list[Response] = []
+        protected_statuses: list[int | None] = []
         for r in protected_results:
             if isinstance(r, Response):
                 protected_statuses.append(r.status_code)
@@ -2056,21 +2220,27 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     accepted.append(r)
             else:
                 protected_statuses.append(None)
-                self.logger.debug("Revocation-race protected request failed",
-                                  protected_endpoint=protected_endpoint,
-                                  error=str(r))
+                self.logger.debug(
+                    "Revocation-race protected request failed",
+                    protected_endpoint=protected_endpoint,
+                    error=str(r),
+                )
 
         if not logout_issued:
-            self.logger.info("Revocation-race probe: logout not issued/accepted; no finding",
-                             logout_endpoint=logout_endpoint,
-                             logout_status=logout_status)
+            self.logger.info(
+                "Revocation-race probe: logout not issued/accepted; no finding",
+                logout_endpoint=logout_endpoint,
+                logout_status=logout_status,
+            )
             return findings
 
         if not accepted:
-            self.logger.info("Revocation-race probe: token not accepted after logout",
-                             protected_endpoint=protected_endpoint,
-                             logout_status=logout_status,
-                             protected_statuses=protected_statuses)
+            self.logger.info(
+                "Revocation-race probe: token not accepted after logout",
+                protected_endpoint=protected_endpoint,
+                logout_status=logout_status,
+                protected_statuses=protected_statuses,
+            )
             return findings
 
         accepted_response = accepted[-1]
@@ -2087,30 +2257,32 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         finding = Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_TOKEN_REVOCATION_RACE',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_TOKEN_REVOCATION_RACE",
+            owasp_category="API2",
             severity=Severity.HIGH,
             endpoint=protected_endpoint,
-            method='GET',
+            method="GET",
             status_code=accepted_response.status_code,
             response_size=len(accepted_response.content),
             response_time=accepted_response.elapsed,
             evidence=evidence,
             recommendation="Revoke tokens atomically with respect to concurrent "
-                           "requests. Mark the token/session revoked before releasing "
-                           "the logout response, and re-check revocation state at the "
-                           "point of use (e.g. via a shared, strongly-consistent token "
-                           "denylist) so a token cannot be honored after logout under "
-                           "concurrency.",
+            "requests. Mark the token/session revoked before releasing "
+            "the logout response, and re-check revocation state at the "
+            "point of use (e.g. via a shared, strongly-consistent token "
+            "denylist) so a token cannot be honored after logout under "
+            "concurrency.",
         )
         findings.append(finding)
 
-        self.logger.warning("Token honored after logout under concurrency (revocation race)",
-                            logout_endpoint=logout_endpoint,
-                            protected_endpoint=protected_endpoint,
-                            logout_status=logout_status,
-                            accepted_after_logout=len(accepted))
+        self.logger.warning(
+            "Token honored after logout under concurrency (revocation race)",
+            logout_endpoint=logout_endpoint,
+            protected_endpoint=protected_endpoint,
+            logout_status=logout_status,
+            accepted_after_logout=len(accepted),
+        )
 
         return findings
 
@@ -2122,7 +2294,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # cannot yield a false positive.
     # ------------------------------------------------------------------
 
-    def _redact_secret(self, text: str, secret: Optional[str] = None) -> str:
+    def _redact_secret(self, text: str, secret: str | None = None) -> str:
         """Redact credential values in evidence before it is stored.
 
         Reuses the BOLA module's ``redact_secrets`` (Requirement 38.3, 33.3)
@@ -2143,6 +2315,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         redactor = self._secret_redactor
         if redactor is None:
             from .bola_testing import BOLATestingModule
+
             redactor = BOLATestingModule.__new__(BOLATestingModule)
             self._secret_redactor = redactor
 
@@ -2167,8 +2340,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         new_query = urlencode(qs, doseq=True)
         return urlunparse(parsed._replace(query=new_query))
 
-    async def _test_secret_in_url(self, endpoint: str,
-                                  auth_context: AuthContext) -> List[Finding]:
+    async def _test_secret_in_url(self, endpoint: str, auth_context: AuthContext) -> list[Finding]:
         """Test whether a VALID secret carried in the URL is accepted (Req 38).
 
         A valid authentication secret (``auth_context.token``) is placed into
@@ -2186,13 +2358,15 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         runtime-only and performs no OSINT or external secret-harvesting
         (Requirement 38.4).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
-        secret = getattr(auth_context, 'token', None)
+        secret = getattr(auth_context, "token", None)
         if not secret:
-            self.logger.debug("Secret-in-URL test skipped; no secret in auth context",
-                              endpoint=endpoint,
-                              auth_context=getattr(auth_context, 'name', None))
+            self.logger.debug(
+                "Secret-in-URL test skipped; no secret in auth context",
+                endpoint=endpoint,
+                auth_context=getattr(auth_context, "name", None),
+            )
             return findings
 
         for param_name in self.SECRET_URL_PARAM_NAMES:
@@ -2206,17 +2380,26 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     endpoint,
                     auth_context=None,
                     invalid_id=invalid_secret,
-                    substitute=lambda inv: self._build_secret_in_url(endpoint, param_name, inv),
+                    substitute=lambda inv, param_name=param_name: self._build_secret_in_url(
+                        endpoint, param_name, inv
+                    ),
                 )
             except Exception as e:
-                self.logger.debug("Secret-in-URL negative control failed",
-                                  endpoint=endpoint, param=param_name, error=str(e))
+                self.logger.debug(
+                    "Secret-in-URL negative control failed",
+                    endpoint=endpoint,
+                    param=param_name,
+                    error=str(e),
+                )
                 continue
 
             if baseline.non_discriminating:
-                self.logger.info("Secret-in-URL probe suppressed; endpoint non-discriminating",
-                                 endpoint=endpoint, param=param_name,
-                                 status_code=baseline.status_code)
+                self.logger.info(
+                    "Secret-in-URL probe suppressed; endpoint non-discriminating",
+                    endpoint=endpoint,
+                    param=param_name,
+                    status_code=baseline.status_code,
+                )
                 continue
 
             # Probe with the VALID secret in the URL, again with no auth header.
@@ -2225,8 +2408,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             try:
                 probe_response = await self.http_client.request("GET", probe_url)
             except Exception as e:
-                self.logger.debug("Secret-in-URL probe request failed",
-                                  endpoint=endpoint, param=param_name, error=str(e))
+                self.logger.debug(
+                    "Secret-in-URL probe request failed",
+                    endpoint=endpoint,
+                    param=param_name,
+                    error=str(e),
+                )
                 continue
 
             # Accepted only when the response indicates access AND is distinct
@@ -2234,8 +2421,11 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             if not (200 <= probe_response.status_code < 300):
                 continue
             if responses_equivalent(probe_response, baseline):
-                self.logger.debug("URL secret not accepted; equivalent to negative control",
-                                  endpoint=endpoint, param=param_name)
+                self.logger.debug(
+                    "URL secret not accepted; equivalent to negative control",
+                    endpoint=endpoint,
+                    param=param_name,
+                )
                 continue
 
             evidence = (
@@ -2252,32 +2442,35 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
             finding = Finding(
                 id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_SECRET_IN_URL',
-                owasp_category='API2',
+                scan_id="",
+                category="AUTH_SECRET_IN_URL",
+                owasp_category="API2",
                 severity=Severity.HIGH,
                 endpoint=endpoint,
-                method='GET',
+                method="GET",
                 status_code=probe_response.status_code,
                 response_size=len(probe_response.content),
                 response_time=probe_response.elapsed,
                 evidence=evidence,
                 recommendation="Never transmit authentication secrets in the URL query "
-                               "string. Carry credentials in the Authorization header or a "
-                               "secure, HttpOnly cookie so they are not exposed via logs, "
-                               "the Referer header, or browser history.",
+                "string. Carry credentials in the Authorization header or a "
+                "secure, HttpOnly cookie so they are not exposed via logs, "
+                "the Referer header, or browser history.",
             )
             findings.append(finding)
 
-            self.logger.warning("Secret accepted in URL query parameter",
-                                endpoint=endpoint,
-                                param=param_name,
-                                status_code=probe_response.status_code)
+            self.logger.warning(
+                "Secret accepted in URL query parameter",
+                endpoint=endpoint,
+                param=param_name,
+                status_code=probe_response.status_code,
+            )
 
         return findings
 
-    async def _test_mfa_bypass(self, provisional_token: str,
-                               protected_endpoint: str) -> List[Finding]:
+    async def _test_mfa_bypass(
+        self, provisional_token: str, protected_endpoint: str
+    ) -> list[Finding]:
         """Test whether a pre-MFA Provisional_Token grants access (Req 39).
 
         The operator-supplied Provisional_Token (issued before MFA completion)
@@ -2292,12 +2485,14 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         no multi-step flow inputs are supplied the test is skipped and the
         omission is logged (Requirement 39.5).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not provisional_token or not protected_endpoint:
-            self.logger.info("MFA-bypass test skipped for lack of multi-step flow inputs",
-                             has_provisional_token=bool(provisional_token),
-                             has_protected_endpoint=bool(protected_endpoint))
+            self.logger.info(
+                "MFA-bypass test skipped for lack of multi-step flow inputs",
+                has_provisional_token=bool(provisional_token),
+                has_protected_endpoint=bool(protected_endpoint),
+            )
             return findings
 
         # Negative control: request the protected endpoint with a known-invalid
@@ -2314,16 +2509,19 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 auth_context=invalid_ctx,
             )
         except Exception as e:
-            self.logger.debug("MFA-bypass negative control failed",
-                              endpoint=protected_endpoint, error=str(e))
+            self.logger.debug(
+                "MFA-bypass negative control failed", endpoint=protected_endpoint, error=str(e)
+            )
             return findings
         finally:
             self.http_client.current_auth_context = None
 
         if baseline.non_discriminating:
-            self.logger.info("MFA-bypass probe suppressed; endpoint non-discriminating",
-                             endpoint=protected_endpoint,
-                             status_code=baseline.status_code)
+            self.logger.info(
+                "MFA-bypass probe suppressed; endpoint non-discriminating",
+                endpoint=protected_endpoint,
+                status_code=baseline.status_code,
+            )
             return findings
 
         # Probe with the operator-supplied Provisional_Token.
@@ -2337,8 +2535,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             self.http_client.set_auth_context(provisional_ctx)
             probe_response = await self.http_client.request("GET", protected_endpoint)
         except Exception as e:
-            self.logger.debug("MFA-bypass probe request failed",
-                              endpoint=protected_endpoint, error=str(e))
+            self.logger.debug(
+                "MFA-bypass probe request failed", endpoint=protected_endpoint, error=str(e)
+            )
             return findings
         finally:
             self.http_client.current_auth_context = None
@@ -2346,13 +2545,17 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # Bypass only when the provisional token yields access AND that access is
         # distinct from the invalid-token baseline (negative-control calibrated).
         if not (200 <= probe_response.status_code < 300):
-            self.logger.debug("Provisional token did not grant access",
-                              endpoint=protected_endpoint,
-                              status_code=probe_response.status_code)
+            self.logger.debug(
+                "Provisional token did not grant access",
+                endpoint=protected_endpoint,
+                status_code=probe_response.status_code,
+            )
             return findings
         if responses_equivalent(probe_response, baseline):
-            self.logger.debug("Provisional token access equivalent to negative control",
-                              endpoint=protected_endpoint)
+            self.logger.debug(
+                "Provisional token access equivalent to negative control",
+                endpoint=protected_endpoint,
+            )
             return findings
 
         evidence = (
@@ -2368,25 +2571,27 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         finding = Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_MFA_BYPASS',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_MFA_BYPASS",
+            owasp_category="API2",
             severity=Severity.CRITICAL,
             endpoint=protected_endpoint,
-            method='GET',
+            method="GET",
             status_code=probe_response.status_code,
             response_size=len(probe_response.content),
             response_time=probe_response.elapsed,
             evidence=evidence,
             recommendation="Enforce MFA completion server-side before granting access to "
-                           "protected resources. A pre-MFA Provisional_Token must not be "
-                           "accepted for any resource that requires full authentication.",
+            "protected resources. A pre-MFA Provisional_Token must not be "
+            "accepted for any resource that requires full authentication.",
         )
         findings.append(finding)
 
-        self.logger.warning("MFA bypass detected via provisional token",
-                            endpoint=protected_endpoint,
-                            status_code=probe_response.status_code)
+        self.logger.warning(
+            "MFA bypass detected via provisional token",
+            endpoint=protected_endpoint,
+            status_code=probe_response.status_code,
+        )
 
         return findings
 
@@ -2407,15 +2612,16 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         analyzer = self._predictability_analyzer
         if analyzer is None:
             from .bola_testing import BOLATestingModule
+
             analyzer = BOLATestingModule.__new__(BOLATestingModule)
             self._predictability_analyzer = analyzer
         return analyzer
 
     async def _test_reset_token_predictability(
         self,
-        observed_tokens: List[str],
-        known_inputs: Optional[List[str]] = None,
-    ) -> List[Finding]:
+        observed_tokens: list[str],
+        known_inputs: list[str] | None = None,
+    ) -> list[Finding]:
         """Detect predictable Password_Reset_Tokens (Requirement 40).
 
         Analyzes the observed Password_Reset_Tokens for predictability
@@ -2435,9 +2641,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         method never issues a state-changing reset request itself - it consumes
         operator-supplied observed tokens - so it is safe under Safe_Mode.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
-        tokens = [str(t) for t in (observed_tokens or []) if t is not None and str(t) != '']
+        tokens = [str(t) for t in (observed_tokens or []) if t is not None and str(t) != ""]
         if not tokens:
             # Observing reset tokens live would require a state-changing reset
             # request. Note the Safe_Mode / Destructive_Opt_In posture governing
@@ -2465,7 +2671,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         analyzer = self._get_predictability_analyzer()
         cleaned_known = (
-            [str(k) for k in known_inputs if k is not None and str(k) != '']
+            [str(k) for k in known_inputs if k is not None and str(k) != ""]
             if known_inputs
             else None
         )
@@ -2476,13 +2682,13 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     [token], known_inputs=cleaned_known
                 )
             except Exception as e:
-                self.logger.debug("Reset-token predictability analysis failed",
-                                  error=str(e))
+                self.logger.debug("Reset-token predictability analysis failed", error=str(e))
                 continue
 
             if not assessment.predictable:
-                self.logger.debug("Reset token classified as not predictable",
-                                  scheme=assessment.scheme)
+                self.logger.debug(
+                    "Reset token classified as not predictable", scheme=assessment.scheme
+                )
                 continue
 
             evidence = (
@@ -2494,26 +2700,27 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
             finding = Finding(
                 id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_PREDICTABLE_RESET_TOKEN',
-                owasp_category='API2',
+                scan_id="",
+                category="AUTH_PREDICTABLE_RESET_TOKEN",
+                owasp_category="API2",
                 severity=Severity.HIGH,
-                endpoint='',
-                method='',
+                endpoint="",
+                method="",
                 status_code=0,
                 response_size=0,
                 response_time=0.0,
                 evidence=evidence,
                 recommendation="Generate password-reset tokens from a cryptographically "
-                               "secure random source with sufficient entropy (e.g. 128+ "
-                               "bits). Never derive a token from a timestamp, a sequential "
-                               "counter, or a hash of a known value such as the account "
-                               "email address.",
+                "secure random source with sufficient entropy (e.g. 128+ "
+                "bits). Never derive a token from a timestamp, a sequential "
+                "counter, or a hash of a known value such as the account "
+                "email address.",
             )
             findings.append(finding)
 
-            self.logger.warning("Predictable password-reset token detected",
-                                scheme=assessment.scheme)
+            self.logger.warning(
+                "Predictable password-reset token detected", scheme=assessment.scheme
+            )
 
         return findings
 
@@ -2521,7 +2728,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # OAuth / OpenID flow abuse detection (Requirement 41)
     # ------------------------------------------------------------------
 
-    def _coerce_oauth_inputs(self, oauth_inputs: Any) -> Optional[OAuthFlowInputs]:
+    def _coerce_oauth_inputs(self, oauth_inputs: Any) -> OAuthFlowInputs | None:
         """Normalize operator-supplied OAuth inputs into an ``OAuthFlowInputs``.
 
         Accepts an :class:`OAuthFlowInputs` directly, or a mapping (as carried by
@@ -2536,20 +2743,19 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         if isinstance(oauth_inputs, dict):
             if not oauth_inputs:
                 return None
-            authorize_url = oauth_inputs.get('authorize_url')
+            authorize_url = oauth_inputs.get("authorize_url")
             if not authorize_url:
                 return None
             return OAuthFlowInputs(
                 authorize_url=authorize_url,
-                registered_redirect_uri=oauth_inputs.get('registered_redirect_uri', ''),
-                attacker_redirect_uri=oauth_inputs.get('attacker_redirect_uri', ''),
-                foreign_aud_token=oauth_inputs.get('foreign_aud_token'),
-                state_present=bool(oauth_inputs.get('state_present', True)),
+                registered_redirect_uri=oauth_inputs.get("registered_redirect_uri", ""),
+                attacker_redirect_uri=oauth_inputs.get("attacker_redirect_uri", ""),
+                foreign_aud_token=oauth_inputs.get("foreign_aud_token"),
+                state_present=bool(oauth_inputs.get("state_present", True)),
             )
         return None
 
-    def _build_redirect_uri_probe(self, authorize_url: str,
-                                  attacker_redirect_uri: str) -> str:
+    def _build_redirect_uri_probe(self, authorize_url: str, attacker_redirect_uri: str) -> str:
         """Build an authorization URL whose ``redirect_uri`` is attacker-controlled.
 
         The ``redirect_uri`` query parameter is set to the attacker-controlled or
@@ -2559,13 +2765,11 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         """
         parsed = urlparse(authorize_url)
         qs = parse_qs(parsed.query, keep_blank_values=True)
-        qs['redirect_uri'] = [attacker_redirect_uri]
+        qs["redirect_uri"] = [attacker_redirect_uri]
         new_query = urlencode(qs, doseq=True)
         return urlunparse(parsed._replace(query=new_query))
 
-    async def _build_redirect_uri_finding(
-        self, oauth_inputs: OAuthFlowInputs
-    ) -> Optional[Finding]:
+    async def _build_redirect_uri_finding(self, oauth_inputs: OAuthFlowInputs) -> Finding | None:
         """redirect_uri manipulation sub-probe (Reqs 41.1, 41.2, 41.5).
 
         Submits an attacker-controlled/unregistered Redirect_URI to the
@@ -2577,8 +2781,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         the accepted Redirect_URI as supporting evidence (Req 41.5).
         """
         if not oauth_inputs.attacker_redirect_uri:
-            self.logger.info("OAuth redirect_uri sub-probe skipped; no attacker "
-                             "redirect URI supplied")
+            self.logger.info(
+                "OAuth redirect_uri sub-probe skipped; no attacker redirect URI supplied"
+            )
             return None
 
         probe_url = self._build_redirect_uri_probe(
@@ -2588,16 +2793,15 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         try:
             response = await self.http_client.request("GET", probe_url)
         except Exception as e:
-            self.logger.debug("OAuth redirect_uri probe request failed",
-                              error=str(e))
+            self.logger.debug("OAuth redirect_uri probe request failed", error=str(e))
             return None
 
-        location = ''
+        location = ""
         try:
             headers = response.headers or {}
-            location = headers.get('Location') or headers.get('location') or ''
+            location = headers.get("Location") or headers.get("location") or ""
         except Exception:
-            location = ''
+            location = ""
 
         accepted = False
         if response.is_success:
@@ -2606,8 +2810,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             accepted = True
 
         if not accepted:
-            self.logger.debug("Attacker redirect_uri rejected by authorization server",
-                              status_code=response.status_code)
+            self.logger.debug(
+                "Attacker redirect_uri rejected by authorization server",
+                status_code=response.status_code,
+            )
             return None
 
         evidence = (
@@ -2621,30 +2827,29 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             f"attacker to capture the authorization code or token."
         )
 
-        self.logger.warning("OAuth redirect_uri manipulation accepted",
-                            status_code=response.status_code)
+        self.logger.warning(
+            "OAuth redirect_uri manipulation accepted", status_code=response.status_code
+        )
 
         return Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_OAUTH_REDIRECT_URI',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_OAUTH_REDIRECT_URI",
+            owasp_category="API2",
             severity=Severity.HIGH,
             endpoint=oauth_inputs.authorize_url,
-            method='GET',
+            method="GET",
             status_code=response.status_code,
             response_size=len(response.content),
             response_time=response.elapsed,
             evidence=evidence,
             recommendation="Strictly validate the redirect_uri against the exact set of "
-                           "redirect URIs registered for the client, using an exact match "
-                           "(no prefix or substring matching). Reject any authorization "
-                           "request whose redirect_uri is not pre-registered.",
+            "redirect URIs registered for the client, using an exact match "
+            "(no prefix or substring matching). Reject any authorization "
+            "request whose redirect_uri is not pre-registered.",
         )
 
-    async def _check_audience_confusion(
-        self, oauth_inputs: OAuthFlowInputs
-    ) -> Optional[Finding]:
+    async def _check_audience_confusion(self, oauth_inputs: OAuthFlowInputs) -> Finding | None:
         """Audience-confusion sub-probe (Reqs 41.3, 41.5).
 
         Presents a token issued for one application (``foreign_aud_token``) to a
@@ -2656,8 +2861,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         foreign-audience token is supplied.
         """
         if not oauth_inputs.foreign_aud_token:
-            self.logger.info("OAuth audience-confusion sub-probe skipped; no "
-                             "foreign-audience token supplied")
+            self.logger.info(
+                "OAuth audience-confusion sub-probe skipped; no foreign-audience token supplied"
+            )
             return None
 
         foreign_ctx = AuthContext(
@@ -2670,15 +2876,13 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             self.http_client.set_auth_context(foreign_ctx)
             response = await self.http_client.request("GET", oauth_inputs.authorize_url)
         except Exception as e:
-            self.logger.debug("OAuth audience-confusion probe request failed",
-                              error=str(e))
+            self.logger.debug("OAuth audience-confusion probe request failed", error=str(e))
             return None
         finally:
             self.http_client.current_auth_context = None
 
         if not response.is_success:
-            self.logger.debug("Foreign-audience token rejected",
-                              status_code=response.status_code)
+            self.logger.debug("Foreign-audience token rejected", status_code=response.status_code)
             return None
 
         evidence = (
@@ -2690,29 +2894,28 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         )
         evidence = self._redact_secret(evidence, oauth_inputs.foreign_aud_token)
 
-        self.logger.warning("OAuth token audience confusion detected",
-                            status_code=response.status_code)
+        self.logger.warning(
+            "OAuth token audience confusion detected", status_code=response.status_code
+        )
 
         return Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_TOKEN_AUDIENCE_CONFUSION',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_TOKEN_AUDIENCE_CONFUSION",
+            owasp_category="API2",
             severity=Severity.HIGH,
             endpoint=oauth_inputs.authorize_url,
-            method='GET',
+            method="GET",
             status_code=response.status_code,
             response_size=len(response.content),
             response_time=response.elapsed,
             evidence=evidence,
             recommendation="Validate the 'aud' (audience) claim on every token and reject "
-                           "any token whose audience does not match this application. Do "
-                           "not accept tokens minted for a different application or client.",
+            "any token whose audience does not match this application. Do "
+            "not accept tokens minted for a different application or client.",
         )
 
-    def _check_missing_state(
-        self, oauth_inputs: OAuthFlowInputs
-    ) -> Optional[Finding]:
+    def _check_missing_state(self, oauth_inputs: OAuthFlowInputs) -> Finding | None:
         """Missing-state sub-probe (Reqs 41.4, 41.5).
 
         Detects an authorization request that omits or ignores the ``state``
@@ -2724,7 +2927,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         """
         parsed = urlparse(oauth_inputs.authorize_url)
         qs = parse_qs(parsed.query, keep_blank_values=True)
-        url_has_state = bool(qs.get('state') and any(v for v in qs.get('state', [])))
+        url_has_state = bool(qs.get("state") and any(v for v in qs.get("state", [])))
 
         # State is present only when the operator confirms it AND the URL carries
         # a non-empty state parameter.
@@ -2750,22 +2953,22 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         return Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_OAUTH_MISSING_STATE',
-            owasp_category='API2',
+            scan_id="",
+            category="AUTH_OAUTH_MISSING_STATE",
+            owasp_category="API2",
             severity=Severity.MEDIUM,
             endpoint=oauth_inputs.authorize_url,
-            method='GET',
+            method="GET",
             status_code=0,
             response_size=0,
             response_time=0.0,
             evidence=evidence,
             recommendation="Include an unguessable, session-bound 'state' parameter in every "
-                           "OAuth authorization request and verify it on the redirect to "
-                           "prevent CSRF and authorization-code injection.",
+            "OAuth authorization request and verify it on the redirect to "
+            "prevent CSRF and authorization-code injection.",
         )
 
-    async def _test_oauth_flow(self, oauth_inputs: Any) -> List[Finding]:
+    async def _test_oauth_flow(self, oauth_inputs: Any) -> list[Finding]:
         """OAuth / OpenID flow abuse detection (Requirement 41).
 
         Runs three sub-probes against an operator-supplied OAuth_Flow:
@@ -2786,7 +2989,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         parameter (Req 41.5). When no OAuth_Flow inputs are supplied the test is
         skipped and the omission is logged (Req 41.6).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         inputs = self._coerce_oauth_inputs(oauth_inputs)
         if inputs is None:
@@ -2814,12 +3017,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # Finding: AUTH_OTP_NO_RATE_LIMITING (HIGH), AUTH_OTP_BRUTEFORCE_SUCCESS (CRITICAL)
     # ==================================================================
 
-    def _generate_otp_codes(self, digits: int) -> List[str]:
+    def _generate_otp_codes(self, digits: int) -> list[str]:
         """Generate all possible OTP codes for ``digits``-digit space (0…10^digits-1)."""
-        total = 10 ** digits
+        total = 10**digits
         return [str(i).zfill(digits) for i in range(total)]
 
-    async def _test_otp_brute_force(self) -> List[Finding]:
+    async def _test_otp_brute_force(self) -> list[Finding]:
         """Sequential OTP / MFA brute-force probe (Level 2, CWE-307).
 
         Iterates through the full OTP code space for the configured digit count
@@ -2840,11 +3043,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         - ``AUTH_OTP_BRUTEFORCE_SUCCESS`` (CRITICAL): a specific OTP code was
           accepted (server returned 2xx).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping OTP brute-force probe",
-                             reason="opt-in absent or safe mode")
+            self.logger.info("Skipping OTP brute-force probe", reason="opt-in absent or safe mode")
             return findings
 
         otp_endpoint = getattr(self.config, "otp_endpoint", None)
@@ -2864,18 +3066,21 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         codes = self._generate_otp_codes(digits)
         probe_codes = codes[:max_attempts]
 
-        self.logger.info("Starting OTP brute-force probe",
-                         endpoint=otp_endpoint,
-                         digits=digits,
-                         max_attempts=len(probe_codes))
+        self.logger.info(
+            "Starting OTP brute-force probe",
+            endpoint=otp_endpoint,
+            digits=digits,
+            max_attempts=len(probe_codes),
+        )
 
-        responses: List[Response] = []
-        successful_code: Optional[str] = None
+        responses: list[Response] = []
+        successful_code: str | None = None
 
         for code in probe_codes:
             try:
                 resp = await self.http_client.request(
-                    "POST", otp_endpoint,
+                    "POST",
+                    otp_endpoint,
                     json={otp_field: code, session_field: session_token},
                     headers={"Content-Type": "application/json"},
                 )
@@ -2892,8 +3097,9 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             classification = self._classify_throttling(responses)
             signals = classification["evidence"]["signals"]
             if signals["http_429"] or signals["account_lockout"]:
-                self.logger.info("OTP endpoint throttled; stopping probe",
-                                 code=code, status=resp.status_code)
+                self.logger.info(
+                    "OTP endpoint throttled; stopping probe", code=code, status=resp.status_code
+                )
                 break
 
         if not responses:
@@ -2901,65 +3107,71 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         if successful_code is not None:
             last = responses[-1]
-            findings.append(Finding(
-                id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_OTP_BRUTEFORCE_SUCCESS',
-                owasp_category='API2',
-                severity=Severity.CRITICAL,
-                endpoint=otp_endpoint,
-                method='POST',
-                status_code=last.status_code,
-                response_size=len(last.content),
-                response_time=last.elapsed,
-                evidence=(
-                    f"OTP code '{successful_code}' was accepted by the endpoint "
-                    f"after sequential enumeration. No lockout or rate limiting was "
-                    f"triggered after {len(responses)} attempt(s). The "
-                    f"{digits}-digit OTP space ({10**digits:,} combinations) is "
-                    f"trivially exhausted without protection."
-                ),
-                recommendation=(
-                    "Destroy the OTP code after 3 failed attempts and invalidate "
-                    "the session. Enforce a hard rate limit (e.g. 3 req/min) on the "
-                    "OTP verification endpoint independently of the main login endpoint."
-                ),
-                payload=f"{otp_field}={successful_code}",
-            ))
-            self.logger.warning("OTP brute-force successful",
-                                endpoint=otp_endpoint, code=successful_code)
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_OTP_BRUTEFORCE_SUCCESS",
+                    owasp_category="API2",
+                    severity=Severity.CRITICAL,
+                    endpoint=otp_endpoint,
+                    method="POST",
+                    status_code=last.status_code,
+                    response_size=len(last.content),
+                    response_time=last.elapsed,
+                    evidence=(
+                        f"OTP code '{successful_code}' was accepted by the endpoint "
+                        f"after sequential enumeration. No lockout or rate limiting was "
+                        f"triggered after {len(responses)} attempt(s). The "
+                        f"{digits}-digit OTP space ({10**digits:,} combinations) is "
+                        f"trivially exhausted without protection."
+                    ),
+                    recommendation=(
+                        "Destroy the OTP code after 3 failed attempts and invalidate "
+                        "the session. Enforce a hard rate limit (e.g. 3 req/min) on the "
+                        "OTP verification endpoint independently of the main login endpoint."
+                    ),
+                    payload=f"{otp_field}={successful_code}",
+                )
+            )
+            self.logger.warning(
+                "OTP brute-force successful", endpoint=otp_endpoint, code=successful_code
+            )
             return findings
 
         classification = self._classify_throttling(responses)
         if not classification["throttled"]:
             last = responses[-1]
             status_codes = classification["evidence"]["status_codes"]
-            findings.append(Finding(
-                id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_OTP_NO_RATE_LIMITING',
-                owasp_category='API2',
-                severity=Severity.HIGH,
-                endpoint=otp_endpoint,
-                method='POST',
-                status_code=last.status_code,
-                response_size=len(last.content),
-                response_time=last.elapsed,
-                evidence=(
-                    f"The OTP verification endpoint did not throttle or lock the "
-                    f"session after {len(responses)} sequential attempt(s). "
-                    f"Observed status codes: {status_codes}. A {digits}-digit OTP "
-                    f"space ({10**digits:,} combinations) can be exhausted before "
-                    f"a typical OTP expiry window."
-                ),
-                recommendation=(
-                    "Apply strict rate limiting (≤3 attempts) AND session invalidation "
-                    "on the OTP endpoint. Do NOT rely solely on rate limiting the main "
-                    "login endpoint."
-                ),
-            ))
-            self.logger.warning("OTP endpoint lacks rate limiting",
-                                endpoint=otp_endpoint, attempts=len(responses))
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_OTP_NO_RATE_LIMITING",
+                    owasp_category="API2",
+                    severity=Severity.HIGH,
+                    endpoint=otp_endpoint,
+                    method="POST",
+                    status_code=last.status_code,
+                    response_size=len(last.content),
+                    response_time=last.elapsed,
+                    evidence=(
+                        f"The OTP verification endpoint did not throttle or lock the "
+                        f"session after {len(responses)} sequential attempt(s). "
+                        f"Observed status codes: {status_codes}. A {digits}-digit OTP "
+                        f"space ({10**digits:,} combinations) can be exhausted before "
+                        f"a typical OTP expiry window."
+                    ),
+                    recommendation=(
+                        "Apply strict rate limiting (≤3 attempts) AND session invalidation "
+                        "on the OTP endpoint. Do NOT rely solely on rate limiting the main "
+                        "login endpoint."
+                    ),
+                )
+            )
+            self.logger.warning(
+                "OTP endpoint lacks rate limiting", endpoint=otp_endpoint, attempts=len(responses)
+            )
 
         return findings
 
@@ -2972,7 +3184,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # Finding: AUTH_OTP_RACE_CONDITION (CRITICAL)
     # ==================================================================
 
-    async def _test_otp_race_condition(self) -> List[Finding]:
+    async def _test_otp_race_condition(self) -> list[Finding]:
         """OTP race-condition probe (Expert Level, CWE-307 + race hazard).
 
         Sends ``otp_race_concurrency`` (default 50) identical OTP requests for
@@ -2984,11 +3196,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         A single accepted response proves that the counter check is non-atomic
         (TOCTOU). An ``AUTH_OTP_RACE_CONDITION`` (CRITICAL) finding is emitted.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping OTP race-condition probe",
-                             reason="opt-in absent or safe mode")
+            self.logger.info(
+                "Skipping OTP race-condition probe", reason="opt-in absent or safe mode"
+            )
             return findings
 
         otp_endpoint = getattr(self.config, "otp_endpoint", None)
@@ -3006,14 +3219,17 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         # the right code but to confirm whether the counter is atomic.
         probe_code = "0" * digits
 
-        self.logger.info("Starting OTP race-condition probe",
-                         endpoint=otp_endpoint,
-                         concurrency=concurrency,
-                         probe_code=probe_code)
+        self.logger.info(
+            "Starting OTP race-condition probe",
+            endpoint=otp_endpoint,
+            concurrency=concurrency,
+            probe_code=probe_code,
+        )
 
         async def _send_one() -> Response:
             return await self.http_client.request(
-                "POST", otp_endpoint,
+                "POST",
+                otp_endpoint,
                 json={otp_field: probe_code, session_field: session_token},
                 headers={"Content-Type": "application/json"},
             )
@@ -3032,42 +3248,49 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         status_codes = [r.status_code for r in valid_responses]
 
         if not accepted:
-            self.logger.info("OTP race-condition probe: no accepted responses",
-                             concurrency=concurrency, status_codes=status_codes)
+            self.logger.info(
+                "OTP race-condition probe: no accepted responses",
+                concurrency=concurrency,
+                status_codes=status_codes,
+            )
             return findings
 
         first_accepted = accepted[0]
-        findings.append(Finding(
-            id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_OTP_RACE_CONDITION',
-            owasp_category='API2',
-            severity=Severity.CRITICAL,
+        findings.append(
+            Finding(
+                id=str(uuid.uuid4()),
+                scan_id="",
+                category="AUTH_OTP_RACE_CONDITION",
+                owasp_category="API2",
+                severity=Severity.CRITICAL,
+                endpoint=otp_endpoint,
+                method="POST",
+                status_code=first_accepted.status_code,
+                response_size=len(first_accepted.content),
+                response_time=first_accepted.elapsed,
+                evidence=(
+                    f"OTP race condition confirmed: {len(accepted)} of {len(valid_responses)} "
+                    f"concurrent requests for OTP code '{probe_code}' were accepted (HTTP "
+                    f"{first_accepted.status_code}). The attempt counter is non-atomic "
+                    f"(TOCTOU): multiple threads read 'counter=0' before any write "
+                    f"committed. All {concurrency} requests were dispatched simultaneously "
+                    f"via asyncio.gather. Status codes observed: {status_codes}."
+                ),
+                recommendation=(
+                    "Use a database-level atomic increment (e.g. UPDATE … SET attempts = "
+                    "attempts + 1 WHERE attempts < 3 RETURNING id) or a distributed lock "
+                    "(Redis INCR + TTL) so concurrent requests see the same counter state. "
+                    "Do not use read-then-write patterns for attempt counting."
+                ),
+                payload=f"concurrency={concurrency}, {otp_field}={probe_code}",
+            )
+        )
+        self.logger.warning(
+            "OTP race condition detected",
             endpoint=otp_endpoint,
-            method='POST',
-            status_code=first_accepted.status_code,
-            response_size=len(first_accepted.content),
-            response_time=first_accepted.elapsed,
-            evidence=(
-                f"OTP race condition confirmed: {len(accepted)} of {len(valid_responses)} "
-                f"concurrent requests for OTP code '{probe_code}' were accepted (HTTP "
-                f"{first_accepted.status_code}). The attempt counter is non-atomic "
-                f"(TOCTOU): multiple threads read 'counter=0' before any write "
-                f"committed. All {concurrency} requests were dispatched simultaneously "
-                f"via asyncio.gather. Status codes observed: {status_codes}."
-            ),
-            recommendation=(
-                "Use a database-level atomic increment (e.g. UPDATE … SET attempts = "
-                "attempts + 1 WHERE attempts < 3 RETURNING id) or a distributed lock "
-                "(Redis INCR + TTL) so concurrent requests see the same counter state. "
-                "Do not use read-then-write patterns for attempt counting."
-            ),
-            payload=f"concurrency={concurrency}, {otp_field}={probe_code}",
-        ))
-        self.logger.warning("OTP race condition detected",
-                            endpoint=otp_endpoint,
-                            accepted=len(accepted),
-                            total=len(valid_responses))
+            accepted=len(accepted),
+            total=len(valid_responses),
+        )
 
         return findings
 
@@ -3081,7 +3304,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # Standard IP-origin-override headers ordered by prevalence. Rotating these
     # simulates each request appearing to come from a distinct client to a
     # poorly-configured WAF / API Gateway that trusts them blindly.
-    _IP_SPOOF_HEADERS: List[str] = [
+    _IP_SPOOF_HEADERS: list[str] = [
         "X-Forwarded-For",
         "X-Real-IP",
         "X-Originating-IP",
@@ -3094,7 +3317,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         "X-Cluster-Client-IP",
     ]
 
-    def _build_ip_spoof_header(self, header_name: str, index: int) -> Dict[str, str]:
+    def _build_ip_spoof_header(self, header_name: str, index: int) -> dict[str, str]:
         """Return a headers dict spoofing ``header_name`` with a unique internal IP."""
         # Use RFC-5737 documentation addresses (192.0.2.x) to avoid hitting real IPs.
         ip = f"192.0.2.{(index % 254) + 1}"
@@ -3102,7 +3325,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             return {header_name: f"for={ip};proto=https"}
         return {header_name: ip}
 
-    async def _test_ip_header_rate_limit_bypass(self, login_endpoint: str) -> List[Finding]:
+    async def _test_ip_header_rate_limit_bypass(self, login_endpoint: str) -> list[Finding]:
         """IP-header rate-limit bypass probe (Level 3, Requirement 37-advanced).
 
         After confirming that the endpoint has some form of rate limiting (or
@@ -3117,11 +3340,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Finding: ``AUTH_RATE_LIMIT_IP_BYPASS`` (HIGH) when spoofed requests
         are NOT throttled after the configured burst size, mapped to API2.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping IP-header rate-limit bypass probe",
-                             reason="opt-in absent or safe mode")
+            self.logger.info(
+                "Skipping IP-header rate-limit bypass probe", reason="opt-in absent or safe mode"
+            )
             return findings
 
         username = getattr(self.config, "benign_username", None) or "apileaks_benign_probe"
@@ -3132,23 +3356,24 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         extra_headers_names = list(getattr(self.config, "extra_ip_headers", []) or [])
         all_header_names = self._IP_SPOOF_HEADERS + extra_headers_names
 
-        responses_by_header: Dict[str, List[Response]] = {}
+        responses_by_header: dict[str, list[Response]] = {}
 
         for header_name in all_header_names:
-            spoofed_responses: List[Response] = []
+            spoofed_responses: list[Response] = []
             for i in range(burst_size):
                 spoof_headers = self._build_ip_spoof_header(header_name, i)
                 spoof_headers["Content-Type"] = "application/json"
                 try:
                     resp = await self.http_client.request(
-                        "POST", login_endpoint,
-                        json={username_field: username,
-                              password_field: f"IpRotationProbe-{i}!"},
+                        "POST",
+                        login_endpoint,
+                        json={username_field: username, password_field: f"IpRotationProbe-{i}!"},
                         headers=spoof_headers,
                     )
                 except Exception as e:
-                    self.logger.debug("IP-spoof probe request failed",
-                                      header=header_name, error=str(e))
+                    self.logger.debug(
+                        "IP-spoof probe request failed", header=header_name, error=str(e)
+                    )
                     continue
 
                 spoofed_responses.append(resp)
@@ -3169,45 +3394,47 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 bypassed_headers.append(hdr)
 
         if not bypassed_headers:
-            self.logger.info("IP-header rotation did not bypass rate limiting",
-                             login_endpoint=login_endpoint)
+            self.logger.info(
+                "IP-header rotation did not bypass rate limiting", login_endpoint=login_endpoint
+            )
             return findings
 
-        status_sample = [
-            r.status_code
-            for r in responses_by_header[bypassed_headers[0]]
-        ]
-        findings.append(Finding(
-            id=str(uuid.uuid4()),
-            scan_id='',
-            category='AUTH_RATE_LIMIT_IP_BYPASS',
-            owasp_category='API2',
-            severity=Severity.HIGH,
+        status_sample = [r.status_code for r in responses_by_header[bypassed_headers[0]]]
+        findings.append(
+            Finding(
+                id=str(uuid.uuid4()),
+                scan_id="",
+                category="AUTH_RATE_LIMIT_IP_BYPASS",
+                owasp_category="API2",
+                severity=Severity.HIGH,
+                endpoint=login_endpoint,
+                method="POST",
+                status_code=status_sample[-1] if status_sample else 0,
+                response_size=0,
+                response_time=0.0,
+                evidence=(
+                    f"Rate limiting was bypassed by rotating the following IP-origin "
+                    f"HTTP headers: {bypassed_headers}. A burst of {burst_size} "
+                    f"requests completed with no 429 / account-lockout response when "
+                    f"each request carried a different spoofed IP in these headers. "
+                    f"Status codes observed: {status_sample}. The rate-limit counter "
+                    f"trusts the client-supplied header instead of the connection's "
+                    f"real IP address."
+                ),
+                recommendation=(
+                    "Base rate limiting on the TCP layer's real remote IP address, "
+                    "NOT on X-Forwarded-For or similar client-supplied headers. If "
+                    "you MUST trust a proxy header, allowlist only known upstream "
+                    "proxy IPs and reject or ignore the header from any other source."
+                ),
+                payload=f"bypassed_headers={bypassed_headers}",
+            )
+        )
+        self.logger.warning(
+            "IP-header rate-limit bypass confirmed",
             endpoint=login_endpoint,
-            method='POST',
-            status_code=status_sample[-1] if status_sample else 0,
-            response_size=0,
-            response_time=0.0,
-            evidence=(
-                f"Rate limiting was bypassed by rotating the following IP-origin "
-                f"HTTP headers: {bypassed_headers}. A burst of {burst_size} "
-                f"requests completed with no 429 / account-lockout response when "
-                f"each request carried a different spoofed IP in these headers. "
-                f"Status codes observed: {status_sample}. The rate-limit counter "
-                f"trusts the client-supplied header instead of the connection's "
-                f"real IP address."
-            ),
-            recommendation=(
-                "Base rate limiting on the TCP layer's real remote IP address, "
-                "NOT on X-Forwarded-For or similar client-supplied headers. If "
-                "you MUST trust a proxy header, allowlist only known upstream "
-                "proxy IPs and reject or ignore the header from any other source."
-            ),
-            payload=f"bypassed_headers={bypassed_headers}",
-        ))
-        self.logger.warning("IP-header rate-limit bypass confirmed",
-                            endpoint=login_endpoint,
-                            headers=bypassed_headers)
+            headers=bypassed_headers,
+        )
 
         return findings
 
@@ -3219,7 +3446,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     #          AUTH_PASSWORD_SPRAY_VALID_CREDENTIAL (CRITICAL)
     # ==================================================================
 
-    def _load_users_wordlist(self) -> List[str]:
+    def _load_users_wordlist(self) -> list[str]:
         """Load a newline-separated users/emails wordlist from ``config.users_wordlist``."""
         path_str = getattr(self.config, "users_wordlist", None)
         if not path_str:
@@ -3230,14 +3457,14 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             return []
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
-            users = [l.strip() for l in lines if l.strip() and not l.startswith("#")]
+            users = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
             self.logger.info("Users wordlist loaded", count=len(users), path=str(path))
             return users
         except OSError as e:
             self.logger.error("Failed to read users wordlist", error=str(e))
             return []
 
-    async def _test_password_spraying(self, login_endpoint: str) -> List[Finding]:
+    async def _test_password_spraying(self, login_endpoint: str) -> list[Finding]:
         """Password-spraying probe (Level 3 Advanced).
 
         Tries ONE fixed password (``config.spray_password``) against UP TO
@@ -3256,11 +3483,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Gated by ``_aggressive_allowed()``. Requires ``spray_password``,
         ``users_wordlist``, and a resolved ``login_endpoint``.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping password-spray probe",
-                             reason="opt-in absent or safe mode")
+            self.logger.info("Skipping password-spray probe", reason="opt-in absent or safe mode")
             return findings
 
         spray_password = getattr(self.config, "spray_password", None)
@@ -3278,24 +3504,26 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         batch_size = max(1, int(getattr(self.config, "spray_batch_size", 50)))
         batch = users[:batch_size]
 
-        self.logger.info("Starting password-spray probe",
-                         endpoint=login_endpoint,
-                         users=len(batch),
-                         password="<redacted>")
+        self.logger.info(
+            "Starting password-spray probe",
+            endpoint=login_endpoint,
+            users=len(batch),
+            password="<redacted>",
+        )
 
-        responses: List[Response] = []
-        valid_username: Optional[str] = None
+        responses: list[Response] = []
+        valid_username: str | None = None
 
         for username in batch:
             try:
                 resp = await self.http_client.request(
-                    "POST", login_endpoint,
+                    "POST",
+                    login_endpoint,
                     json={username_field: username, password_field: spray_password},
                     headers={"Content-Type": "application/json"},
                 )
             except Exception as e:
-                self.logger.debug("Spray probe request failed",
-                                  username=username, error=str(e))
+                self.logger.debug("Spray probe request failed", username=username, error=str(e))
                 continue
 
             responses.append(resp)
@@ -3309,8 +3537,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             cls = self._classify_throttling(responses)
             signals = cls["evidence"]["signals"]
             if signals["http_429"]:
-                self.logger.info("Global rate limit hit during password spray",
-                                 username=username)
+                self.logger.info("Global rate limit hit during password spray", username=username)
                 break
 
         if not responses:
@@ -3325,60 +3552,70 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 f"per-account lockout was triggered."
             )
             evidence = self._redact_secret(evidence, spray_password)
-            findings.append(Finding(
-                id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_PASSWORD_SPRAY_VALID_CREDENTIAL',
-                owasp_category='API2',
-                severity=Severity.CRITICAL,
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_PASSWORD_SPRAY_VALID_CREDENTIAL",
+                    owasp_category="API2",
+                    severity=Severity.CRITICAL,
+                    endpoint=login_endpoint,
+                    method="POST",
+                    status_code=last.status_code,
+                    response_size=len(last.content),
+                    response_time=last.elapsed,
+                    evidence=evidence,
+                    recommendation=(
+                        "Enforce MFA for all accounts. Implement global rate limiting "
+                        "across all usernames (not just per-account). Consider "
+                        "behavioral anomaly detection for distributed credential attacks."
+                    ),
+                    payload=f"{username_field}={valid_username}",
+                )
+            )
+            self.logger.warning(
+                "Password spray found valid credential",
                 endpoint=login_endpoint,
-                method='POST',
-                status_code=last.status_code,
-                response_size=len(last.content),
-                response_time=last.elapsed,
-                evidence=evidence,
-                recommendation=(
-                    "Enforce MFA for all accounts. Implement global rate limiting "
-                    "across all usernames (not just per-account). Consider "
-                    "behavioral anomaly detection for distributed credential attacks."
-                ),
-                payload=f"{username_field}={valid_username}",
-            ))
-            self.logger.warning("Password spray found valid credential",
-                                endpoint=login_endpoint, username=valid_username)
+                username=valid_username,
+            )
             return findings
 
         cls = self._classify_throttling(responses)
         if not cls["throttled"]:
             last = responses[-1]
             status_codes = cls["evidence"]["status_codes"]
-            findings.append(Finding(
-                id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_PASSWORD_SPRAY_NO_DETECTION',
-                owasp_category='API2',
-                severity=Severity.HIGH,
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_PASSWORD_SPRAY_NO_DETECTION",
+                    owasp_category="API2",
+                    severity=Severity.HIGH,
+                    endpoint=login_endpoint,
+                    method="POST",
+                    status_code=last.status_code,
+                    response_size=len(last.content),
+                    response_time=last.elapsed,
+                    evidence=(
+                        f"A password-spray pattern ({len(responses)} requests across "
+                        f"distinct accounts, one attempt each) completed without "
+                        f"triggering any global rate limit or anomaly detection. "
+                        f"Status codes: {status_codes}. Per-account lockout is "
+                        f"ineffective against this technique."
+                    ),
+                    recommendation=(
+                        "Implement global rate limiting keyed on the originating IP "
+                        "(not per-account). Deploy behavioral anomaly detection that "
+                        "flags many different accounts attempted from one source in a "
+                        "short window. Enforce MFA."
+                    ),
+                )
+            )
+            self.logger.warning(
+                "Password spray not detected by API",
                 endpoint=login_endpoint,
-                method='POST',
-                status_code=last.status_code,
-                response_size=len(last.content),
-                response_time=last.elapsed,
-                evidence=(
-                    f"A password-spray pattern ({len(responses)} requests across "
-                    f"distinct accounts, one attempt each) completed without "
-                    f"triggering any global rate limit or anomaly detection. "
-                    f"Status codes: {status_codes}. Per-account lockout is "
-                    f"ineffective against this technique."
-                ),
-                recommendation=(
-                    "Implement global rate limiting keyed on the originating IP "
-                    "(not per-account). Deploy behavioral anomaly detection that "
-                    "flags many different accounts attempted from one source in a "
-                    "short window. Enforce MFA."
-                ),
-            ))
-            self.logger.warning("Password spray not detected by API",
-                                endpoint=login_endpoint, attempts=len(responses))
+                attempts=len(responses),
+            )
 
         return findings
 
@@ -3390,7 +3627,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     #          AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH (MEDIUM)
     # ==================================================================
 
-    def _compute_timing_stats(self, samples: List[float]) -> Dict[str, float]:
+    def _compute_timing_stats(self, samples: list[float]) -> dict[str, float]:
         """Compute mean and standard deviation of a list of response times."""
         if not samples:
             return {"mean": 0.0, "stddev": 0.0, "min": 0.0, "max": 0.0}
@@ -3399,7 +3636,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         variance = sum((x - mean) ** 2 for x in samples) / n
         return {
             "mean": mean,
-            "stddev": variance ** 0.5,
+            "stddev": variance**0.5,
             "min": min(samples),
             "max": max(samples),
         }
@@ -3412,15 +3649,16 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         n_samples: int,
         username_field: str,
         password_field: str,
-    ) -> Tuple[List[float], List[int]]:
+    ) -> tuple[list[float], list[int]]:
         """Collect ``n_samples`` response times and Content-Lengths for one credential pair."""
-        times: List[float] = []
-        sizes: List[int] = []
+        times: list[float] = []
+        sizes: list[int] = []
         for _ in range(n_samples):
             try:
                 t0 = time.monotonic()
                 resp = await self.http_client.request(
-                    "POST", endpoint,
+                    "POST",
+                    endpoint,
                     json={username_field: username, password_field: password},
                     headers={"Content-Type": "application/json"},
                 )
@@ -3431,7 +3669,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 continue
         return times, sizes
 
-    async def _test_timing_oracle(self, login_endpoint: str) -> List[Finding]:
+    async def _test_timing_oracle(self, login_endpoint: str) -> list[Finding]:
         """Timing-attack / username-enumeration probe (Expert Level).
 
         Measures the MEAN response time for:
@@ -3455,11 +3693,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Requires ``benign_username`` (or falls back to a fixed placeholder).
         Gated by ``allow_aggressive``.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Skipping timing-oracle probe",
-                             reason="opt-in absent or safe mode")
+            self.logger.info("Skipping timing-oracle probe", reason="opt-in absent or safe mode")
             return findings
 
         username_field = getattr(self.config, "login_username_field", "username")
@@ -3472,19 +3709,29 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         invalid = f"nonexistent-{uuid.uuid4().hex[:12]}@apileaks.invalid"
         wrong_password = f"WrongPw-{uuid.uuid4().hex[:8]}!"
 
-        self.logger.info("Collecting timing samples",
-                         endpoint=login_endpoint,
-                         samples=n_samples,
-                         benign_user=benign,
-                         invalid_user=invalid)
+        self.logger.info(
+            "Collecting timing samples",
+            endpoint=login_endpoint,
+            samples=n_samples,
+            benign_user=benign,
+            invalid_user=invalid,
+        )
 
         benign_times, benign_sizes = await self._collect_timing_samples(
-            login_endpoint, benign, wrong_password, n_samples,
-            username_field, password_field,
+            login_endpoint,
+            benign,
+            wrong_password,
+            n_samples,
+            username_field,
+            password_field,
         )
         invalid_times, invalid_sizes = await self._collect_timing_samples(
-            login_endpoint, invalid, wrong_password, n_samples,
-            username_field, password_field,
+            login_endpoint,
+            invalid,
+            wrong_password,
+            n_samples,
+            username_field,
+            password_field,
         )
 
         if not benign_times or not invalid_times:
@@ -3495,45 +3742,50 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         invalid_stats = self._compute_timing_stats(invalid_times)
         delta = abs(benign_stats["mean"] - invalid_stats["mean"])
 
-        self.logger.info("Timing oracle stats",
-                         benign_mean=round(benign_stats["mean"], 4),
-                         invalid_mean=round(invalid_stats["mean"], 4),
-                         delta=round(delta, 4),
-                         threshold=threshold)
+        self.logger.info(
+            "Timing oracle stats",
+            benign_mean=round(benign_stats["mean"], 4),
+            invalid_mean=round(invalid_stats["mean"], 4),
+            delta=round(delta, 4),
+            threshold=threshold,
+        )
 
         if delta >= threshold:
             severity = Severity.HIGH if delta >= 2 * threshold else Severity.MEDIUM
-            findings.append(Finding(
-                id=str(uuid.uuid4()),
-                scan_id='',
-                category='AUTH_TIMING_ORACLE',
-                owasp_category='API2',
-                severity=severity,
-                endpoint=login_endpoint,
-                method='POST',
-                status_code=0,
-                response_size=0,
-                response_time=delta,
-                evidence=(
-                    f"Timing difference of {delta:.4f}s (>{threshold}s threshold) "
-                    f"detected between valid-user responses "
-                    f"(mean={benign_stats['mean']:.4f}s, "
-                    f"stddev={benign_stats['stddev']:.4f}s, n={len(benign_times)}) "
-                    f"and invalid-user responses "
-                    f"(mean={invalid_stats['mean']:.4f}s, "
-                    f"stddev={invalid_stats['stddev']:.4f}s, n={len(invalid_times)}). "
-                    f"The server likely performs additional work (e.g. bcrypt hashing) "
-                    f"only when the account exists, enabling username enumeration."
-                ),
-                recommendation=(
-                    "Use constant-time password comparison for ALL usernames, including "
-                    "non-existent ones (e.g. hash a dummy password to preserve timing "
-                    "parity). Return the same generic error message and response body "
-                    "for both invalid-username and wrong-password scenarios."
-                ),
-            ))
-            self.logger.warning("Timing oracle detected",
-                                endpoint=login_endpoint, delta=round(delta, 4))
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_TIMING_ORACLE",
+                    owasp_category="API2",
+                    severity=severity,
+                    endpoint=login_endpoint,
+                    method="POST",
+                    status_code=0,
+                    response_size=0,
+                    response_time=delta,
+                    evidence=(
+                        f"Timing difference of {delta:.4f}s (>{threshold}s threshold) "
+                        f"detected between valid-user responses "
+                        f"(mean={benign_stats['mean']:.4f}s, "
+                        f"stddev={benign_stats['stddev']:.4f}s, n={len(benign_times)}) "
+                        f"and invalid-user responses "
+                        f"(mean={invalid_stats['mean']:.4f}s, "
+                        f"stddev={invalid_stats['stddev']:.4f}s, n={len(invalid_times)}). "
+                        f"The server likely performs additional work (e.g. bcrypt hashing) "
+                        f"only when the account exists, enabling username enumeration."
+                    ),
+                    recommendation=(
+                        "Use constant-time password comparison for ALL usernames, including "
+                        "non-existent ones (e.g. hash a dummy password to preserve timing "
+                        "parity). Return the same generic error message and response body "
+                        "for both invalid-username and wrong-password scenarios."
+                    ),
+                )
+            )
+            self.logger.warning(
+                "Timing oracle detected", endpoint=login_endpoint, delta=round(delta, 4)
+            )
 
         # Content-Length oracle: same logic, different signal.
         if benign_sizes and invalid_sizes:
@@ -3541,33 +3793,37 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             avg_invalid_size = sum(invalid_sizes) / len(invalid_sizes)
             size_delta = abs(avg_benign_size - avg_invalid_size)
             if size_delta >= 5:  # >5-byte difference is meaningful
-                findings.append(Finding(
-                    id=str(uuid.uuid4()),
-                    scan_id='',
-                    category='AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH',
-                    owasp_category='API2',
-                    severity=Severity.MEDIUM,
+                findings.append(
+                    Finding(
+                        id=str(uuid.uuid4()),
+                        scan_id="",
+                        category="AUTH_USERNAME_ENUMERATION_CONTENT_LENGTH",
+                        owasp_category="API2",
+                        severity=Severity.MEDIUM,
+                        endpoint=login_endpoint,
+                        method="POST",
+                        status_code=0,
+                        response_size=int(size_delta),
+                        response_time=0.0,
+                        evidence=(
+                            f"Response Content-Length differs by {size_delta:.1f} bytes "
+                            f"between a valid-username request (avg {avg_benign_size:.1f}B) "
+                            f"and an invalid-username request (avg {avg_invalid_size:.1f}B). "
+                            f"Body-size variations leak account existence independently of "
+                            f"timing differences."
+                        ),
+                        recommendation=(
+                            "Return a single generic error message with the same body "
+                            "structure (and padding if necessary) for both 'user not found' "
+                            "and 'wrong password' scenarios."
+                        ),
+                    )
+                )
+                self.logger.warning(
+                    "Content-Length username enumeration detected",
                     endpoint=login_endpoint,
-                    method='POST',
-                    status_code=0,
-                    response_size=int(size_delta),
-                    response_time=0.0,
-                    evidence=(
-                        f"Response Content-Length differs by {size_delta:.1f} bytes "
-                        f"between a valid-username request (avg {avg_benign_size:.1f}B) "
-                        f"and an invalid-username request (avg {avg_invalid_size:.1f}B). "
-                        f"Body-size variations leak account existence independently of "
-                        f"timing differences."
-                    ),
-                    recommendation=(
-                        "Return a single generic error message with the same body "
-                        "structure (and padding if necessary) for both 'user not found' "
-                        "and 'wrong password' scenarios."
-                    ),
-                ))
-                self.logger.warning("Content-Length username enumeration detected",
-                                    endpoint=login_endpoint,
-                                    size_delta=round(size_delta, 1))
+                    size_delta=round(size_delta, 1),
+                )
 
         return findings
 
@@ -3579,17 +3835,29 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
     # ==================================================================
 
     # URL path fragments that identify login/authentication endpoints.
-    _LOGIN_PATH_PATTERNS: List[str] = [
-        "/login", "/signin", "/sign-in", "/auth/login", "/auth/signin",
-        "/api/login", "/api/signin", "/api/v1/auth/login",
-        "/api/v1/users/signin", "/api/v1/login", "/api/v2/auth/login",
-        "/api/auth/token", "/token", "/api/token", "/oauth/token",
-        "/session", "/api/session",
+    _LOGIN_PATH_PATTERNS: list[str] = [
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/auth/login",
+        "/auth/signin",
+        "/api/login",
+        "/api/signin",
+        "/api/v1/auth/login",
+        "/api/v1/users/signin",
+        "/api/v1/login",
+        "/api/v2/auth/login",
+        "/api/auth/token",
+        "/token",
+        "/api/token",
+        "/oauth/token",
+        "/session",
+        "/api/session",
     ]
 
-    def _detect_login_endpoints(self, endpoints: List[Any]) -> List[str]:
+    def _detect_login_endpoints(self, endpoints: list[Any]) -> list[str]:
         """Return discovered endpoint URLs that look like login/auth endpoints."""
-        login_urls: List[str] = []
+        login_urls: list[str] = []
         for ep in endpoints:
             url = ep.url if hasattr(ep, "url") else str(ep)
             method = (ep.method if hasattr(ep, "method") else "GET").upper()
@@ -3600,7 +3868,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 login_urls.append(url)
         return login_urls
 
-    async def _run_advanced_auth_probes(self, endpoints: List[Any]) -> List[Finding]:
+    async def _run_advanced_auth_probes(self, endpoints: list[Any]) -> list[Finding]:
         """Orchestrate Level 2/3/Expert auth probes against discovered endpoints.
 
         This method is the single integration point for all new attack techniques.
@@ -3621,23 +3889,20 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         9. Password-reset token predictability analysis (Req 40) — when samples supplied.
         10. OAuth / OpenID flow abuse (Req 41) — when flow inputs configured.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if not self._aggressive_allowed():
-            self.logger.info("Advanced auth probes skipped",
-                             reason="opt-in absent or safe mode")
+            self.logger.info("Advanced auth probes skipped", reason="opt-in absent or safe mode")
             return findings
 
         # -- OTP probes (endpoint comes from config) -----------------------
         otp_findings = await self._test_otp_brute_force()
         findings.extend(otp_findings)
-        self.logger.debug("OTP brute-force probe completed",
-                          findings=len(otp_findings))
+        self.logger.debug("OTP brute-force probe completed", findings=len(otp_findings))
 
         otp_race_findings = await self._test_otp_race_condition()
         findings.extend(otp_race_findings)
-        self.logger.debug("OTP race-condition probe completed",
-                          findings=len(otp_race_findings))
+        self.logger.debug("OTP race-condition probe completed", findings=len(otp_race_findings))
 
         # -- Login-endpoint probes (auto-detected from discovered set) ------
         login_endpoints = self._detect_login_endpoints(endpoints)
@@ -3661,58 +3926,59 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 timing_findings = await self._test_timing_oracle(login_url)
                 findings.extend(timing_findings)
 
-            self.logger.debug("Login-endpoint probes completed",
-                              login_endpoints=len(login_endpoints))
+            self.logger.debug(
+                "Login-endpoint probes completed", login_endpoints=len(login_endpoints)
+            )
 
         # -- Per-endpoint × auth-context probes ----------------------------
         # Req 38: secret-in-URL (credential leakage via query parameters).
         # Runs for every discovered endpoint against every configured auth context
         # that carries a non-empty token — gating is inside the method itself.
-        valid_auth_contexts = [
-            ctx for ctx in self.auth_contexts
-            if getattr(ctx, 'token', None)
-        ]
+        valid_auth_contexts = [ctx for ctx in self.auth_contexts if getattr(ctx, "token", None)]
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
             for auth_ctx in valid_auth_contexts:
-                secret_url_findings = await self._test_secret_in_url(
-                    endpoint_url, auth_ctx
-                )
+                secret_url_findings = await self._test_secret_in_url(endpoint_url, auth_ctx)
                 findings.extend(secret_url_findings)
 
         if valid_auth_contexts:
-            self.logger.debug("Secret-in-URL probes completed",
-                              endpoints=len(endpoints),
-                              auth_contexts=len(valid_auth_contexts))
+            self.logger.debug(
+                "Secret-in-URL probes completed",
+                endpoints=len(endpoints),
+                auth_contexts=len(valid_auth_contexts),
+            )
 
         # -- Config-input-driven probes (only run when operator supplies inputs) --
         # Req 39: MFA bypass with a provisional (pre-MFA) token.
-        mfa_inputs = getattr(self.config, 'mfa_flow_inputs', None) or {}
-        provisional_token = mfa_inputs.get('provisional_token', '')
-        protected_endpoint = mfa_inputs.get('protected_endpoint', '')
+        mfa_inputs = getattr(self.config, "mfa_flow_inputs", None) or {}
+        provisional_token = mfa_inputs.get("provisional_token", "")
+        protected_endpoint = mfa_inputs.get("protected_endpoint", "")
         mfa_findings = await self._test_mfa_bypass(provisional_token, protected_endpoint)
         findings.extend(mfa_findings)
         self.logger.debug("MFA-bypass probe completed", findings=len(mfa_findings))
 
         # Req 40: password-reset token predictability analysis.
-        reset_token_samples = getattr(self.config, 'reset_token_samples', None) or []
-        reset_known_inputs = getattr(self.config, 'reset_token_known_inputs', None)
+        reset_token_samples = getattr(self.config, "reset_token_samples", None) or []
+        reset_known_inputs = getattr(self.config, "reset_token_known_inputs", None)
         reset_findings = await self._test_reset_token_predictability(
             reset_token_samples, reset_known_inputs
         )
         findings.extend(reset_findings)
-        self.logger.debug("Reset-token predictability probe completed",
-                          findings=len(reset_findings))
+        self.logger.debug(
+            "Reset-token predictability probe completed", findings=len(reset_findings)
+        )
 
         # Req 41: OAuth / OpenID flow abuse (redirect_uri, audience confusion,
         # missing state).
-        oauth_inputs = getattr(self.config, 'oauth_flow_inputs', None)
+        oauth_inputs = getattr(self.config, "oauth_flow_inputs", None)
         oauth_findings = await self._test_oauth_flow(oauth_inputs)
         findings.extend(oauth_findings)
         self.logger.debug("OAuth-flow probe completed", findings=len(oauth_findings))
 
-        self.logger.debug("Advanced auth probes completed",
-                          login_endpoints=len(login_endpoints) if login_endpoints else 0,
-                          findings=len(findings))
+        self.logger.debug(
+            "Advanced auth probes completed",
+            login_endpoints=len(login_endpoints) if login_endpoints else 0,
+            findings=len(findings),
+        )
 
         return findings

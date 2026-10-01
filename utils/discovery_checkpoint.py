@@ -24,7 +24,6 @@ round-trip losslessly and can be merged with newly discovered ones.
 import json
 import os
 from dataclasses import dataclass, field
-from typing import List, Tuple
 
 from core.logging import get_logger
 from utils.discovery_session import DiscoveryResult
@@ -69,8 +68,8 @@ class DiscoveryCheckpoint:
     tool_version: str
     # (normalized url, method) pairs already issued; urls are stored canonical
     # so resume comparison is canonical (Requirement 38).
-    tested: List[Tuple[str, str]] = field(default_factory=list)
-    results: List[DiscoveryResult] = field(default_factory=list)
+    tested: list[tuple[str, str]] = field(default_factory=list)
+    results: list[DiscoveryResult] = field(default_factory=list)
 
     def save(self, path: str) -> None:
         """Atomically write the checkpoint to ``path`` as JSON.
@@ -147,12 +146,10 @@ class DiscoveryCheckpoint:
                 structure (Requirement 37.5). No records are loaded in this case.
         """
         if not path or not os.path.exists(path):
-            raise DiscoveryCheckpointError(
-                f"discovery checkpoint not found: '{path}'"
-            )
+            raise DiscoveryCheckpointError(f"discovery checkpoint not found: '{path}'")
 
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             raise DiscoveryCheckpointError(
@@ -176,7 +173,7 @@ class DiscoveryCheckpoint:
                 f"invalid discovery checkpoint '{path}': missing 'results' array"
             )
 
-        tested: List[Tuple[str, str]] = []
+        tested: list[tuple[str, str]] = []
         for entry in raw_tested:
             if not isinstance(entry, dict):
                 raise DiscoveryCheckpointError(
@@ -204,9 +201,7 @@ class DiscoveryCheckpoint:
 
         checkpoint = cls(
             target=data.get("target", "") if isinstance(data.get("target"), str) else "",
-            timestamp=data.get("timestamp", "")
-            if isinstance(data.get("timestamp"), str)
-            else "",
+            timestamp=data.get("timestamp", "") if isinstance(data.get("timestamp"), str) else "",
             tool_version=data.get("tool_version", "")
             if isinstance(data.get("tool_version"), str)
             else "",

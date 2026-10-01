@@ -14,8 +14,9 @@ value is never echoed in output (Requirement 30.4).
 """
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Pattern, Union
+from re import Pattern
 
 from core.logging import get_logger
 
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 # Default configurable name -> regex map used when no custom patterns are
 # supplied (Requirement 30.6). Patterns intentionally favour high-signal,
 # well-known secret shapes to limit false positives.
-DEFAULT_SECRET_PATTERNS: Dict[str, str] = {
+DEFAULT_SECRET_PATTERNS: dict[str, str] = {
     "aws_access_key": r"AKIA[0-9A-Z]{16}",
     "aws_secret_key": r"(?i)aws_secret_access_key\W{0,3}[A-Za-z0-9/+]{40}",
     "gcp_api_key": r"AIza[0-9A-Za-z_-]{35}",
@@ -89,9 +90,7 @@ def redact(value: str) -> str:
     return f"{lead}{'*' * masked_len}{tail}"
 
 
-def _compile_patterns(
-    patterns: Mapping[str, Union[str, Pattern[str]]]
-) -> Dict[str, Pattern[str]]:
+def _compile_patterns(patterns: Mapping[str, str | Pattern[str]]) -> dict[str, Pattern[str]]:
     """Compile a name -> regex map into a name -> compiled pattern map.
 
     Accepts either regex strings (as in :data:`DEFAULT_SECRET_PATTERNS`) or
@@ -99,7 +98,7 @@ def _compile_patterns(
     directly. Invalid regex strings are skipped with a warning rather than
     aborting the whole scan.
     """
-    compiled: Dict[str, Pattern[str]] = {}
+    compiled: dict[str, Pattern[str]] = {}
     for name, pattern in patterns.items():
         if isinstance(pattern, str):
             try:
@@ -118,10 +117,10 @@ def _compile_patterns(
 def scan_for_secrets(
     body: str,
     headers: Mapping[str, str],
-    patterns: Mapping[str, Union[str, Pattern[str]]] = DEFAULT_SECRET_PATTERNS,
+    patterns: Mapping[str, str | Pattern[str]] = DEFAULT_SECRET_PATTERNS,
     endpoint: str = "",
     method: str = "",
-) -> List[SecretFinding]:
+) -> list[SecretFinding]:
     """Scan a discovery response's body and headers for secrets.
 
     Scans both the response body and response headers against the provided
@@ -143,11 +142,11 @@ def scan_for_secrets(
         no pattern matches anywhere, returns ``[]`` (Requirement 30.7).
     """
     compiled = _compile_patterns(patterns)
-    findings: List[SecretFinding] = []
+    findings: list[SecretFinding] = []
 
     # Build the set of texts to scan: the body plus each header rendered as
     # "Name: value" so header-oriented patterns (e.g. Authorization) match.
-    scan_targets: List[str] = []
+    scan_targets: list[str] = []
     if body:
         scan_targets.append(body)
     if headers:

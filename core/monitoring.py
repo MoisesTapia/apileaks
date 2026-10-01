@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 from .logging import get_logger
 
 
 class AlertLevel(str, Enum):
     """Alert severity levels"""
+
     INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
@@ -28,6 +29,7 @@ class AlertLevel(str, Enum):
 
 class MetricType(str, Enum):
     """Types of metrics"""
+
     COUNTER = "counter"
     GAUGE = "gauge"
     HISTOGRAM = "histogram"
@@ -37,6 +39,7 @@ class MetricType(str, Enum):
 @dataclass
 class Alert:
     """System alert representation"""
+
     id: str
     timestamp: datetime
     level: AlertLevel
@@ -50,6 +53,7 @@ class Alert:
 @dataclass
 class Metric:
     """System metric representation"""
+
     name: str
     type: MetricType
     value: float
@@ -61,6 +65,7 @@ class Metric:
 @dataclass
 class PerformanceSnapshot:
     """Performance metrics snapshot"""
+
     timestamp: datetime
     response_time_avg: float
     response_time_p95: float
@@ -76,6 +81,7 @@ class PerformanceSnapshot:
 @dataclass
 class AnomalyThresholds:
     """Thresholds for anomaly detection"""
+
     max_response_time: float = 30.0  # seconds
     min_success_rate: float = 0.8  # 80%
     max_error_rate: float = 0.2  # 20%
@@ -112,23 +118,19 @@ class LogRotationHandler:
 
         # Size-based rotation
         size_handler = logging.handlers.RotatingFileHandler(
-            log_file,
-            maxBytes=self.max_size_bytes,
-            backupCount=self.max_files
+            log_file, maxBytes=self.max_size_bytes, backupCount=self.max_files
         )
 
         # Time-based rotation (daily)
         time_handler = logging.handlers.TimedRotatingFileHandler(
             self.log_dir / "apileak_daily.log",
-            when='midnight',
+            when="midnight",
             interval=1,
-            backupCount=30  # Keep 30 days
+            backupCount=30,  # Keep 30 days
         )
 
         # Configure formatters
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         size_handler.setFormatter(formatter)
         time_handler.setFormatter(formatter)
 
@@ -145,7 +147,7 @@ class LogRotationHandler:
             log_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
 
             # Keep only the most recent files
-            for log_file in log_files[self.max_files:]:
+            for log_file in log_files[self.max_files :]:
                 log_file.unlink()
 
         except Exception as e:
@@ -210,7 +212,7 @@ class PerformanceMonitor:
                 error_rate=0.0,
                 memory_usage_mb=0.0,
                 active_connections=self.active_connections,
-                rate_limited_requests=self.rate_limited_requests
+                rate_limited_requests=self.rate_limited_requests,
             )
 
         # Calculate response time metrics
@@ -226,10 +228,7 @@ class PerformanceMonitor:
 
         # Calculate requests per second (last minute)
         now = datetime.now()
-        recent_requests = [
-            ts for ts in self.request_timestamps
-            if (now - ts).total_seconds() <= 60
-        ]
+        recent_requests = [ts for ts in self.request_timestamps if (now - ts).total_seconds() <= 60]
         requests_per_second = len(recent_requests) / 60.0
 
         # Get current memory usage
@@ -245,7 +244,7 @@ class PerformanceMonitor:
             error_rate=error_rate,
             memory_usage_mb=current_memory,
             active_connections=self.active_connections,
-            rate_limited_requests=self.rate_limited_requests
+            rate_limited_requests=self.rate_limited_requests,
         )
 
     def increment_active_connections(self):
@@ -309,8 +308,8 @@ class AnomalyDetector:
                     "avg_response_time": snapshot.response_time_avg,
                     "threshold": self.thresholds.max_response_time,
                     "p95_response_time": snapshot.response_time_p95,
-                    "p99_response_time": snapshot.response_time_p99
-                }
+                    "p99_response_time": snapshot.response_time_p99,
+                },
             )
             alerts.append(alert)
 
@@ -325,8 +324,8 @@ class AnomalyDetector:
                 details={
                     "success_rate": snapshot.success_rate,
                     "threshold": self.thresholds.min_success_rate,
-                    "error_rate": snapshot.error_rate
-                }
+                    "error_rate": snapshot.error_rate,
+                },
             )
             alerts.append(alert)
 
@@ -341,8 +340,8 @@ class AnomalyDetector:
                 details={
                     "error_rate": snapshot.error_rate,
                     "threshold": self.thresholds.max_error_rate,
-                    "success_rate": snapshot.success_rate
-                }
+                    "success_rate": snapshot.success_rate,
+                },
             )
             alerts.append(alert)
 
@@ -356,8 +355,8 @@ class AnomalyDetector:
                 message=f"High memory usage: {snapshot.memory_usage_mb:.1f}MB",
                 details={
                     "memory_usage_mb": snapshot.memory_usage_mb,
-                    "threshold": self.thresholds.max_memory_usage_mb
-                }
+                    "threshold": self.thresholds.max_memory_usage_mb,
+                },
             )
             alerts.append(alert)
 
@@ -374,8 +373,8 @@ class AnomalyDetector:
                     details={
                         "consecutive_count": self.consecutive_rate_limits,
                         "threshold": self.thresholds.max_consecutive_rate_limits,
-                        "rate_limited_requests": snapshot.rate_limited_requests
-                    }
+                        "rate_limited_requests": snapshot.rate_limited_requests,
+                    },
                 )
                 alerts.append(alert)
         else:
@@ -390,7 +389,7 @@ class AnomalyDetector:
                 level=alert.level,
                 category=alert.category,
                 message=alert.message,
-                details=alert.details
+                details=alert.details,
             )
 
             # Trigger alert callbacks
@@ -414,8 +413,8 @@ class AnomalyDetector:
                 message=f"Consecutive timeouts detected: {self.consecutive_timeouts} times",
                 details={
                     "consecutive_count": self.consecutive_timeouts,
-                    "threshold": self.thresholds.max_consecutive_timeouts
-                }
+                    "threshold": self.thresholds.max_consecutive_timeouts,
+                },
             )
             self.alerts.append(alert)
 
@@ -449,12 +448,14 @@ class MonitoringSystem:
     Main monitoring system that coordinates all monitoring components
     """
 
-    def __init__(self,
-                 log_dir: str = "logs",
-                 max_log_size_mb: int = 100,
-                 max_log_files: int = 10,
-                 thresholds: AnomalyThresholds = None,
-                 metrics_window_size: int = 1000):
+    def __init__(
+        self,
+        log_dir: str = "logs",
+        max_log_size_mb: int = 100,
+        max_log_files: int = 10,
+        thresholds: AnomalyThresholds = None,
+        metrics_window_size: int = 1000,
+    ):
         """
         Initialize monitoring system
 
@@ -485,7 +486,7 @@ class MonitoringSystem:
             alert_id=alert.id,
             level=alert.level.value,
             category=alert.category,
-            details=alert.details
+            details=alert.details,
         )
 
     def start_monitoring(self):
@@ -528,7 +529,7 @@ class MonitoringSystem:
                     memory_usage_mb=snapshot.memory_usage_mb,
                     active_connections=snapshot.active_connections,
                     rate_limited_requests=snapshot.rate_limited_requests,
-                    alerts_count=len(alerts)
+                    alerts_count=len(alerts),
                 )
 
                 # Clean up old logs periodically
@@ -595,7 +596,7 @@ class MonitoringSystem:
                 "requests_per_second": snapshot.requests_per_second,
                 "memory_usage_mb": snapshot.memory_usage_mb,
                 "active_connections": snapshot.active_connections,
-                "rate_limited_requests": snapshot.rate_limited_requests
+                "rate_limited_requests": snapshot.rate_limited_requests,
             },
             "alerts": {
                 "active_count": len(active_alerts),
@@ -605,14 +606,14 @@ class MonitoringSystem:
                         "level": alert.level.value,
                         "category": alert.category,
                         "message": alert.message,
-                        "timestamp": alert.timestamp.isoformat()
+                        "timestamp": alert.timestamp.isoformat(),
                     }
                     for alert in active_alerts
-                ]
+                ],
             },
             "system": {
                 "monitoring_active": self.monitoring_active,
                 "total_requests": self.performance_monitor.total_requests,
-                "total_errors": self.performance_monitor.total_errors
-            }
+                "total_errors": self.performance_monitor.total_errors,
+            },
         }

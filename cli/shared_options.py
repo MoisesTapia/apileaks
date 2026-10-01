@@ -27,6 +27,7 @@ import click
 # legacy ``full`` command).
 # ---------------------------------------------------------------------------
 
+
 def _validate_depth(ctx, param, value):
     """Click callback: reject a negative --depth, naming the offending value.
 
@@ -97,75 +98,179 @@ def _validate_retries(ctx, param, value):
 
 TRANSVERSAL_OPTIONS = [
     # --- target -----------------------------------------------------------
-    click.option('--target', '-t', help='Target URL to scan (overrides config)'),
-    click.option('--target-file', 'target_file', default=None,
-                 type=click.Path(exists=True, readable=True,
-                                 file_okay=True, dir_okay=False),
-                 metavar='FILE',
-                 help='Plain-text file with one target URL per line (# comments and blank '
-                      'lines are skipped). Lines without a scheme are auto-prefixed with '
-                      'https://. When supplied, --target is optional; both can be given '
-                      'together (--target becomes an implicit first entry).'),
-    click.option('--max-hosts', 'max_hosts', type=int, default=None, metavar='N',
-                 help='Maximum number of hosts to scan from --target-file (scans the first N).'),
+    click.option("--target", "-t", help="Target URL to scan (overrides config)"),
+    click.option(
+        "--target-file",
+        "target_file",
+        default=None,
+        type=click.Path(exists=True, readable=True, file_okay=True, dir_okay=False),
+        metavar="FILE",
+        help="Plain-text file with one target URL per line (# comments and blank "
+        "lines are skipped). Lines without a scheme are auto-prefixed with "
+        "https://. When supplied, --target is optional; both can be given "
+        "together (--target becomes an implicit first entry).",
+    ),
+    click.option(
+        "--max-hosts",
+        "max_hosts",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum number of hosts to scan from --target-file (scans the first N).",
+    ),
     # --- output / logging -------------------------------------------------
-    click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)'),
-    click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
-                 default='WARNING', help='Logging level'),
-    click.option('--log-file', help='Log file path (optional)'),
-    click.option('--json-logs', is_flag=True, help='Output logs in JSON format'),
+    click.option(
+        "--output",
+        "-o",
+        help="Output filename for reports (files will be saved in reports/ directory)",
+    ),
+    click.option(
+        "--log-level",
+        type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]),
+        default="WARNING",
+        help="Logging level",
+    ),
+    click.option("--log-file", help="Log file path (optional)"),
+    click.option("--json-logs", is_flag=True, help="Output logs in JSON format"),
     # --- rate limit -------------------------------------------------------
-    click.option('--rate-limit', type=int, help='Requests per second limit'),
+    click.option("--rate-limit", type=int, help="Requests per second limit"),
     # --- timeout / retries / concurrency (validated) ----------------------
-    click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
-                 help='Per-request timeout in seconds applied to every discovery request '
-                      '(must be > 0; default: 10).'),
-    click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
-                 help='Number of automatic retries for each failed discovery request '
-                      '(must be >= 0; default: 2).'),
-    click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
-                 help='Max concurrent in-flight discovery requests (default: 50).'),
+    click.option(
+        "--timeout",
+        "timeout",
+        type=float,
+        default=None,
+        callback=_validate_timeout,
+        help="Per-request timeout in seconds applied to every discovery request "
+        "(must be > 0; default: 10).",
+    ),
+    click.option(
+        "--retries",
+        "retries",
+        type=int,
+        default=None,
+        callback=_validate_retries,
+        help="Number of automatic retries for each failed discovery request "
+        "(must be >= 0; default: 2).",
+    ),
+    click.option(
+        "--concurrency",
+        "concurrency",
+        type=int,
+        default=None,
+        callback=_validate_concurrency,
+        help="Max concurrent in-flight discovery requests (default: 50).",
+    ),
     # --- safe mode --------------------------------------------------------
-    click.option('--safe-mode', is_flag=True, help='Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)'),
+    click.option(
+        "--safe-mode",
+        is_flag=True,
+        help="Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)",
+    ),
     # --- auth context -----------------------------------------------------
-    click.option('--jwt', help='JWT token to use for authentication'),
-    click.option('--auth-context', 'auth_context', multiple=True, metavar='user:token[:privilege]',
-                 help='Authenticated identity supplied as user:token with an optional '
-                      ':privilege suffix. Repeatable: pass once per user to run multi-user '
-                      'authorization tests (e.g. --auth-context alice:eyJ...:1 '
-                      '--auth-context bob:eyJ...:1).'),
+    click.option("--jwt", help="JWT token to use for authentication"),
+    click.option(
+        "--auth-context",
+        "auth_context",
+        multiple=True,
+        metavar="user:token[:privilege]",
+        help="Authenticated identity supplied as user:token with an optional "
+        ":privilege suffix. Repeatable: pass once per user to run multi-user "
+        "authorization tests (e.g. --auth-context alice:eyJ...:1 "
+        "--auth-context bob:eyJ...:1).",
+    ),
     # --- proxy ------------------------------------------------------------
-    click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.'),
-    click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).'),
+    click.option(
+        "--proxy",
+        help="Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.",
+    ),
+    click.option(
+        "--proxy-verify-ssl",
+        "proxy_verify_ssl",
+        is_flag=True,
+        help="Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).",
+    ),
     # --- CI options -------------------------------------------------------
-    click.option('--ci-mode', is_flag=True, help='Enable CI/CD mode with appropriate exit codes and artifact generation'),
-    click.option('--fail-on', type=click.Choice(['critical', 'high', 'medium', 'low']),
-                 default='high', help='Fail CI pipeline on findings of this severity or higher'),
-    click.option('--sarif', is_flag=True, help='Generate a SARIF 2.1.0 report (for code scanning / CI integration)'),
-    click.option('--baseline', type=click.Path(), help='Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.'),
+    click.option(
+        "--ci-mode",
+        is_flag=True,
+        help="Enable CI/CD mode with appropriate exit codes and artifact generation",
+    ),
+    click.option(
+        "--fail-on",
+        type=click.Choice(["critical", "high", "medium", "low"]),
+        default="high",
+        help="Fail CI pipeline on findings of this severity or higher",
+    ),
+    click.option(
+        "--sarif",
+        is_flag=True,
+        help="Generate a SARIF 2.1.0 report (for code scanning / CI integration)",
+    ),
+    click.option(
+        "--baseline",
+        type=click.Path(),
+        help="Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.",
+    ),
     # --- user-agent trio (mutually exclusive) -----------------------------
-    click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF'),
-    click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests'),
-    click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation'),
+    click.option(
+        "--user-agent-random", is_flag=True, help="Use random User-Agent headers to evade WAF"
+    ),
+    click.option("--user-agent-custom", help="Custom User-Agent string to use for all requests"),
+    click.option(
+        "--user-agent-file", help="File containing User-Agent strings (one per line) for rotation"
+    ),
     # --- discovery scope (design D4: available to module subcommands too) --
-    click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
-                 help='Max recursion depth for discovery (0 = no recursion). '
-                      'Overrides APILEAK_MAX_DEPTH and the config default (3).'),
-    click.option('--recursive/--no-recursive', 'recursive', default=None,
-                 help='Enable or disable recursive discovery (default: enabled).'),
-    click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
-                 help='Global request budget for discovery (default: unbounded).'),
-    click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
-                 help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
-                      'e.g. -x json,php or -x .json -x .php. Leading dots are optional.'),
-    click.option('--recursion-status', 'recursion_status', metavar='CLASSES', default=None,
-                 help='Restrict recursion to endpoints whose status class is in CLASSES: a '
-                      "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
-                      'default VALID/AUTH_REQUIRED recursion; never relaxes it.'),
-    click.option('--recursion-type', 'recursion_type', metavar='TYPES', default=None,
-                 help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
-                      "list of endpoint types like 'admin,api_version'. Only narrows the default "
-                      'recursion; never relaxes it.'),
+    click.option(
+        "--depth",
+        "depth",
+        type=int,
+        default=None,
+        callback=_validate_depth,
+        help="Max recursion depth for discovery (0 = no recursion). "
+        "Overrides APILEAK_MAX_DEPTH and the config default (3).",
+    ),
+    click.option(
+        "--recursive/--no-recursive",
+        "recursive",
+        default=None,
+        help="Enable or disable recursive discovery (default: enabled).",
+    ),
+    click.option(
+        "--max-requests",
+        "max_requests",
+        type=int,
+        default=None,
+        callback=_validate_max_requests,
+        help="Global request budget for discovery (default: unbounded).",
+    ),
+    click.option(
+        "--extensions",
+        "-x",
+        "extensions",
+        multiple=True,
+        metavar="EXT",
+        help="File extensions to append to each wordlist entry (comma-separated, repeatable). "
+        "e.g. -x json,php or -x .json -x .php. Leading dots are optional.",
+    ),
+    click.option(
+        "--recursion-status",
+        "recursion_status",
+        metavar="CLASSES",
+        default=None,
+        help="Restrict recursion to endpoints whose status class is in CLASSES: a "
+        "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
+        "default VALID/AUTH_REQUIRED recursion; never relaxes it.",
+    ),
+    click.option(
+        "--recursion-type",
+        "recursion_type",
+        metavar="TYPES",
+        default=None,
+        help="Restrict recursion to endpoints whose type is in TYPES: a comma-separated "
+        "list of endpoint types like 'admin,api_version'. Only narrows the default "
+        "recursion; never relaxes it.",
+    ),
 ]
 
 

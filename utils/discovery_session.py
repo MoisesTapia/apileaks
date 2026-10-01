@@ -64,9 +64,9 @@ class DiscoveryResult:
     serializable.
     """
 
-    url: str            # endpoint URL
-    method: str         # HTTP method
-    status_code: int    # raw HTTP status code
+    url: str  # endpoint URL
+    method: str  # HTTP method
+    status_code: int  # raw HTTP status code
     endpoint_status: str  # EndpointStatus value, e.g. "valid", "auth_required", "redirect"
 
     @classmethod
@@ -118,23 +118,17 @@ class DiscoveryResult:
                 missing or of the wrong type.
         """
         if not isinstance(data, dict):
-            raise InvalidSessionFileError(
-                "invalid session file: each result must be a JSON object"
-            )
+            raise InvalidSessionFileError("invalid session file: each result must be a JSON object")
 
         # bool is a subclass of int; reject it explicitly so a JSON ``true`` is
         # not silently accepted as a status code.
         status_code = data.get("status_code")
         if not isinstance(status_code, int) or isinstance(status_code, bool):
-            raise InvalidSessionFileError(
-                "invalid session file: 'status_code' must be an integer"
-            )
+            raise InvalidSessionFileError("invalid session file: 'status_code' must be an integer")
 
         for key in ("url", "method", "endpoint_status"):
             if not isinstance(data.get(key), str):
-                raise InvalidSessionFileError(
-                    f"invalid session file: '{key}' must be a string"
-                )
+                raise InvalidSessionFileError(f"invalid session file: '{key}' must be a string")
 
         return cls(
             url=data["url"],
@@ -231,9 +225,7 @@ class DiscoverySession:
                 are loaded in this case (Requirement 14.10).
         """
         if not path or not os.path.exists(path):
-            raise DiscoverySessionNotFoundError(
-                f"discovery session file not found: '{path}'"
-            )
+            raise DiscoverySessionNotFoundError(f"discovery session file not found: '{path}'")
 
         try:
             with open(path, encoding="utf-8") as handle:
@@ -250,9 +242,7 @@ class DiscoverySession:
 
         raw_results = data.get("results")
         if not isinstance(raw_results, list):
-            raise InvalidSessionFileError(
-                f"invalid session file '{path}': missing 'results' array"
-            )
+            raise InvalidSessionFileError(f"invalid session file '{path}': missing 'results' array")
 
         results = [DiscoveryResult.from_dict(entry) for entry in raw_results]
 
@@ -371,8 +361,7 @@ def parse_status_filter(raw: str) -> StatusFilter | None:
     for code in codes:
         if code < MIN_STATUS_CODE or code > MAX_STATUS_CODE:
             raise ValueError(
-                f"status code {code} is out of range "
-                f"({MIN_STATUS_CODE}-{MAX_STATUS_CODE})"
+                f"status code {code} is out of range ({MIN_STATUS_CODE}-{MAX_STATUS_CODE})"
             )
     return StatusFilter(codes=frozenset(codes))
 

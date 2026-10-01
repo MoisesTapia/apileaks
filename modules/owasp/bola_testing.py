@@ -3,7 +3,6 @@ BOLA (Broken Object Level Authorization) Testing Module
 Implements OWASP API1 - Broken Object Level Authorization testing
 """
 
-import asyncio
 import base64
 import copy
 import hashlib
@@ -11,38 +10,37 @@ import json
 import math
 import re
 import uuid
-import random
-from typing import List, Dict, Any, Optional, Set, Tuple, Union
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import (
+    parse_qs,
+    quote,
+    urlencode,
     urlparse,
     urlunparse,
-    parse_qs,
-    urlencode,
-    urljoin,
-    quote,
-    unquote,
 )
 
-from .registry import OWASPModule
-from utils.findings import Finding, FindingsCollector
-from utils.http_client import HTTPRequestEngine, Request, Response
-from utils.safe_mode import SafeModeGuard, STATE_CHANGING_METHODS, SAFE_METHODS
-from utils.authz_baseline import (
-    NegativeControlMixin,
-    NegativeControlBaseline,
-    extract_identifying_fields,
-    responses_identify_same_object,
-    responses_equivalent,
-)
-from core.config import BOLAConfig, AuthContext, AuthType, Severity
+from core.config import AuthContext, AuthType, BOLAConfig, Severity
 from core.logging import get_logger
-from utils.typed_payload import build_typed_payload, apply_actor_profile
+from utils.authz_baseline import (
+    NegativeControlBaseline,
+    NegativeControlMixin,
+    extract_identifying_fields,
+    responses_equivalent,
+    responses_identify_same_object,
+)
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine, Request, Response
+from utils.safe_mode import SafeModeGuard
+from utils.typed_payload import apply_actor_profile, build_typed_payload
+
+from .registry import OWASPModule
 
 
 @dataclass
 class ObjectIdentifier:
     """Represents an object identifier found in API endpoints"""
+
     value: str
     type: str  # 'sequential', 'guid', 'uuid', 'custom'
     endpoint: str
@@ -53,6 +51,7 @@ class ObjectIdentifier:
 @dataclass
 class BOLATestResult:
     """Result of a BOLA test"""
+
     endpoint: str
     method: str
     object_id: str
@@ -74,11 +73,12 @@ class CompositeIdentifierSlot:
     the slot's hierarchical role (``'parent'`` for the leftmost slot, ``'child'``
     for subsequent slots).
     """
+
     value: str
-    type: str            # 'sequential' | 'guid' | 'uuid' | ...
-    name: str            # inferred, e.g. 'tenant_id', 'project_id'
-    segment_index: int   # exact position in the raw path split
-    role: str            # 'parent' | 'child' (leftmost slot = parent)
+    type: str  # 'sequential' | 'guid' | 'uuid' | ...
+    name: str  # inferred, e.g. 'tenant_id', 'project_id'
+    segment_index: int  # exact position in the raw path split
+    role: str  # 'parent' | 'child' (leftmost slot = parent)
 
 
 @dataclass
@@ -90,8 +90,9 @@ class CompositeIdentifier:
     ``slots[0]`` is the outermost (parent) identifier and ``slots[-1]`` is the
     innermost (child) identifier (Requirement 29).
     """
+
     endpoint: str
-    slots: List[CompositeIdentifierSlot]   # >= 2, ordered parent..child
+    slots: list[CompositeIdentifierSlot]  # >= 2, ordered parent..child
 
 
 @dataclass
@@ -107,6 +108,7 @@ class IdentifierPredictability:
     30.6, 40.1). ``rationale`` is a short human-readable explanation included in
     finding evidence.
     """
+
     scheme: str
     predictable: bool
     rationale: str
@@ -122,51 +124,73 @@ class EvidenceChain:
     is ALWAYS passed through :meth:`BOLATestingModule.redact_secrets` before it
     is stored (Req 33.3), and a Confidence_Score (Req 33.2).
     """
-    request_line: str            # e.g. "PATCH /users/42 HTTP/1.1"
+
+    request_line: str  # e.g. "PATCH /users/42 HTTP/1.1"
     method: str
     original_id: str
     substituted_id: str
-    auth_context: str            # context name only, never the token
-    baseline_comparison: str     # outcome vs the Negative_Control_Baseline
-    response_snippet: str        # redacted (Req 33.3)
-    confidence: str              # 'high' | 'medium' | 'low' (Req 33.2)
+    auth_context: str  # context name only, never the token
+    baseline_comparison: str  # outcome vs the Negative_Control_Baseline
+    response_snippet: str  # redacted (Req 33.3)
+    confidence: str  # 'high' | 'medium' | 'low' (Req 33.2)
 
 
 class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     """
     BOLA Testing Module for detecting Broken Object Level Authorization
-    
+
     This module implements comprehensive testing for OWASP API Security Top 10 #1:
     - Enumerates sequential IDs and GUIDs to detect unauthorized access
     - Tests horizontal privilege escalation between users
     - Validates authorization at object level with multiple auth contexts
     - Detects objects accessible without authentication
     """
-    
+
     # Common ID patterns for detection
     ID_PATTERNS = {
-        'sequential': r'^\d+$',
-        'guid': r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
-        'uuid': r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
-        'short_uuid': r'^[0-9a-fA-F]{16,32}$',
-        'base64_id': r'^[A-Za-z0-9+/]{16,}={0,2}$'
+        "sequential": r"^\d+$",
+        "guid": r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "uuid": r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "short_uuid": r"^[0-9a-fA-F]{16,32}$",
+        "base64_id": r"^[A-Za-z0-9+/]{16,}={0,2}$",
     }
-    
+
     # Common parameter names that might contain object IDs
     ID_PARAMETER_NAMES = [
-        'id', 'user_id', 'userId', 'account_id', 'accountId',
-        'object_id', 'objectId', 'resource_id', 'resourceId',
-        'document_id', 'documentId', 'file_id', 'fileId',
-        'order_id', 'orderId', 'transaction_id', 'transactionId',
-        'profile_id', 'profileId', 'session_id', 'sessionId'
+        "id",
+        "user_id",
+        "userId",
+        "account_id",
+        "accountId",
+        "object_id",
+        "objectId",
+        "resource_id",
+        "resourceId",
+        "document_id",
+        "documentId",
+        "file_id",
+        "fileId",
+        "order_id",
+        "orderId",
+        "transaction_id",
+        "transactionId",
+        "profile_id",
+        "profileId",
+        "session_id",
+        "sessionId",
     ]
 
     # Identifying_Field names (lowercased) that denote an object's OWNER. Used by
     # ownership-aware enumeration to decide whether an accessed object belongs to
     # the requesting Auth_Context (Requirement 4.1).
     OWNER_FIELD_NAMES = {
-        'user_id', 'userid', 'owner_id', 'ownerid',
-        'account_id', 'accountid', 'email',
+        "user_id",
+        "userid",
+        "owner_id",
+        "ownerid",
+        "account_id",
+        "accountid",
+        "email",
     }
 
     # Unauthorized_Endpoint_Assertion classification for this module (Req 55.2,
@@ -174,8 +198,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     UNAUTHORIZED_ASSERTION_CATEGORY = "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS"
     UNAUTHORIZED_ASSERTION_OWASP = "API1"
 
-    def __init__(self, config: BOLAConfig, http_client: HTTPRequestEngine, 
-                 auth_contexts: List[AuthContext], spec_schema=None):
+    def __init__(
+        self,
+        config: BOLAConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+        spec_schema=None,
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -195,47 +224,49 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # One Negative_Control_Baseline cached per (endpoint, auth_context) to
         # bound the extra requests issued for calibration (Requirement 3, 25).
-        self._baseline_cache: Dict[Tuple[str, str], NegativeControlBaseline] = {}
+        self._baseline_cache: dict[tuple[str, str], NegativeControlBaseline] = {}
 
         # Negative_Control_Baseline cache for composite endpoints, keyed on
         # (endpoint, auth_context, slot_index) so each composite slot's
         # calibration is issued at most once (Requirements 29.5, 3, 25).
-        self._composite_baseline_cache: Dict[Tuple[str, str, int], NegativeControlBaseline] = {}
+        self._composite_baseline_cache: dict[tuple[str, str, int], NegativeControlBaseline] = {}
 
         # Report-only records of Destructive_Probes that would have been issued
         # while Dry_Run is enabled. Each entry captures the intended method,
         # target URL, substituted identifier, and intended body WITHOUT any
         # request being sent (Requirement 28.6).
-        self._dry_run_records: List[Dict[str, Any]] = []
+        self._dry_run_records: list[dict[str, Any]] = []
 
         # Create auth context mapping
         self.auth_context_map = {ctx.name: ctx for ctx in auth_contexts}
-        
+
         # Add anonymous context if not present
-        if 'anonymous' not in self.auth_context_map:
+        if "anonymous" not in self.auth_context_map:
             anonymous_ctx = AuthContext(
-                name='anonymous',
+                name="anonymous",
                 type=AuthType.BEARER,  # Use enum, not string
-                token='',
-                privilege_level=0
+                token="",
+                privilege_level=0,
             )
-            self.auth_context_map['anonymous'] = anonymous_ctx
-        
-        self.logger.info("BOLA Testing Module initialized",
-                        auth_contexts=len(self.auth_contexts),
-                        id_patterns=len(self.ID_PATTERNS))
-    
+            self.auth_context_map["anonymous"] = anonymous_ctx
+
+        self.logger.info(
+            "BOLA Testing Module initialized",
+            auth_contexts=len(self.auth_contexts),
+            id_patterns=len(self.ID_PATTERNS),
+        )
+
     def get_module_name(self) -> str:
         """Get module name"""
         return "bola_testing"
-    
-    async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
+
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
         """
         Execute BOLA tests on discovered endpoints
-        
+
         Args:
             endpoints: List of discovered endpoints
-            
+
         Returns:
             List of BOLA findings
         """
@@ -249,48 +280,59 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             )
 
         findings = []
-        
+
         try:
             # Step 1: Discover object identifiers in endpoints
             object_identifiers = await self._discover_object_identifiers(endpoints)
             self.logger.info("Object identifiers discovered", count=len(object_identifiers))
-            
+
             if not object_identifiers:
                 self.logger.warning("No object identifiers found - BOLA testing limited")
                 return findings
-            
+
             # Step 2: Test anonymous access to objects
             try:
                 anonymous_findings = await self._test_anonymous_access(object_identifiers)
                 findings.extend(anonymous_findings)
-                self.logger.debug("Anonymous access testing completed", findings=len(anonymous_findings))
+                self.logger.debug(
+                    "Anonymous access testing completed", findings=len(anonymous_findings)
+                )
             except Exception as e:
                 self.logger.error("Anonymous access testing failed", error=str(e))
                 raise
-            
+
             # Step 3: Test horizontal privilege escalation
             try:
-                horizontal_findings = await self._test_horizontal_privilege_escalation(object_identifiers)
+                horizontal_findings = await self._test_horizontal_privilege_escalation(
+                    object_identifiers
+                )
                 findings.extend(horizontal_findings)
-                self.logger.debug("Horizontal privilege escalation testing completed", findings=len(horizontal_findings))
+                self.logger.debug(
+                    "Horizontal privilege escalation testing completed",
+                    findings=len(horizontal_findings),
+                )
             except Exception as e:
                 self.logger.error("Horizontal privilege escalation testing failed", error=str(e))
                 # Don't raise here, continue with other tests
-            
+
             # Step 4: Test object access validation across auth contexts
             try:
                 validation_findings = await self._test_object_access_validation(object_identifiers)
                 findings.extend(validation_findings)
-                self.logger.debug("Object access validation testing completed", findings=len(validation_findings))
+                self.logger.debug(
+                    "Object access validation testing completed", findings=len(validation_findings)
+                )
             except Exception as e:
                 self.logger.error("Object access validation testing failed", error=str(e))
                 # Don't raise here, continue with other tests
-            
+
             # Step 5: Test ID enumeration vulnerabilities
             try:
                 enumeration_findings = await self._test_id_enumeration(object_identifiers)
                 findings.extend(enumeration_findings)
-                self.logger.debug("ID enumeration testing completed", findings=len(enumeration_findings))
+                self.logger.debug(
+                    "ID enumeration testing completed", findings=len(enumeration_findings)
+                )
             except Exception as e:
                 self.logger.error("ID enumeration testing failed", error=str(e))
                 # Don't raise here, continue with other tests
@@ -298,14 +340,15 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             # Step 6: Composite / multi-tenant BOLA (opt-in, Requirement 29).
             # Gated by BOLAConfig.enable_composite (defaults False) so the
             # existing default scan behavior is preserved (Requirement 34.2).
-            if getattr(self.config, 'enable_composite', False):
+            if getattr(self.config, "enable_composite", False):
                 try:
                     composites = self._discover_composite_identifiers(endpoints)
                     self.logger.info("Composite identifiers discovered", count=len(composites))
                     composite_findings = await self._test_composite_bola(composites)
                     findings.extend(composite_findings)
-                    self.logger.debug("Composite BOLA testing completed",
-                                      findings=len(composite_findings))
+                    self.logger.debug(
+                        "Composite BOLA testing completed", findings=len(composite_findings)
+                    )
                 except Exception as e:
                     self.logger.error("Composite BOLA testing failed", error=str(e))
                     # Don't raise here, continue with other tests
@@ -314,28 +357,27 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             # Requirement 30). Gated by BOLAConfig.enable_id_leakage (defaults
             # False) so existing default scan behavior is preserved
             # (Requirement 34.2). Uses safe GET probes only.
-            if getattr(self.config, 'enable_id_leakage', False):
+            if getattr(self.config, "enable_id_leakage", False):
                 try:
                     harvested = await self._harvest_identifiers(endpoints)
-                    self.logger.info("Identifiers harvested for leakage testing",
-                                     count=len(harvested))
-
-                    leakage_findings = await self._test_id_leakage(
-                        harvested, object_identifiers
+                    self.logger.info(
+                        "Identifiers harvested for leakage testing", count=len(harvested)
                     )
+
+                    leakage_findings = await self._test_id_leakage(harvested, object_identifiers)
                     findings.extend(leakage_findings)
-                    self.logger.debug("ID leakage testing completed",
-                                      findings=len(leakage_findings))
-
-                    predictability_findings = self._test_identifier_predictability(
-                        harvested
+                    self.logger.debug(
+                        "ID leakage testing completed", findings=len(leakage_findings)
                     )
+
+                    predictability_findings = self._test_identifier_predictability(harvested)
                     findings.extend(predictability_findings)
-                    self.logger.debug("Identifier predictability analysis completed",
-                                      findings=len(predictability_findings))
+                    self.logger.debug(
+                        "Identifier predictability analysis completed",
+                        findings=len(predictability_findings),
+                    )
                 except Exception as e:
-                    self.logger.error("ID leakage / predictability testing failed",
-                                      error=str(e))
+                    self.logger.error("ID leakage / predictability testing failed", error=str(e))
                     # Don't raise here, continue with other tests
 
             # Step 8: Declarative Unauthorized_Endpoint_Assertions (Req 55). Only
@@ -344,47 +386,50 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             try:
                 assertion_findings = await self._run_unauthorized_assertions(endpoints)
                 findings.extend(assertion_findings)
-                self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
-                                  findings=len(assertion_findings))
+                self.logger.debug(
+                    "Unauthorized-endpoint assertion evaluation completed",
+                    findings=len(assertion_findings),
+                )
             except Exception as e:
-                self.logger.error("Unauthorized-endpoint assertion evaluation failed",
-                                  error=str(e))
+                self.logger.error("Unauthorized-endpoint assertion evaluation failed", error=str(e))
                 # Don't raise here, continue with other tests
 
         except Exception as e:
             self.logger.error("BOLA testing failed during execution", error=str(e))
             raise
-        
-        self.logger.info("BOLA testing completed",
-                        total_findings=len(findings),
-                        critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]))
-        
+
+        self.logger.info(
+            "BOLA testing completed",
+            total_findings=len(findings),
+            critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]),
+        )
+
         return findings
-    
-    async def _discover_object_identifiers(self, endpoints: List[Any]) -> List[ObjectIdentifier]:
+
+    async def _discover_object_identifiers(self, endpoints: list[Any]) -> list[ObjectIdentifier]:
         """
         Discover object identifiers in API endpoints
-        
+
         Args:
             endpoints: List of discovered endpoints
-            
+
         Returns:
             List of discovered object identifiers
         """
         identifiers = []
-        
+
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+
             # Extract IDs from URL path
             path_ids = self._extract_ids_from_path(endpoint_url)
             identifiers.extend(path_ids)
-            
+
             # Test endpoint to discover query parameters and body parameters
-            if hasattr(endpoint, 'method'):
+            if hasattr(endpoint, "method"):
                 method = endpoint.method
             else:
-                method = 'GET'
+                method = "GET"
 
             # Safe mode: object-identifier discovery is a read-only probe, so an
             # endpoint's declared State_Changing_Method must never be issued.
@@ -398,82 +443,88 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 auth_context = None
                 if self.auth_contexts:
                     auth_context = self.auth_contexts[0]
-                
+
                 if auth_context:
                     self.http_client.set_auth_context(auth_context)
-                
+
                 response = await self.http_client.request(method, endpoint_url)
-                
+
                 # Extract IDs from response content
                 response_ids = self._extract_ids_from_response(response, endpoint_url)
                 identifiers.extend(response_ids)
-                
+
             except Exception as e:
-                self.logger.debug("Failed to test endpoint for ID discovery",
-                                endpoint=endpoint_url,
-                                error=str(e))
-        
+                self.logger.debug(
+                    "Failed to test endpoint for ID discovery", endpoint=endpoint_url, error=str(e)
+                )
+
         # Deduplicate identifiers
         unique_identifiers = []
         seen = set()
-        
+
         for identifier in identifiers:
             # Debug logging
-            self.logger.debug("Processing discovered identifier",
-                            identifier_type=type(identifier),
-                            identifier_value=str(identifier))
-            
+            self.logger.debug(
+                "Processing discovered identifier",
+                identifier_type=type(identifier),
+                identifier_value=str(identifier),
+            )
+
             # Ensure identifier is an ObjectIdentifier instance
             if not isinstance(identifier, ObjectIdentifier):
-                self.logger.warning("Invalid identifier type found", 
-                                  identifier_type=type(identifier),
-                                  identifier_value=str(identifier))
+                self.logger.warning(
+                    "Invalid identifier type found",
+                    identifier_type=type(identifier),
+                    identifier_value=str(identifier),
+                )
                 continue
-                
+
             key = f"{identifier.endpoint}:{identifier.parameter_name}:{identifier.value}"
             if key not in seen:
                 seen.add(key)
                 unique_identifiers.append(identifier)
-        
+
         self.logger.debug("Unique identifiers after deduplication", count=len(unique_identifiers))
         return unique_identifiers
-    
-    def _extract_ids_from_path(self, url: str) -> List[ObjectIdentifier]:
+
+    def _extract_ids_from_path(self, url: str) -> list[ObjectIdentifier]:
         """Extract object identifiers from URL path"""
         identifiers = []
         parsed_url = urlparse(url)
-        path_segments = [seg for seg in parsed_url.path.split('/') if seg]
-        
+        path_segments = [seg for seg in parsed_url.path.split("/") if seg]
+
         for i, segment in enumerate(path_segments):
             for id_type, pattern in self.ID_PATTERNS.items():
                 # Use re.match for anchored patterns
                 if re.match(pattern, segment):
                     # Try to determine parameter name from context
-                    param_name = 'id'
+                    param_name = "id"
                     if i > 0:
-                        prev_segment = path_segments[i-1]
-                        if prev_segment in ['user', 'users']:
-                            param_name = 'user_id'
-                        elif prev_segment in ['account', 'accounts']:
-                            param_name = 'account_id'
-                        elif prev_segment in ['order', 'orders']:
-                            param_name = 'order_id'
+                        prev_segment = path_segments[i - 1]
+                        if prev_segment in ["user", "users"]:
+                            param_name = "user_id"
+                        elif prev_segment in ["account", "accounts"]:
+                            param_name = "account_id"
+                        elif prev_segment in ["order", "orders"]:
+                            param_name = "order_id"
                         else:
                             param_name = f"{prev_segment}_id"
-                    
+
                     identifier = ObjectIdentifier(
                         value=segment,
                         type=id_type,
                         endpoint=url,
                         parameter_name=param_name,
-                        location='path'
+                        location="path",
                     )
                     identifiers.append(identifier)
                     break  # Only match first pattern that works
-        
+
         return identifiers
-    
-    def _extract_ids_from_response(self, response: Response, endpoint: str) -> List[ObjectIdentifier]:
+
+    def _extract_ids_from_response(
+        self, response: Response, endpoint: str
+    ) -> list[ObjectIdentifier]:
         """Extract object identifiers from response content.
 
         Extraction is restricted to values associated with recognized
@@ -487,8 +538,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # Look for IDs in JSON responses, keyed on recognized Identifying_Field
         # names only.
         try:
-            if 'application/json' in response.headers.get('content-type', ''):
+            if "application/json" in response.headers.get("content-type", ""):
                 import json
+
                 data = json.loads(response.text)
                 ids = self._extract_ids_from_json(data, endpoint)
                 identifiers.extend(ids)
@@ -496,18 +548,20 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             pass
 
         return identifiers
-    
-    def _extract_ids_from_json(self, data: Any, endpoint: str, prefix: str = '') -> List[ObjectIdentifier]:
+
+    def _extract_ids_from_json(
+        self, data: Any, endpoint: str, prefix: str = ""
+    ) -> list[ObjectIdentifier]:
         """Recursively extract IDs from JSON data"""
         identifiers = []
-        
+
         if isinstance(data, dict):
             for key, value in data.items():
                 full_key = f"{prefix}.{key}" if prefix else key
-                
+
                 # Check if key suggests an ID parameter
                 if any(id_param in key.lower() for id_param in self.ID_PARAMETER_NAMES):
-                    if isinstance(value, (str, int)):
+                    if isinstance(value, str | int):
                         str_value = str(value)
                         # Determine ID type
                         id_type = self._determine_id_type(str_value)
@@ -517,43 +571,43 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                                 type=id_type,
                                 endpoint=endpoint,
                                 parameter_name=key,
-                                location='response'
+                                location="response",
                             )
                             identifiers.append(identifier)
-                
+
                 # Recurse into nested objects
-                if isinstance(value, (dict, list)):
+                if isinstance(value, dict | list):
                     nested_ids = self._extract_ids_from_json(value, endpoint, full_key)
                     identifiers.extend(nested_ids)
-        
+
         elif isinstance(data, list):
             for i, item in enumerate(data):
-                if isinstance(item, (dict, list)):
+                if isinstance(item, dict | list):
                     nested_ids = self._extract_ids_from_json(item, endpoint, f"{prefix}[{i}]")
                     identifiers.extend(nested_ids)
-        
+
         return identifiers
-    
-    def _determine_id_type(self, value: str) -> Optional[str]:
+
+    def _determine_id_type(self, value: str) -> str | None:
         """Determine the type of an ID value"""
         for id_type, pattern in self.ID_PATTERNS.items():
             if re.match(pattern, value):
                 return id_type
         return None
-    
-    async def _test_anonymous_access(self, identifiers: List[ObjectIdentifier]) -> List[Finding]:
+
+    async def _test_anonymous_access(self, identifiers: list[ObjectIdentifier]) -> list[Finding]:
         """
         Test anonymous access to objects (Requirement 1.2)
-        
+
         Args:
             identifiers: List of object identifiers to test
-            
+
         Returns:
             List of findings for anonymous access vulnerabilities
         """
         findings = []
         self.logger.info("Testing anonymous access to objects", count=len(identifiers))
-        
+
         # Set anonymous context (no authentication)
         try:
             # For anonymous access, we don't set any auth context
@@ -563,20 +617,24 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         except Exception as e:
             self.logger.error("Failed to set anonymous context", error=str(e))
             raise
-        
+
         for i, identifier in enumerate(identifiers):
-            self.logger.debug("Processing identifier", 
-                            index=i, 
-                            identifier_type=type(identifier),
-                            identifier_value=str(identifier))
-            
+            self.logger.debug(
+                "Processing identifier",
+                index=i,
+                identifier_type=type(identifier),
+                identifier_value=str(identifier),
+            )
+
             # Skip if not an ObjectIdentifier instance
             if not isinstance(identifier, ObjectIdentifier):
-                self.logger.warning("Skipping invalid identifier", 
-                                  identifier_type=type(identifier),
-                                  identifier_value=str(identifier))
+                self.logger.warning(
+                    "Skipping invalid identifier",
+                    identifier_type=type(identifier),
+                    identifier_value=str(identifier),
+                )
                 continue
-                
+
             try:
                 # Build a negative-control baseline for this endpoint under the
                 # anonymous context (Requirements 3.1, 25.1).
@@ -595,64 +653,72 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     continue
 
                 # Test access to the object without authentication
-                self.logger.debug("About to test object access", 
-                                identifier_value=identifier.value,
-                                identifier_type=type(identifier))
-                response = await self._test_object_access(identifier, 'anonymous')
-                
+                self.logger.debug(
+                    "About to test object access",
+                    identifier_value=identifier.value,
+                    identifier_type=type(identifier),
+                )
+                response = await self._test_object_access(identifier, "anonymous")
+
                 # Check if object is accessible without authentication
                 if self._is_object_accessible(response, baseline):
                     finding = Finding(
                         id=str(uuid.uuid4()),
-                        scan_id='',  # Will be set by findings collector
-                        category='BOLA_ANONYMOUS_ACCESS',
-                        owasp_category='API1',
+                        scan_id="",  # Will be set by findings collector
+                        category="BOLA_ANONYMOUS_ACCESS",
+                        owasp_category="API1",
                         severity=Severity.CRITICAL,
                         endpoint=identifier.endpoint,
-                        method='GET',
+                        method="GET",
                         status_code=response.status_code,
                         response_size=len(response.content),
                         response_time=response.elapsed,
                         evidence=f"Object {identifier.value} accessible without authentication. "
-                                f"Status: {response.status_code}, Size: {len(response.content)} bytes",
+                        f"Status: {response.status_code}, Size: {len(response.content)} bytes",
                         recommendation="Implement proper authentication checks for object access. "
-                                     "Ensure all object endpoints require valid authentication.",
+                        "Ensure all object endpoints require valid authentication.",
                         payload=identifier.value,
-                        response_snippet=response.text[:500] if response.text else None
+                        response_snippet=response.text[:500] if response.text else None,
                     )
                     findings.append(finding)
-                    
-                    self.logger.warning("Anonymous access detected",
-                                      object_id=identifier.value,
-                                      endpoint=identifier.endpoint,
-                                      status_code=response.status_code)
-            
+
+                    self.logger.warning(
+                        "Anonymous access detected",
+                        object_id=identifier.value,
+                        endpoint=identifier.endpoint,
+                        status_code=response.status_code,
+                    )
+
             except Exception as e:
-                self.logger.error("Anonymous access test failed for identifier",
-                                identifier_index=i,
-                                identifier_type=type(identifier),
-                                identifier_value=str(identifier),
-                                error=str(e))
+                self.logger.error(
+                    "Anonymous access test failed for identifier",
+                    identifier_index=i,
+                    identifier_type=type(identifier),
+                    identifier_value=str(identifier),
+                    error=str(e),
+                )
                 raise  # Re-raise to see the full stack trace
-        
+
         return findings
-    
-    async def _test_horizontal_privilege_escalation(self, identifiers: List[ObjectIdentifier]) -> List[Finding]:
+
+    async def _test_horizontal_privilege_escalation(
+        self, identifiers: list[ObjectIdentifier]
+    ) -> list[Finding]:
         """
         Test horizontal privilege escalation between users (Requirement 1.3)
-        
+
         Args:
             identifiers: List of object identifiers to test
-            
+
         Returns:
             List of findings for horizontal privilege escalation
         """
         findings = []
         self.logger.info("Testing horizontal privilege escalation", count=len(identifiers))
-        
+
         # Get user-level auth contexts (privilege level 1)
         user_contexts = [ctx for ctx in self.auth_contexts if ctx.privilege_level == 1]
-        
+
         if len(user_contexts) < 2:
             # Structured skip log: the test is unreachable without >= 2 user
             # contexts (Requirement 5.2). Reachability comes from the CLI
@@ -664,7 +730,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 required=2,
             )
             return findings
-        
+
         # Test each object with different user contexts
         for identifier in identifiers:
             # First, establish baseline - what objects are accessible to user1
@@ -719,173 +785,188 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     if same:
                         finding = Finding(
                             id=str(uuid.uuid4()),
-                            scan_id='',
-                            category='BOLA_HORIZONTAL_ESCALATION',
-                            owasp_category='API1',
+                            scan_id="",
+                            category="BOLA_HORIZONTAL_ESCALATION",
+                            owasp_category="API1",
                             severity=Severity.CRITICAL,
                             endpoint=identifier.endpoint,
-                            method='GET',
+                            method="GET",
                             status_code=user2_response.status_code,
                             response_size=len(user2_response.content),
                             response_time=user2_response.elapsed,
                             evidence=f"User '{user2_context.name}' can access object "
-                                    f"{identifier.value} that belongs to user "
-                                    f"'{user1_context.name}'. Both responses expose the "
-                                    f"same identifying field '{field_name}'={field_value!r}.",
+                            f"{identifier.value} that belongs to user "
+                            f"'{user1_context.name}'. Both responses expose the "
+                            f"same identifying field '{field_name}'={field_value!r}.",
                             recommendation="Implement proper object-level authorization checks. "
-                                         "Ensure users can only access their own objects.",
+                            "Ensure users can only access their own objects.",
                             payload=identifier.value,
-                            response_snippet=user2_response.text[:500] if user2_response.text else None
+                            response_snippet=user2_response.text[:500]
+                            if user2_response.text
+                            else None,
                         )
                         findings.append(finding)
 
-                        self.logger.warning("Horizontal privilege escalation detected",
-                                          object_id=identifier.value,
-                                          endpoint=identifier.endpoint,
-                                          user1=user1_context.name,
-                                          user2=user2_context.name,
-                                          identifying_field=field_name)
-            
+                        self.logger.warning(
+                            "Horizontal privilege escalation detected",
+                            object_id=identifier.value,
+                            endpoint=identifier.endpoint,
+                            user1=user1_context.name,
+                            user2=user2_context.name,
+                            identifying_field=field_name,
+                        )
+
             except Exception as e:
-                self.logger.debug("Horizontal escalation test failed",
-                                object_id=identifier.value,
-                                endpoint=identifier.endpoint,
-                                error=str(e))
-        
+                self.logger.debug(
+                    "Horizontal escalation test failed",
+                    object_id=identifier.value,
+                    endpoint=identifier.endpoint,
+                    error=str(e),
+                )
+
         return findings
-    
-    async def _test_object_access_validation(self, identifiers: List[ObjectIdentifier]) -> List[Finding]:
+
+    async def _test_object_access_validation(
+        self, identifiers: list[ObjectIdentifier]
+    ) -> list[Finding]:
         """
         Test object access validation with multiple auth contexts (Requirement 1.4)
-        
+
         Args:
             identifiers: List of object identifiers to test
-            
+
         Returns:
             List of findings for object access validation issues
         """
         findings = []
         self.logger.info("Testing object access validation", count=len(identifiers))
-        
+
         # Test each object with all available auth contexts
         for identifier in identifiers:
             access_results = {}
-            
+
             # Test with each auth context
             for auth_context in self.auth_contexts:
                 try:
                     baseline = await self._get_negative_control(identifier, auth_context)
                     self.http_client.set_auth_context(auth_context)
                     response = await self._test_object_access(identifier, auth_context.name)
-                    accessible = (
-                        not baseline.non_discriminating
-                        and self._is_object_accessible(response, baseline)
+                    accessible = not baseline.non_discriminating and self._is_object_accessible(
+                        response, baseline
                     )
                     access_results[auth_context.name] = {
-                        'accessible': accessible,
-                        'response': response,
-                        'privilege_level': auth_context.privilege_level
+                        "accessible": accessible,
+                        "response": response,
+                        "privilege_level": auth_context.privilege_level,
                     }
-                
+
                 except Exception as e:
-                    self.logger.debug("Object access validation test failed",
-                                    object_id=identifier.value,
-                                    auth_context=auth_context.name,
-                                    error=str(e))
+                    self.logger.debug(
+                        "Object access validation test failed",
+                        object_id=identifier.value,
+                        auth_context=auth_context.name,
+                        error=str(e),
+                    )
                     access_results[auth_context.name] = {
-                        'accessible': False,
-                        'response': None,
-                        'privilege_level': auth_context.privilege_level
+                        "accessible": False,
+                        "response": None,
+                        "privilege_level": auth_context.privilege_level,
                     }
-            
+
             # Analyze access patterns
             validation_finding = self._analyze_access_patterns(identifier, access_results)
             if validation_finding:
                 findings.append(validation_finding)
-        
+
         return findings
-    
-    def _analyze_access_patterns(self, identifier: ObjectIdentifier, 
-                               access_results: Dict[str, Dict]) -> Optional[Finding]:
+
+    def _analyze_access_patterns(
+        self, identifier: ObjectIdentifier, access_results: dict[str, dict]
+    ) -> Finding | None:
         """
         Analyze access patterns to detect authorization issues
-        
+
         Args:
             identifier: Object identifier being tested
             access_results: Results of access tests with different auth contexts
-            
+
         Returns:
             Finding if authorization issue detected, None otherwise
         """
-        accessible_contexts = [name for name, result in access_results.items() 
-                             if result['accessible']]
-        
+        accessible_contexts = [
+            name for name, result in access_results.items() if result["accessible"]
+        ]
+
         if not accessible_contexts:
             return None  # Object not accessible to anyone - likely protected
-        
+
         # Check if lower privilege users can access objects that higher privilege users can access
-        privilege_levels = {name: result['privilege_level'] 
-                          for name, result in access_results.items() 
-                          if result['accessible']}
-        
+        privilege_levels = {
+            name: result["privilege_level"]
+            for name, result in access_results.items()
+            if result["accessible"]
+        }
+
         if len(privilege_levels) > 1:
             min_privilege = min(privilege_levels.values())
             max_privilege = max(privilege_levels.values())
-            
+
             # If there's a significant privilege gap, it might be an issue
             if max_privilege - min_privilege > 1:
                 evidence = f"Object {identifier.value} accessible to users with privilege levels {sorted(privilege_levels.values())}. "
                 evidence += f"Accessible contexts: {', '.join(accessible_contexts)}"
-                
+
                 return Finding(
                     id=str(uuid.uuid4()),
-                    scan_id='',
-                    category='BOLA_OBJECT_ACCESS',
-                    owasp_category='API1',
+                    scan_id="",
+                    category="BOLA_OBJECT_ACCESS",
+                    owasp_category="API1",
                     severity=Severity.HIGH,
                     endpoint=identifier.endpoint,
-                    method='GET',
+                    method="GET",
                     status_code=200,  # Assuming successful access
                     response_size=0,
                     response_time=0.0,
                     evidence=evidence,
                     recommendation="Review object access controls. Ensure objects are only accessible "
-                                 "to users with appropriate privilege levels.",
-                    payload=identifier.value
+                    "to users with appropriate privilege levels.",
+                    payload=identifier.value,
                 )
-        
+
         return None
-    
-    async def _test_id_enumeration(self, identifiers: List[ObjectIdentifier]) -> List[Finding]:
+
+    async def _test_id_enumeration(self, identifiers: list[ObjectIdentifier]) -> list[Finding]:
         """
         Test ID enumeration vulnerabilities (Requirement 1.1)
-        
+
         Args:
             identifiers: List of object identifiers to test
-            
+
         Returns:
             List of findings for ID enumeration vulnerabilities
         """
         findings = []
         self.logger.info("Testing ID enumeration", count=len(identifiers))
-        
+
         # Group identifiers by type for efficient testing
-        sequential_ids = [id for id in identifiers if id.type == 'sequential']
-        guid_ids = [id for id in identifiers if id.type in ['guid', 'uuid']]
-        
+        sequential_ids = [id for id in identifiers if id.type == "sequential"]
+        guid_ids = [id for id in identifiers if id.type in ["guid", "uuid"]]
+
         # Test sequential ID enumeration
         if sequential_ids:
             enum_findings = await self._test_sequential_enumeration(sequential_ids)
             findings.extend(enum_findings)
-        
+
         # Test GUID enumeration (less likely but possible)
         if guid_ids:
             guid_findings = await self._test_guid_enumeration(guid_ids)
             findings.extend(guid_findings)
-        
+
         return findings
-    
-    async def _test_sequential_enumeration(self, identifiers: List[ObjectIdentifier]) -> List[Finding]:
+
+    async def _test_sequential_enumeration(
+        self, identifiers: list[ObjectIdentifier]
+    ) -> list[Finding]:
         """Ownership-aware sequential ID enumeration (Requirement 4).
 
         The candidate range is derived from ``BOLAConfig.enumeration_bound``
@@ -900,12 +981,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # Use the first available auth context as the requesting context.
         auth_context = self.auth_contexts[0] if self.auth_contexts else None
 
-        bound = max(2, getattr(self.config, 'enumeration_bound', 25))
+        bound = max(2, getattr(self.config, "enumeration_bound", 25))
         half = bound // 2
 
         for identifier in identifiers:
             # Only genuinely sequential (integer) identifiers are enumerable.
-            if identifier.type != 'sequential' or not str(identifier.value).isdigit():
+            if identifier.type != "sequential" or not str(identifier.value).isdigit():
                 self.logger.info(
                     "Skipping sequential enumeration for non-sequential identifier",
                     object_id=identifier.value,
@@ -935,7 +1016,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 # Fetch the requester's OWN object to establish the ownership
                 # reference (Requirement 4.1).
                 own_response = await self._test_object_access(
-                    identifier, 'enumeration_owner', candidate_id=identifier.value
+                    identifier, "enumeration_owner", candidate_id=identifier.value
                 )
                 own_fields = extract_identifying_fields(own_response)
 
@@ -948,7 +1029,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         continue  # Skip the original ID
 
                     response = await self._test_object_access(
-                        identifier, 'enumeration_test', candidate_id=str(test_id)
+                        identifier, "enumeration_test", candidate_id=str(test_id)
                     )
 
                     if not self._is_object_accessible(response, baseline):
@@ -966,42 +1047,46 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 if len(unauthorized_ids) >= 2:
                     finding = Finding(
                         id=str(uuid.uuid4()),
-                        scan_id='',
-                        category='BOLA_ID_ENUMERATION',
-                        owasp_category='API1',
+                        scan_id="",
+                        category="BOLA_ID_ENUMERATION",
+                        owasp_category="API1",
                         severity=Severity.HIGH,
                         endpoint=identifier.endpoint,
-                        method='GET',
+                        method="GET",
                         status_code=200,
                         response_size=0,
                         response_time=0.0,
                         evidence=f"Sequential ID enumeration exposed objects not owned by the "
-                                f"requesting context. Original ID: {original_id}, "
-                                f"Unauthorized accessible IDs: {unauthorized_ids}. "
-                                f"Total unauthorized: {len(unauthorized_ids)}",
+                        f"requesting context. Original ID: {original_id}, "
+                        f"Unauthorized accessible IDs: {unauthorized_ids}. "
+                        f"Total unauthorized: {len(unauthorized_ids)}",
                         recommendation="Use non-sequential, unpredictable object identifiers (UUIDs). "
-                                     "Implement proper authorization checks for all object access.",
-                        payload=f"Original: {original_id}, Unauthorized: {unauthorized_ids}"
+                        "Implement proper authorization checks for all object access.",
+                        payload=f"Original: {original_id}, Unauthorized: {unauthorized_ids}",
                     )
                     findings.append(finding)
 
-                    self.logger.warning("Sequential ID enumeration detected",
-                                      endpoint=identifier.endpoint,
-                                      original_id=original_id,
-                                      unauthorized_count=len(unauthorized_ids))
+                    self.logger.warning(
+                        "Sequential ID enumeration detected",
+                        endpoint=identifier.endpoint,
+                        original_id=original_id,
+                        unauthorized_count=len(unauthorized_ids),
+                    )
 
             except ValueError as e:
-                self.logger.info("Skipping sequential enumeration for non-integer identifier",
-                                object_id=identifier.value,
-                                error=str(e))
+                self.logger.info(
+                    "Skipping sequential enumeration for non-integer identifier",
+                    object_id=identifier.value,
+                    error=str(e),
+                )
             except Exception as e:
-                self.logger.debug("Sequential enumeration test failed",
-                                object_id=identifier.value,
-                                error=str(e))
+                self.logger.debug(
+                    "Sequential enumeration test failed", object_id=identifier.value, error=str(e)
+                )
 
         return findings
 
-    async def _test_guid_enumeration(self, identifiers: List[ObjectIdentifier]) -> List[Finding]:
+    async def _test_guid_enumeration(self, identifiers: list[ObjectIdentifier]) -> list[Finding]:
         """GUID enumeration is not attempted (Requirement 4.3).
 
         Random GUIDs are non-sequential, so probing random variations cannot
@@ -1018,9 +1103,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             )
         return []
 
-    
-    async def _test_object_access(self, identifier: ObjectIdentifier, context_name: str,
-                                  candidate_id: Optional[Any] = None) -> Response:
+    async def _test_object_access(
+        self, identifier: ObjectIdentifier, context_name: str, candidate_id: Any | None = None
+    ) -> Response:
         """
         Test access to a specific object by substituting a candidate identifier.
 
@@ -1039,14 +1124,16 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         test_url = self._substitute_identifier(identifier, target_id)
 
         # Make the request
-        response = await self.http_client.request('GET', test_url)
+        response = await self.http_client.request("GET", test_url)
 
-        self.logger.debug("Object access test",
-                         object_id=target_id,
-                         endpoint=test_url,
-                         context=context_name,
-                         status_code=response.status_code,
-                         response_size=len(response.content))
+        self.logger.debug(
+            "Object access test",
+            object_id=target_id,
+            endpoint=test_url,
+            context=context_name,
+            status_code=response.status_code,
+            response_size=len(response.content),
+        )
 
         return response
 
@@ -1063,15 +1150,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         candidate_id = str(candidate_id)
         parsed = urlparse(identifier.endpoint)
 
-        if identifier.location == 'path':
+        if identifier.location == "path":
             # Replace only the segment(s) equal to the original identifier value,
             # leaving all other path segments intact.
-            segments = parsed.path.split('/')
-            new_segments = [
-                candidate_id if seg == identifier.value else seg
-                for seg in segments
-            ]
-            new_path = '/'.join(new_segments)
+            segments = parsed.path.split("/")
+            new_segments = [candidate_id if seg == identifier.value else seg for seg in segments]
+            new_path = "/".join(new_segments)
             return urlunparse(parsed._replace(path=new_path))
 
         # Query-string (or response-discovered) identifier: substitute the target
@@ -1081,7 +1165,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         new_query = urlencode(qs, doseq=True)
         return urlunparse(parsed._replace(query=new_query))
 
-    def _spec_path_slots(self, operation) -> List[Any]:
+    def _spec_path_slots(self, operation) -> list[Any]:
         """Return the declared ``path`` Spec_Parameters for ``operation`` in path
         order (Requirements 53.1, 53.4).
 
@@ -1097,16 +1181,17 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return []
 
         path_params = [
-            param for param in getattr(operation, 'parameters', []) or []
-            if getattr(param, 'location', None) == 'path'
+            param
+            for param in getattr(operation, "parameters", []) or []
+            if getattr(param, "location", None) == "path"
         ]
         if not path_params:
             return []
 
-        template = getattr(operation, 'path', '') or ''
+        template = getattr(operation, "path", "") or ""
 
         def _placeholder_pos(param) -> int:
-            token = '{' + param.name + '}'
+            token = "{" + param.name + "}"
             pos = template.find(token)
             # Parameters that do not appear in the declared path sort after those
             # that do; ``sorted`` is stable so their relative order is preserved.
@@ -1114,8 +1199,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return sorted(path_params, key=_placeholder_pos)
 
-    def _identifier_from_spec(self, operation, endpoint: str,
-                              slot_index: int = 0) -> Optional[ObjectIdentifier]:
+    def _identifier_from_spec(
+        self, operation, endpoint: str, slot_index: int = 0
+    ) -> ObjectIdentifier | None:
         """Build an :class:`ObjectIdentifier` targeting a declared ``path`` slot.
 
         The returned identifier has ``location='path'``, ``parameter_name`` set to
@@ -1142,9 +1228,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return None
 
         target = slots[slot_index]
-        template = getattr(operation, 'path', '') or ''
-        template_segments = template.split('/')
-        token = '{' + target.name + '}'
+        template = getattr(operation, "path", "") or ""
+        template_segments = template.split("/")
+        token = "{" + target.name + "}"
 
         placeholder_index = None
         for idx, segment in enumerate(template_segments):
@@ -1154,7 +1240,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         if placeholder_index is None:
             return None
 
-        concrete_segments = urlparse(endpoint).path.split('/')
+        concrete_segments = urlparse(endpoint).path.split("/")
         # Right-align the declared template against the concrete path so an
         # optional base prefix (e.g. ``/v1``) on the concrete endpoint is
         # tolerated; both share a leading empty segment when rooted at ``/``.
@@ -1171,21 +1257,22 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return ObjectIdentifier(
             value=value,
-            type=self._determine_id_type(value) or 'custom',
+            type=self._determine_id_type(value) or "custom",
             endpoint=endpoint,
             parameter_name=target.name,
-            location='path',
+            location="path",
         )
 
-    async def _get_negative_control(self, identifier: ObjectIdentifier,
-                                    auth_context: Optional[AuthContext]) -> NegativeControlBaseline:
+    async def _get_negative_control(
+        self, identifier: ObjectIdentifier, auth_context: AuthContext | None
+    ) -> NegativeControlBaseline:
         """Return a cached Negative_Control_Baseline for ``(endpoint, auth_context)``.
 
         The baseline is built once per endpoint/context pair by requesting a
         known-invalid identifier under the same auth context, substituted into
         the correct path segment or query parameter (Requirements 3.1, 25.1).
         """
-        context_key = auth_context.name if auth_context is not None else 'anonymous'
+        context_key = auth_context.name if auth_context is not None else "anonymous"
         cache_key = (identifier.endpoint, context_key)
 
         if cache_key not in self._baseline_cache:
@@ -1199,8 +1286,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return self._baseline_cache[cache_key]
 
-    def _object_belongs_to_context(self, candidate_fields: Dict[str, Any],
-                                   own_fields: Dict[str, Any]) -> bool:
+    def _object_belongs_to_context(
+        self, candidate_fields: dict[str, Any], own_fields: dict[str, Any]
+    ) -> bool:
         """Decide whether an accessed object belongs to the requesting context.
 
         Compares the accessed object's Identifying_Field values against the
@@ -1219,14 +1307,15 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             if key in own_fields:
                 return candidate_fields[key] == own_fields[key]
 
-        if 'id' in candidate_fields and 'id' in own_fields:
-            return candidate_fields['id'] == own_fields['id']
+        if "id" in candidate_fields and "id" in own_fields:
+            return candidate_fields["id"] == own_fields["id"]
 
         # No comparable identifying field between the two objects.
         return True
-    
-    def _is_object_accessible(self, response: Response,
-                              baseline: Optional[NegativeControlBaseline] = None) -> bool:
+
+    def _is_object_accessible(
+        self, response: Response, baseline: NegativeControlBaseline | None = None
+    ) -> bool:
         """
         Determine if an object is genuinely accessible.
 
@@ -1264,7 +1353,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # Fallback (no negative-control available): status + error-body check.
         if 200 <= response.status_code < 400:
             if response.text:
-                error_indicators = ['error', 'not found', 'unauthorized', 'forbidden', 'invalid']
+                error_indicators = ["error", "not found", "unauthorized", "forbidden", "invalid"]
                 response_lower = response.text.lower()
                 if any(indicator in response_lower for indicator in error_indicators):
                     return False
@@ -1299,11 +1388,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         destructive probing is disabled by default because
         ``config.allow_destructive`` defaults to ``False`` (Requirement 28.1).
         """
-        return (not self.safe_mode) and bool(
-            getattr(self.config, "allow_destructive", False)
-        )
+        return (not self.safe_mode) and bool(getattr(self.config, "allow_destructive", False))
 
-    def _select_write_method(self) -> Optional[str]:
+    def _select_write_method(self) -> str | None:
         """Pick the least-destructive configured State_Changing_Method.
 
         Selection prefers ``PATCH`` over ``PUT`` over ``POST`` and NEVER returns
@@ -1313,9 +1400,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         never issued. Returns ``None`` when no write method is configured (a
         controlled skip, never an issued request).
         """
-        configured = {
-            str(m).upper() for m in getattr(self.config, "destructive_methods", set())
-        }
+        configured = {str(m).upper() for m in getattr(self.config, "destructive_methods", set())}
         for method in ("PATCH", "PUT", "POST"):
             if method in configured:
                 return method
@@ -1323,8 +1408,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return "DELETE"
         return None
 
-    def _dry_run_record(self, method: str, url: str, substituted_id: Any,
-                        body: Optional[Any] = None) -> Dict[str, Any]:
+    def _dry_run_record(
+        self, method: str, url: str, substituted_id: Any, body: Any | None = None
+    ) -> dict[str, Any]:
         """Record an intended Destructive_Probe WITHOUT issuing the request.
 
         When Dry_Run is enabled, each state-changing probe the module would
@@ -1340,15 +1426,17 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             "body": body,
         }
         self._dry_run_records.append(record)
-        self.logger.info("Dry-run: destructive BOLA probe recorded (not issued)",
-                         method=record["method"],
-                         url=url,
-                         substituted_id=record["substituted_id"])
+        self.logger.info(
+            "Dry-run: destructive BOLA probe recorded (not issued)",
+            method=record["method"],
+            url=url,
+            substituted_id=record["substituted_id"],
+        )
         return record
 
-    async def _issue_guarded_write_probe(self, url: str, substituted_id: Any,
-                                         body: Optional[Any] = None,
-                                         test_name: str = "write_bola") -> Optional[Response]:
+    async def _issue_guarded_write_probe(
+        self, url: str, substituted_id: Any, body: Any | None = None, test_name: str = "write_bola"
+    ) -> Response | None:
         """Issue a single State_Changing_Method_Probe through the destructive guardrails.
 
         This is the single choke point every advanced state-changing BOLA probe
@@ -1371,10 +1459,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """
         method = self._select_write_method()
         if method is None or not self._destructive_allowed():
-            self.logger.info("Skipping destructive BOLA probe",
-                             reason="opt-in absent, safe mode, or no write method",
-                             test=test_name,
-                             url=url)
+            self.logger.info(
+                "Skipping destructive BOLA probe",
+                reason="opt-in absent, safe mode, or no write method",
+                test=test_name,
+                url=url,
+            )
             return None
 
         # Belt-and-suspenders Safe_Mode check: never issue a State_Changing_Method
@@ -1386,10 +1476,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             self._dry_run_record(method, url, substituted_id, body)
             return None
 
-        self.logger.info("Issuing destructive BOLA probe",
-                         method=method,
-                         url=url,
-                         substituted_id=str(substituted_id))
+        self.logger.info(
+            "Issuing destructive BOLA probe",
+            method=method,
+            url=url,
+            substituted_id=str(substituted_id),
+        )
         return await self.http_client.request(method, url, json=body)
 
     # ------------------------------------------------------------------
@@ -1400,8 +1492,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # foreign object constitutes account takeover rather than mere write
     # escalation (Requirement 27.4).
     CREDENTIAL_FIELD_NAMES = {
-        "email", "password", "passwd", "secret",
-        "api_key", "apikey", "token", "credential",
+        "email",
+        "password",
+        "passwd",
+        "secret",
+        "api_key",
+        "apikey",
+        "token",
+        "credential",
     }
 
     def _is_credential_field(self, field: str) -> bool:
@@ -1415,8 +1513,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return False
         return field.lower() in self.CREDENTIAL_FIELD_NAMES
 
-    def _classify_write_outcome(self, field: str, victim_fields: Dict[str, Any],
-                                own_fields: Dict[str, Any]) -> Optional[str]:
+    def _classify_write_outcome(
+        self, field: str, victim_fields: dict[str, Any], own_fields: dict[str, Any]
+    ) -> str | None:
         """Classify a persisted mutation on the target object (Reqs 27.4, 27.5).
 
         Foreign ownership is decided via the existing
@@ -1447,17 +1546,36 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # credential/secret VALUE. When such a name keys a value in a response
     # snippet, the value is redacted regardless of its shape (Req 33.3).
     SECRET_FIELD_KEYWORDS = (
-        'password', 'passwd', 'pwd', 'secret', 'token', 'apikey', 'api_key',
-        'api-key', 'accesskey', 'access_key', 'access-key', 'access_token',
-        'refresh_token', 'private_key', 'privatekey', 'client_secret',
-        'clientsecret', 'authorization', 'credential', 'session_token',
-        'sessionid', 'session_id', 'auth_token', 'bearer',
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "apikey",
+        "api_key",
+        "api-key",
+        "accesskey",
+        "access_key",
+        "access-key",
+        "access_token",
+        "refresh_token",
+        "private_key",
+        "privatekey",
+        "client_secret",
+        "clientsecret",
+        "authorization",
+        "credential",
+        "session_token",
+        "sessionid",
+        "session_id",
+        "auth_token",
+        "bearer",
     )
 
     # Known credential token prefixes: a value carrying one of these prefixes is
     # self-sufficient evidence of an exposed secret (mirrors the Property_Module
     # discipline, Req 12.2 / Req 33.3).
-    CREDENTIAL_PREFIXES = ('sk_', 'pk_', 'AKIA', 'ghp_', 'xoxb-')
+    CREDENTIAL_PREFIXES = ("sk_", "pk_", "AKIA", "ghp_", "xoxb-")
 
     # Minimum Shannon entropy (bits/char) to treat an otherwise unremarkable
     # long/base64-shaped token as a genuine random secret rather than a slug or
@@ -1465,14 +1583,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     CREDENTIAL_ENTROPY_THRESHOLD = 3.5
 
     # Marker substituted for any redacted secret value.
-    REDACTION_MARKER = '<redacted>'
+    REDACTION_MARKER = "<redacted>"
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:
         """Compute the Shannon entropy (bits per character) of ``value``."""
         if not value:
             return 0.0
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         for char in value:
             counts[char] = counts.get(char, 0) + 1
         length = len(value)
@@ -1497,9 +1615,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # Self-sufficient patterns.
         sufficient_patterns = (
-            r'^\d{3}-\d{2}-\d{4}$',                              # SSN
-            r'^\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}$',         # Credit card
-            r'^sk_[a-zA-Z0-9]{20,}$',                            # Stripe-style key
+            r"^\d{3}-\d{2}-\d{4}$",  # SSN
+            r"^\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}$",  # Credit card
+            r"^sk_[a-zA-Z0-9]{20,}$",  # Stripe-style key
         )
         for pattern in sufficient_patterns:
             if re.fullmatch(pattern, token):
@@ -1512,9 +1630,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # Credential-SHAPE: long alphanumeric or base64-shaped blob. Necessary
         # but not sufficient - require high-entropy corroboration.
         credential_shape = (
-            re.fullmatch(r'[A-Za-z0-9]{32,}', token)
-            or re.fullmatch(r'[A-Za-z0-9+/]{20,}={0,2}', token)
-            or re.fullmatch(r'[A-Za-z0-9._-]{32,}', token)   # JWT / dotted tokens
+            re.fullmatch(r"[A-Za-z0-9]{32,}", token)
+            or re.fullmatch(r"[A-Za-z0-9+/]{20,}={0,2}", token)
+            or re.fullmatch(r"[A-Za-z0-9._-]{32,}", token)  # JWT / dotted tokens
         )
         if not credential_shape:
             return False
@@ -1538,7 +1656,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         text = snippet
         marker = self.REDACTION_MARKER
-        keyword_alt = '|'.join(re.escape(k) for k in self.SECRET_FIELD_KEYWORDS)
+        keyword_alt = "|".join(re.escape(k) for k in self.SECRET_FIELD_KEYWORDS)
 
         # 1. JSON-style credential-named field: "password": "value" (value may be
         #    a quoted string or a bare literal). The value is always redacted.
@@ -1560,7 +1678,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # 2. key=value credential-named field (query string / form / header):
         #    password=value, Authorization: Bearer value.
         text = re.sub(
-            r'((?:' + keyword_alt + r')\s*[=:]\s*)(?:Bearer\s+)?([^\s,&;"}\]]+)',
+            r"((?:" + keyword_alt + r')\s*[=:]\s*)(?:Bearer\s+)?([^\s,&;"}\]]+)',
             lambda m: m.group(1) + marker,
             text,
             flags=re.IGNORECASE,
@@ -1568,16 +1686,17 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # 3. Bare secret tokens anywhere in the snippet (credential prefixes,
         #    structured secrets, or high-entropy blobs), corroboration-based.
-        def _redact_token(match: 're.Match') -> str:
+        def _redact_token(match: "re.Match") -> str:
             token = match.group(0)
             return marker if self._token_is_secret(token) else token
 
-        text = re.sub(r'[A-Za-z0-9+/._-]{8,}={0,2}', _redact_token, text)
+        text = re.sub(r"[A-Za-z0-9+/._-]{8,}={0,2}", _redact_token, text)
 
         return text
 
-    def _score_confidence(self, *, persisted: bool, baseline_discriminating: bool,
-                          identity_matched: bool) -> str:
+    def _score_confidence(
+        self, *, persisted: bool, baseline_discriminating: bool, identity_matched: bool
+    ) -> str:
         """Derive a Confidence_Score from the strength of the evidence (Req 33.2).
 
         A persisted mutation observed against a discriminating
@@ -1586,21 +1705,26 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         => ``'medium'``; anything weaker => ``'low'``.
         """
         signals = sum(
-            1 for present in (persisted, baseline_discriminating, identity_matched)
-            if present
+            1 for present in (persisted, baseline_discriminating, identity_matched) if present
         )
         if signals >= 3:
-            return 'high'
+            return "high"
         if signals == 2:
-            return 'medium'
-        return 'low'
+            return "medium"
+        return "low"
 
-    def _build_evidence_chain(self, *, method: str, endpoint: str,
-                              original_id: Any, substituted_id: Any,
-                              auth_context: Optional[str],
-                              baseline_comparison: str,
-                              response_snippet: Optional[str],
-                              confidence: str) -> EvidenceChain:
+    def _build_evidence_chain(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        original_id: Any,
+        substituted_id: Any,
+        auth_context: str | None,
+        baseline_comparison: str,
+        response_snippet: str | None,
+        confidence: str,
+    ) -> EvidenceChain:
         """Build an :class:`EvidenceChain` for an advanced BOLA finding (Req 33.1).
 
         The response snippet is ALWAYS passed through :meth:`redact_secrets`
@@ -1621,14 +1745,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             method=method,
             original_id=str(original_id),
             substituted_id=str(substituted_id),
-            auth_context=(auth_context or 'anonymous'),
+            auth_context=(auth_context or "anonymous"),
             baseline_comparison=baseline_comparison,
             response_snippet=redacted_snippet,
             confidence=confidence,
         )
 
-    def _field_value_reflected(self, response: Optional[Response],
-                               field: str, value: Any) -> bool:
+    def _field_value_reflected(self, response: Response | None, field: str, value: Any) -> bool:
         """Return True when ``field`` is present in the response body with ``value``.
 
         The JSON body is parsed and searched at the top level (or the first
@@ -1646,7 +1769,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         except (ValueError, TypeError):
             return False
 
-        obj: Optional[Dict[str, Any]] = None
+        obj: dict[str, Any] | None = None
         if isinstance(body, dict):
             obj = body
         elif isinstance(body, list):
@@ -1680,9 +1803,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         except Exception:
             return False
 
-    async def _verify_persistence(self, endpoint: str, field: str, value: Any,
-                                  auth_context: Optional[AuthContext]
-                                  ) -> Tuple[bool, Optional[Response]]:
+    async def _verify_persistence(
+        self, endpoint: str, field: str, value: Any, auth_context: AuthContext | None
+    ) -> tuple[bool, Response | None]:
         """Persistence_Verification of a write probe (Reqs 27.2, 27.3).
 
         Issue a SAFE ``GET`` re-read of the target object (always a Safe_Method,
@@ -1711,8 +1834,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         persisted = bool(identifying) and self._field_value_reflected(reread, field, value)
         return persisted, reread
 
-    def _build_write_candidates(self, response: Optional[Response]
-                                ) -> Dict[str, Any]:
+    def _build_write_candidates(self, response: Response | None) -> dict[str, Any]:
         """Derive mutable candidate fields and mutation values from an object body.
 
         The victim object's currently exposed scalar fields become the candidate
@@ -1722,7 +1844,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Each candidate maps to a clearly attacker-controlled mutation value so a
         successful write is unambiguous evidence.
         """
-        candidates: Dict[str, Any] = {}
+        candidates: dict[str, Any] = {}
         if response is None or not getattr(response, "text", None):
             return candidates
         try:
@@ -1730,7 +1852,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         except (ValueError, TypeError):
             return candidates
 
-        obj: Optional[Dict[str, Any]] = None
+        obj: dict[str, Any] | None = None
         if isinstance(body, dict):
             obj = body
         elif isinstance(body, list):
@@ -1746,7 +1868,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 continue
             if key.lower() == "id":
                 continue
-            if current is None or isinstance(current, (dict, list)):
+            if current is None or isinstance(current, dict | list):
                 continue
             candidates[key] = self._generate_write_mutation(key, current)
         return candidates
@@ -1767,12 +1889,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return "bola-takeover-value"
         if isinstance(current, bool):
             return not current
-        if isinstance(current, (int, float)):
+        if isinstance(current, int | float):
             return current + 1
         return f"bola-mutated-{field}"
 
-    async def _test_write_bola(self, identifier: ObjectIdentifier, victim_id: str,
-                               contexts: List[AuthContext]) -> List[Finding]:
+    async def _test_write_bola(
+        self, identifier: ObjectIdentifier, victim_id: str, contexts: list[AuthContext]
+    ) -> list[Finding]:
         """Write_BOLA against a victim object with persistence verification (Req 27).
 
         Gated by :meth:`_destructive_allowed` and Safe_Mode: no
@@ -1791,7 +1914,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         no finding is raised when the object belongs to the requesting context
         or the mutation does not persist (Req 27.3).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         # Gate 1: the destructive gate must permit state-changing probing.
         if not self._destructive_allowed():
@@ -1823,9 +1946,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         write_operation = None
         if self.spec_schema is not None:
             try:
-                write_operation = self.spec_schema.operation_for(
-                    identifier.endpoint, method
-                )
+                write_operation = self.spec_schema.operation_for(identifier.endpoint, method)
             except Exception:
                 write_operation = None
 
@@ -1858,9 +1979,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 if write_operation is not None:
                     # Schema present: start from a schema-valid Typed_Payload and
                     # inject the mutated field on top (Reqs 52.1, 52.5).
-                    body = build_typed_payload(
-                        write_operation, overrides={field: mutated_value}
-                    )
+                    body = build_typed_payload(write_operation, overrides={field: mutated_value})
                 else:
                     body = {field: mutated_value}
 
@@ -1868,9 +1987,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 # requesting Auth_Context on top of the typed base, profile
                 # values taking precedence (Requirement 54.2). Absent profile or
                 # endpoint leaves the body unchanged (Requirements 54.3, 54.4).
-                _, body = apply_actor_profile(
-                    requesting_context, identifier.endpoint, body=body
-                )
+                _, body = apply_actor_profile(requesting_context, identifier.endpoint, body=body)
 
                 # Issue the write through the single destructive choke point.
                 write_response = await self._issue_guarded_write_probe(
@@ -1933,12 +2050,19 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return findings
 
-    def _build_write_finding(self, identifier: ObjectIdentifier, victim_id: str,
-                             field: str, mutated_value: Any, method: str,
-                             category: str, write_response: Response,
-                             reread: Optional[Response],
-                             victim_fields: Dict[str, Any],
-                             requesting_context: Optional[AuthContext] = None) -> Finding:
+    def _build_write_finding(
+        self,
+        identifier: ObjectIdentifier,
+        victim_id: str,
+        field: str,
+        mutated_value: Any,
+        method: str,
+        category: str,
+        write_response: Response,
+        reread: Response | None,
+        victim_fields: dict[str, Any],
+        requesting_context: AuthContext | None = None,
+    ) -> Finding:
         """Assemble a Write_BOLA Finding with the Req 27.6 evidence.
 
         Evidence includes the mutated field name, the original and substituted
@@ -1946,11 +2070,11 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         are redacted so the finding never echoes a submitted secret. A redacted
         Evidence_Chain and Confidence_Score are attached (Req 33.1, 33.2, 33.3).
         """
-        severity = (Severity.CRITICAL if category == "BOLA_ACCOUNT_TAKEOVER"
-                    else Severity.HIGH)
+        severity = Severity.CRITICAL if category == "BOLA_ACCOUNT_TAKEOVER" else Severity.HIGH
 
-        submitted_display = ("<redacted>" if self._is_credential_field(field)
-                             else repr(mutated_value))
+        submitted_display = (
+            "<redacted>" if self._is_credential_field(field) else repr(mutated_value)
+        )
 
         owner_field = next(iter(victim_fields.items()), None)
         reread_status = reread.status_code if reread is not None else None
@@ -1971,8 +2095,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             "any mutation, and reject writes to objects owned by other users."
         )
 
-        response_snippet = (reread.text[:500] if reread is not None and reread.text
-                            else None)
+        response_snippet = reread.text[:500] if reread is not None and reread.text else None
 
         identity_matched = bool(victim_fields)
         confidence = self._score_confidence(
@@ -2023,7 +2146,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # transition (Requirement 32.1). Each maps to a clearly attacker-controlled
     # target value so a persisted change is unambiguous evidence of a successful
     # state manipulation.
-    PRIVILEGED_INJECTION_FIELDS: Dict[str, Any] = {
+    PRIVILEGED_INJECTION_FIELDS: dict[str, Any] = {
         "role": "admin",
         "roles": "admin",
         "is_admin": True,
@@ -2043,8 +2166,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     }
 
     @staticmethod
-    def _chained_probe_successful(unauthorized_access_confirmed: bool,
-                                  injected_value_persisted: bool) -> bool:
+    def _chained_probe_successful(
+        unauthorized_access_confirmed: bool, injected_value_persisted: bool
+    ) -> bool:
         """Decide chained-probe success (Requirements 32.2, 32.3).
 
         A chained state-manipulation probe is successful IF AND ONLY IF BOTH the
@@ -2054,8 +2178,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """
         return bool(unauthorized_access_confirmed and injected_value_persisted)
 
-    def _privileged_injection_candidates(self, victim_response: Optional[Response]
-                                         ) -> Dict[str, Any]:
+    def _privileged_injection_candidates(self, victim_response: Response | None) -> dict[str, Any]:
         """Select privileged/state-transition fields to inject (Requirement 32.1).
 
         Every field in :data:`PRIVILEGED_INJECTION_FIELDS` is a candidate. When a
@@ -2066,14 +2189,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """
         candidates = dict(self.PRIVILEGED_INJECTION_FIELDS)
 
-        current: Dict[str, Any] = {}
+        current: dict[str, Any] = {}
         text = getattr(victim_response, "text", None) if victim_response else None
         if text:
             try:
                 body = json.loads(text)
             except (ValueError, TypeError):
                 body = None
-            obj: Optional[Dict[str, Any]] = None
+            obj: dict[str, Any] | None = None
             if isinstance(body, dict):
                 obj = body
             elif isinstance(body, list):
@@ -2082,8 +2205,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         obj = item
                         break
             if isinstance(obj, dict):
-                current = {k.lower(): v for k, v in obj.items()
-                           if isinstance(k, str)}
+                current = {k.lower(): v for k, v in obj.items() if isinstance(k, str)}
 
         return {
             field: value
@@ -2092,9 +2214,8 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         }
 
     async def _test_chained_state_manipulation(
-        self, identifier: ObjectIdentifier, victim_id: str,
-        contexts: List[AuthContext]
-    ) -> List[Finding]:
+        self, identifier: ObjectIdentifier, victim_id: str, contexts: list[AuthContext]
+    ) -> list[Finding]:
         """Chain a victim-object Write_BOLA with privileged-field injection (Req 32).
 
         Combines a state-changing write against a FOREIGN victim object with the
@@ -2119,7 +2240,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         is off AND the Destructive_Opt_In is present, and Dry_Run records the
         intent without issuing a request (Requirements 32.1, 28.2, 28.3, 28.6).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         # Gate 1: the destructive gate must permit state-changing probing
         # (Safe_Mode off AND Destructive_Opt_In present).
@@ -2167,10 +2288,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             # foreign (belongs to a different Auth_Context).
             victim_response = await self.http_client.request("GET", victim_url)
             victim_fields = extract_identifying_fields(victim_response)
-            unauthorized_access_confirmed = (
-                self._is_object_accessible(victim_response, baseline)
-                and not self._object_belongs_to_context(victim_fields, own_fields)
-            )
+            unauthorized_access_confirmed = self._is_object_accessible(
+                victim_response, baseline
+            ) and not self._object_belongs_to_context(victim_fields, own_fields)
 
             injection_candidates = self._privileged_injection_candidates(victim_response)
             if not injection_candidates:
@@ -2187,7 +2307,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 # Issue the state-changing write through the single destructive
                 # choke point (gate + Safe_Mode + Dry_Run all enforced there).
                 write_response = await self._issue_guarded_write_probe(
-                    victim_url, victim_id, body=body,
+                    victim_url,
+                    victim_id,
+                    body=body,
                     test_name="chained_state_manipulation",
                 )
                 if write_response is None:
@@ -2248,13 +2370,19 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return findings
 
-    def _build_chained_finding(self, identifier: ObjectIdentifier, victim_id: str,
-                               field: str, injected_value: Any, method: str,
-                               write_response: Response,
-                               victim_response: Optional[Response],
-                               reread: Optional[Response],
-                               victim_fields: Dict[str, Any],
-                               requesting_context: Optional[AuthContext] = None) -> Finding:
+    def _build_chained_finding(
+        self,
+        identifier: ObjectIdentifier,
+        victim_id: str,
+        field: str,
+        injected_value: Any,
+        method: str,
+        write_response: Response,
+        victim_response: Response | None,
+        reread: Response | None,
+        victim_fields: dict[str, Any],
+        requesting_context: AuthContext | None = None,
+    ) -> Finding:
         """Assemble a ``BOLA_STATE_MANIPULATION`` Finding (Requirements 32.4, 32.5).
 
         Evidence includes the injected privileged field name, the substituted
@@ -2264,12 +2392,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         values are redacted so the finding never echoes a submitted secret. A
         redacted Evidence_Chain and Confidence_Score are attached (Req 33).
         """
-        injected_display = ("<redacted>" if self._is_credential_field(field)
-                            else repr(injected_value))
+        injected_display = (
+            "<redacted>" if self._is_credential_field(field) else repr(injected_value)
+        )
 
         owner_field = next(iter(victim_fields.items()), None)
-        access_status = (victim_response.status_code
-                         if victim_response is not None else None)
+        access_status = victim_response.status_code if victim_response is not None else None
         reread_status = reread.status_code if reread is not None else None
 
         evidence = (
@@ -2292,8 +2420,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             "transitions through server-side authorization checks."
         )
 
-        response_snippet = (reread.text[:500] if reread is not None and reread.text
-                            else None)
+        response_snippet = reread.text[:500] if reread is not None and reread.text else None
 
         confidence = self._score_confidence(
             persisted=True,
@@ -2344,12 +2471,21 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # accessible foreign child is classified as BOLA_CROSS_TENANT (Req 29.4);
     # otherwise it is a BOLA_BROKEN_OBJECT_RELATIONSHIP (Req 29.3).
     TENANT_SLOT_NAMES = {
-        'tenant_id', 'tenantid', 'org_id', 'orgid',
-        'organization_id', 'organizationid', 'account_id', 'accountid',
-        'workspace_id', 'workspaceid', 'company_id', 'companyid',
+        "tenant_id",
+        "tenantid",
+        "org_id",
+        "orgid",
+        "organization_id",
+        "organizationid",
+        "account_id",
+        "accountid",
+        "workspace_id",
+        "workspaceid",
+        "company_id",
+        "companyid",
     }
 
-    def _discover_composite_identifiers(self, endpoints: List[Any]) -> List[CompositeIdentifier]:
+    def _discover_composite_identifiers(self, endpoints: list[Any]) -> list[CompositeIdentifier]:
         """Discover endpoints carrying two or more hierarchical identifier slots.
 
         Scans each endpoint's URL path for id-bearing segments (reusing the same
@@ -2361,11 +2497,11 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Slots are ordered by path position, so ``slots[0]`` is the parent and
         ``slots[-1]`` is the innermost child (Requirement 29).
         """
-        composites: List[CompositeIdentifier] = []
-        seen: Set[str] = set()
+        composites: list[CompositeIdentifier] = []
+        seen: set[str] = set()
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
             if endpoint_url in seen:
                 continue
             seen.add(endpoint_url)
@@ -2381,7 +2517,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return composites
 
-    def _extract_composite_from_path(self, url: str) -> Optional[CompositeIdentifier]:
+    def _extract_composite_from_path(self, url: str) -> CompositeIdentifier | None:
         """Build a :class:`CompositeIdentifier` from a URL, or ``None``.
 
         Returns ``None`` unless the path exposes two or more identifier slots.
@@ -2390,23 +2526,23 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         single slot while preserving every other segment.
         """
         parsed = urlparse(url)
-        raw_segments = parsed.path.split('/')
+        raw_segments = parsed.path.split("/")
 
-        slots: List[CompositeIdentifierSlot] = []
+        slots: list[CompositeIdentifierSlot] = []
         for idx, segment in enumerate(raw_segments):
             if not segment:
                 continue
             id_type = self._determine_id_type(segment)
             if not id_type:
                 continue
-            prev_segment = raw_segments[idx - 1] if idx > 0 else ''
+            prev_segment = raw_segments[idx - 1] if idx > 0 else ""
             slots.append(
                 CompositeIdentifierSlot(
                     value=segment,
                     type=id_type,
                     name=self._infer_slot_name(prev_segment),
                     segment_index=idx,
-                    role='',  # assigned below once ordering is known
+                    role="",  # assigned below once ordering is known
                 )
             )
 
@@ -2415,7 +2551,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # Leftmost slot is the parent; every subsequent slot is a child.
         for position, slot in enumerate(slots):
-            slot.role = 'parent' if position == 0 else 'child'
+            slot.role = "parent" if position == 0 else "child"
 
         return CompositeIdentifier(endpoint=url, slots=slots)
 
@@ -2427,18 +2563,19 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         ``projects`` -> ``project_id``.
         """
         if not prev_segment:
-            return 'id'
-        if prev_segment in ('user', 'users'):
-            return 'user_id'
-        if prev_segment in ('account', 'accounts'):
-            return 'account_id'
-        if prev_segment in ('order', 'orders'):
-            return 'order_id'
-        base = prev_segment[:-1] if prev_segment.endswith('s') else prev_segment
+            return "id"
+        if prev_segment in ("user", "users"):
+            return "user_id"
+        if prev_segment in ("account", "accounts"):
+            return "account_id"
+        if prev_segment in ("order", "orders"):
+            return "order_id"
+        base = prev_segment[:-1] if prev_segment.endswith("s") else prev_segment
         return f"{base}_id"
 
-    def _substitute_composite_slot(self, composite: CompositeIdentifier,
-                                   slot_index: int, candidate: str) -> str:
+    def _substitute_composite_slot(
+        self, composite: CompositeIdentifier, slot_index: int, candidate: str
+    ) -> str:
         """Swap EXACTLY one identifier slot with ``candidate`` (Requirement 29.1).
 
         Splits the endpoint path, replaces ONLY the segment at
@@ -2450,17 +2587,17 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """
         candidate = str(candidate)
         parsed = urlparse(composite.endpoint)
-        segments = parsed.path.split('/')
+        segments = parsed.path.split("/")
 
         target_index = composite.slots[slot_index].segment_index
         new_segments = list(segments)
         if 0 <= target_index < len(new_segments):
             new_segments[target_index] = candidate
 
-        new_path = '/'.join(new_segments)
+        new_path = "/".join(new_segments)
         return urlunparse(parsed._replace(path=new_path))
 
-    def _composite_requesting_context(self) -> Optional[AuthContext]:
+    def _composite_requesting_context(self) -> AuthContext | None:
         """Pick the Auth_Context that acts as the requesting (attacker) principal.
 
         Prefers a user-level context (privilege level 1) to mirror the
@@ -2472,7 +2609,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return user_contexts[0]
         return self.auth_contexts[0] if self.auth_contexts else None
 
-    def _composite_child_candidates(self, child_slot: CompositeIdentifierSlot) -> List[str]:
+    def _composite_child_candidates(self, child_slot: CompositeIdentifierSlot) -> list[str]:
         """Derive candidate victim child identifiers to substitute into the child slot.
 
         Only genuinely sequential (integer) child identifiers can be
@@ -2481,23 +2618,22 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         enumeration). Non-sequential (GUID/UUID) child slots return an empty
         list because random identifiers cannot be guessed.
         """
-        if child_slot.type != 'sequential' or not str(child_slot.value).isdigit():
+        if child_slot.type != "sequential" or not str(child_slot.value).isdigit():
             return []
 
         original = int(child_slot.value)
-        bound = max(2, getattr(self.config, 'enumeration_bound', 25))
+        bound = max(2, getattr(self.config, "enumeration_bound", 25))
         half = bound // 2
 
-        candidates: List[str] = []
+        candidates: list[str] = []
         for test_id in range(max(1, original - half), original + (bound - half) + 1):
             if test_id != original:
                 candidates.append(str(test_id))
         return candidates
 
-    async def _get_composite_negative_control(self, composite: CompositeIdentifier,
-                                              slot_index: int,
-                                              auth_context: Optional[AuthContext]
-                                              ) -> NegativeControlBaseline:
+    async def _get_composite_negative_control(
+        self, composite: CompositeIdentifier, slot_index: int, auth_context: AuthContext | None
+    ) -> NegativeControlBaseline:
         """Cached Negative_Control_Baseline for one composite slot (Req 29.5).
 
         Built once per ``(endpoint, auth_context, slot_index)`` by substituting a
@@ -2505,7 +2641,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         context that will issue the real probes, reusing the shared
         :meth:`build_negative_control` (Requirements 3.1, 25.1).
         """
-        context_key = auth_context.name if auth_context is not None else 'anonymous'
+        context_key = auth_context.name if auth_context is not None else "anonymous"
         cache_key = (composite.endpoint, context_key, slot_index)
 
         if cache_key not in self._composite_baseline_cache:
@@ -2513,16 +2649,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 endpoint=composite.endpoint,
                 auth_context=auth_context,
                 invalid_id="0",
-                substitute=lambda cid: self._substitute_composite_slot(
-                    composite, slot_index, cid
-                ),
+                substitute=lambda cid: self._substitute_composite_slot(composite, slot_index, cid),
             )
             self._composite_baseline_cache[cache_key] = baseline
 
         return self._composite_baseline_cache[cache_key]
 
-    async def _test_composite_bola(self, composites: List[CompositeIdentifier]
-                                   ) -> List[Finding]:
+    async def _test_composite_bola(self, composites: list[CompositeIdentifier]) -> list[Finding]:
         """Test parent-child / cross-tenant BOLA on composite endpoints (Req 29).
 
         For each :class:`CompositeIdentifier`, the requesting Auth_Context's own
@@ -2535,7 +2668,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Negative_Control_Baseline and identity is decided with
         Identifying_Fields (Req 29.5).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
         if not composites:
             return findings
 
@@ -2543,9 +2676,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         for composite in composites:
             try:
-                findings.extend(
-                    await self._test_single_composite(composite, requesting_context)
-                )
+                findings.extend(await self._test_single_composite(composite, requesting_context))
             except Exception as e:
                 self.logger.debug(
                     "Composite BOLA test failed",
@@ -2555,11 +2686,11 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return findings
 
-    async def _test_single_composite(self, composite: CompositeIdentifier,
-                                     requesting_context: Optional[AuthContext]
-                                     ) -> List[Finding]:
+    async def _test_single_composite(
+        self, composite: CompositeIdentifier, requesting_context: AuthContext | None
+    ) -> list[Finding]:
         """Probe a single composite endpoint (helper for :meth:`_test_composite_bola`)."""
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if len(composite.slots) < 2:
             return findings
@@ -2588,7 +2719,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         if requesting_context is not None:
             self.http_client.set_auth_context(requesting_context)
         own_url = self._substitute_composite_slot(composite, child_index, child_slot.value)
-        own_response = await self.http_client.request('GET', own_url)
+        own_response = await self.http_client.request("GET", own_url)
         own_fields = extract_identifying_fields(own_response)
 
         candidates = self._composite_child_candidates(child_slot)
@@ -2609,7 +2740,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             if requesting_context is not None:
                 self.http_client.set_auth_context(requesting_context)
             test_url = self._substitute_composite_slot(composite, child_index, candidate)
-            response = await self.http_client.request('GET', test_url)
+            response = await self.http_client.request("GET", test_url)
 
             if not self._is_object_accessible(response, baseline):
                 continue
@@ -2620,8 +2751,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             if self._object_belongs_to_context(candidate_fields, own_fields):
                 continue
 
-            category = ('BOLA_CROSS_TENANT' if is_tenant_boundary
-                        else 'BOLA_BROKEN_OBJECT_RELATIONSHIP')
+            category = (
+                "BOLA_CROSS_TENANT" if is_tenant_boundary else "BOLA_BROKEN_OBJECT_RELATIONSHIP"
+            )
 
             findings.append(
                 self._build_composite_finding(
@@ -2649,13 +2781,17 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return findings
 
-    def _build_composite_finding(self, composite: CompositeIdentifier,
-                                 parent_slot: CompositeIdentifierSlot,
-                                 child_slot: CompositeIdentifierSlot,
-                                 candidate: str, category: str,
-                                 response: Response,
-                                 candidate_fields: Dict[str, Any],
-                                 requesting_context: Optional[AuthContext] = None) -> Finding:
+    def _build_composite_finding(
+        self,
+        composite: CompositeIdentifier,
+        parent_slot: CompositeIdentifierSlot,
+        child_slot: CompositeIdentifierSlot,
+        candidate: str,
+        category: str,
+        response: Response,
+        candidate_fields: dict[str, Any],
+        requesting_context: AuthContext | None = None,
+    ) -> Finding:
         """Assemble a composite BOLA Finding (Req 29.3, 29.4).
 
         Both composite categories map to OWASP ``API1``. Evidence captures the
@@ -2664,7 +2800,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         different context/tenant. A redacted Evidence_Chain and Confidence_Score
         are attached (Req 33).
         """
-        if category == 'BOLA_CROSS_TENANT':
+        if category == "BOLA_CROSS_TENANT":
             evidence = (
                 f"Cross-tenant access: while operating within the requesting "
                 f"context's own {parent_slot.name}={parent_slot.value!r}, a child "
@@ -2701,7 +2837,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             identity_matched=bool(candidate_fields),
         )
         evidence_chain = self._build_evidence_chain(
-            method='GET',
+            method="GET",
             endpoint=composite.endpoint,
             original_id=child_slot.value,
             substituted_id=candidate,
@@ -2718,19 +2854,18 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return Finding(
             id=str(uuid.uuid4()),
-            scan_id='',
+            scan_id="",
             category=category,
-            owasp_category='API1',
+            owasp_category="API1",
             severity=Severity.HIGH,
             endpoint=composite.endpoint,
-            method='GET',
+            method="GET",
             status_code=response.status_code,
             response_size=len(response.content) if response.content else 0,
             response_time=response.elapsed,
             evidence=evidence,
             recommendation=recommendation,
-            payload=f"{parent_slot.name}={parent_slot.value}, "
-                    f"{child_slot.name}={candidate}",
+            payload=f"{parent_slot.name}={parent_slot.value}, {child_slot.name}={candidate}",
             response_snippet=response_snippet,
             evidence_chain=evidence_chain,
             confidence=confidence,
@@ -2740,7 +2875,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # ID leakage harvesting + identifier predictability (Requirement 30)
     # ------------------------------------------------------------------
 
-    async def _harvest_identifiers(self, endpoints: List[Any]) -> Set[str]:
+    async def _harvest_identifiers(self, endpoints: list[Any]) -> set[str]:
         """Collect object identifiers exposed by list/public/feed endpoints.
 
         Issues a Safe_Method (GET) request against each endpoint and reuses the
@@ -2754,7 +2889,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Safe Mode is honored: any declared State_Changing_Method is downgraded to
         GET for this read-only harvesting probe (Requirements 21.2-21.4).
         """
-        harvested: Set[str] = set()
+        harvested: set[str] = set()
 
         # Harvest under the first available auth context (a list/feed endpoint is
         # typically accessible to an authenticated principal).
@@ -2763,8 +2898,8 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             self.http_client.set_auth_context(auth_context)
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
             # Read-only harvesting: never issue a state-changing verb.
             method = self.safe_read_method(method, "bola_id_harvest")
 
@@ -2774,14 +2909,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     if isinstance(obj_id, ObjectIdentifier):
                         harvested.add(str(obj_id.value))
             except Exception as e:
-                self.logger.debug("Identifier harvesting failed for endpoint",
-                                  endpoint=endpoint_url,
-                                  error=str(e))
+                self.logger.debug(
+                    "Identifier harvesting failed for endpoint", endpoint=endpoint_url, error=str(e)
+                )
 
         self.logger.info("Identifier harvesting complete", harvested=len(harvested))
         return harvested
 
-    def _leakage_probe_context(self) -> Optional[AuthContext]:
+    def _leakage_probe_context(self) -> AuthContext | None:
         """Pick the lower-privilege / anonymous context used to replay harvested ids.
 
         Prefers the lowest-privilege configured Auth_Context; when the lowest
@@ -2796,8 +2931,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return None
         return lowest
 
-    async def _test_id_leakage(self, harvested: Set[str],
-                               identifiers: List[ObjectIdentifier]) -> List[Finding]:
+    async def _test_id_leakage(
+        self, harvested: set[str], identifiers: list[ObjectIdentifier]
+    ) -> list[Finding]:
         """Inject harvested identifiers into object endpoints under lower privilege.
 
         For each recognized object endpoint, every harvested identifier is
@@ -2811,16 +2947,16 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Identifying_Fields, consistent with Requirement 2), a ``BOLA_ID_LEAKAGE``
         finding (OWASP API1) is reported (Requirement 30.3).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
         if not harvested or not identifiers:
             return findings
 
         probe_context = self._leakage_probe_context()
-        context_label = probe_context.name if probe_context is not None else 'anonymous'
+        context_label = probe_context.name if probe_context is not None else "anonymous"
 
         # Deduplicate object endpoints/parameters so each is probed once.
-        seen: Set[Tuple[str, str, str]] = set()
-        unique_identifiers: List[ObjectIdentifier] = []
+        seen: set[tuple[str, str, str]] = set()
+        unique_identifiers: list[ObjectIdentifier] = []
         for identifier in identifiers:
             key = (identifier.endpoint, identifier.parameter_name, identifier.location)
             if key not in seen:
@@ -2856,12 +2992,10 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 # requester's OWN object so ownership can be disproved. Anonymous
                 # owns no object, so own_fields stays empty and any accessible
                 # object carrying identifying data is a leakage.
-                own_fields: Dict[str, Any] = {}
+                own_fields: dict[str, Any] = {}
                 if probe_context is not None:
                     self.http_client.set_auth_context(probe_context)
-                    own_response = await self._test_object_access(
-                        identifier, context_label
-                    )
+                    own_response = await self._test_object_access(identifier, context_label)
                     own_fields = extract_identifying_fields(own_response)
 
                 for harvested_id in harvested:
@@ -2898,12 +3032,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     findings.append(
                         Finding(
                             id=str(uuid.uuid4()),
-                            scan_id='',
-                            category='BOLA_ID_LEAKAGE',
-                            owasp_category='API1',
+                            scan_id="",
+                            category="BOLA_ID_LEAKAGE",
+                            owasp_category="API1",
                             severity=Severity.MEDIUM,
                             endpoint=identifier.endpoint,
-                            method='GET',
+                            method="GET",
                             status_code=response.status_code,
                             response_size=len(response.content) if response.content else 0,
                             response_time=response.elapsed,
@@ -2924,7 +3058,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                             payload=str(harvested_id),
                             response_snippet=response.text[:500] if response.text else None,
                             evidence_chain=self._build_evidence_chain(
-                                method='GET',
+                                method="GET",
                                 endpoint=identifier.endpoint,
                                 original_id=identifier.value,
                                 substituted_id=harvested_id,
@@ -2937,8 +3071,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                                     f"via Identifying_Field comparison "
                                     f"({candidate_fields!r})."
                                 ),
-                                response_snippet=(response.text[:500]
-                                                  if response.text else None),
+                                response_snippet=(response.text[:500] if response.text else None),
                                 confidence=self._score_confidence(
                                     persisted=False,
                                     baseline_discriminating=True,
@@ -2961,14 +3094,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     )
 
             except Exception as e:
-                self.logger.debug("ID leakage test failed",
-                                  endpoint=identifier.endpoint,
-                                  error=str(e))
+                self.logger.debug(
+                    "ID leakage test failed", endpoint=identifier.endpoint, error=str(e)
+                )
 
         return findings
 
     @staticmethod
-    def _uuid_version(value: str) -> Optional[int]:
+    def _uuid_version(value: str) -> int | None:
         """Return the RFC 4122 version of ``value`` if it is a valid UUID, else None.
 
         The version is read from the 13th hex nibble (the first character of the
@@ -2986,9 +3119,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     # Plausible epoch bounds. Seconds: ~2001-09-09 (1e9) .. year 2100. The
     # millisecond band is the same window scaled by 1000.
     _EPOCH_SECONDS_MIN = 1_000_000_000
-    _EPOCH_SECONDS_MAX = 4_102_444_800          # 2100-01-01 in seconds
+    _EPOCH_SECONDS_MAX = 4_102_444_800  # 2100-01-01 in seconds
     _EPOCH_MILLIS_MIN = 1_000_000_000_000
-    _EPOCH_MILLIS_MAX = 4_102_444_800_000       # 2100-01-01 in milliseconds
+    _EPOCH_MILLIS_MAX = 4_102_444_800_000  # 2100-01-01 in milliseconds
 
     @classmethod
     def _is_plausible_epoch(cls, value: int) -> bool:
@@ -2999,7 +3132,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         )
 
     def analyze_identifier_predictability(
-        self, samples: Union[str, List[str]], known_inputs: Optional[List[str]] = None
+        self, samples: str | list[str], known_inputs: list[str] | None = None
     ) -> IdentifierPredictability:
         """Classify how guessable an identifier scheme is (Requirement 30.4).
 
@@ -3030,13 +3163,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """
         if isinstance(samples, str):
             samples = [samples]
-        cleaned = [str(s) for s in samples if s is not None and str(s) != '']
+        cleaned = [str(s) for s in samples if s is not None and str(s) != ""]
 
         if not cleaned:
             return IdentifierPredictability(
-                scheme='unknown',
+                scheme="unknown",
                 predictable=False,
-                rationale='No identifier samples were available to analyze.',
+                rationale="No identifier samples were available to analyze.",
             )
 
         # --- Hash-of-known-input scheme (Req 40.1) ---
@@ -3044,17 +3177,15 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # A token equal to a common hash of a known value is trivially
         # reproducible by an attacker who knows that value.
         if known_inputs:
-            matched_input, matched_algo = self._match_hash_of_known_input(
-                cleaned, known_inputs
-            )
+            matched_input, matched_algo = self._match_hash_of_known_input(cleaned, known_inputs)
             if matched_input is not None:
                 return IdentifierPredictability(
-                    scheme='hash-of-known-input',
+                    scheme="hash-of-known-input",
                     predictable=True,
                     rationale=(
-                        f'Identifier equals the {matched_algo.upper()} hash of a '
-                        f'known input, making it reproducible by anyone who knows '
-                        f'that value.'
+                        f"Identifier equals the {matched_algo.upper()} hash of a "
+                        f"known input, making it reproducible by anyone who knows "
+                        f"that value."
                     ),
                 )
 
@@ -3064,29 +3195,29 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             distinct = set(versions)
             if distinct == {1}:
                 return IdentifierPredictability(
-                    scheme='uuid-v1',
+                    scheme="uuid-v1",
                     predictable=True,
                     rationale=(
-                        'Identifiers are time-based UUIDs (version 1); the '
-                        'embedded timestamp and node make them partially '
-                        'predictable and enumerable.'
+                        "Identifiers are time-based UUIDs (version 1); the "
+                        "embedded timestamp and node make them partially "
+                        "predictable and enumerable."
                     ),
                 )
             if distinct == {4}:
                 return IdentifierPredictability(
-                    scheme='uuid-v4',
+                    scheme="uuid-v4",
                     predictable=False,
                     rationale=(
-                        'Identifiers are random UUIDs (version 4); no exploitable '
-                        'structure was found.'
+                        "Identifiers are random UUIDs (version 4); no exploitable "
+                        "structure was found."
                     ),
                 )
             return IdentifierPredictability(
-                scheme='unknown',
+                scheme="unknown",
                 predictable=False,
                 rationale=(
-                    f'Identifiers are UUIDs of version(s) {sorted(distinct)}; '
-                    'no predictable structure is assumed.'
+                    f"Identifiers are UUIDs of version(s) {sorted(distinct)}; "
+                    "no predictable structure is assumed."
                 ),
             )
 
@@ -3096,53 +3227,53 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
             # Monotonic small-step sequence => sequential integers.
             if len(ints) >= 2:
-                diffs = [b - a for a, b in zip(ints, ints[1:])]
+                diffs = [b - a for a, b in zip(ints, ints[1:], strict=False)]
                 if diffs and all(d == diffs[0] for d in diffs) and 0 < diffs[0] <= 1000:
                     return IdentifierPredictability(
-                        scheme='sequential-integer',
+                        scheme="sequential-integer",
                         predictable=True,
                         rationale=(
-                            f'Identifiers are all-digit values increasing by a '
-                            f'constant step of {diffs[0]}, indicating a sequential '
-                            f'integer scheme that is trivially enumerable.'
+                            f"Identifiers are all-digit values increasing by a "
+                            f"constant step of {diffs[0]}, indicating a sequential "
+                            f"integer scheme that is trivially enumerable."
                         ),
                     )
 
             # Values in a plausible epoch window => timestamp-based.
             if all(self._is_plausible_epoch(v) for v in ints):
                 return IdentifierPredictability(
-                    scheme='timestamp-based',
+                    scheme="timestamp-based",
                     predictable=True,
                     rationale=(
-                        'Identifiers decode to plausible Unix epoch timestamps, '
-                        'making them predictable from the time of creation.'
+                        "Identifiers decode to plausible Unix epoch timestamps, "
+                        "making them predictable from the time of creation."
                     ),
                 )
 
             # Default all-digit case: treat as a sequential integer scheme.
             return IdentifierPredictability(
-                scheme='sequential-integer',
+                scheme="sequential-integer",
                 predictable=True,
                 rationale=(
-                    'Identifiers are all-digit integer values, a sequential '
-                    'integer scheme that is enumerable.'
+                    "Identifiers are all-digit integer values, a sequential "
+                    "integer scheme that is enumerable."
                 ),
             )
 
         # --- Unclassifiable ---
         return IdentifierPredictability(
-            scheme='unknown',
+            scheme="unknown",
             predictable=False,
             rationale=(
-                'Identifiers are neither all-digit integers, plausible epoch '
-                'timestamps, nor valid UUIDs; no predictable structure detected.'
+                "Identifiers are neither all-digit integers, plausible epoch "
+                "timestamps, nor valid UUIDs; no predictable structure detected."
             ),
         )
 
     @staticmethod
     def _match_hash_of_known_input(
-        samples: List[str], known_inputs: List[str]
-    ) -> Tuple[Optional[str], Optional[str]]:
+        samples: list[str], known_inputs: list[str]
+    ) -> tuple[str | None, str | None]:
         """Return ``(known_input, algorithm)`` when any sample equals a common
         hash of a known input, else ``(None, None)`` (Req 40.1).
 
@@ -3151,7 +3282,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         lower-cased before hashing). Comparison against samples is done on the
         lower-cased hex digest so it is case-insensitive.
         """
-        algorithms = ('md5', 'sha1', 'sha256')
+        algorithms = ("md5", "sha1", "sha256")
         sample_set = {s.strip().lower() for s in samples if s}
 
         for known in known_inputs:
@@ -3160,14 +3291,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             raw = str(known)
             variants = {raw, raw.strip().lower()}
             for variant in variants:
-                encoded = variant.encode('utf-8')
+                encoded = variant.encode("utf-8")
                 for algo in algorithms:
                     digest = hashlib.new(algo, encoded).hexdigest()
                     if digest.lower() in sample_set:
                         return raw, algo
         return None, None
 
-    def _test_identifier_predictability(self, harvested: Set[str]) -> List[Finding]:
+    def _test_identifier_predictability(self, harvested: set[str]) -> list[Finding]:
         """Analyze harvested identifier schemes and emit predictability findings.
 
         Harvested identifiers are grouped into homogeneous schemes (each UUID
@@ -3178,24 +3309,24 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         based, uuid-v1); a random UUIDv4 scheme yields the assessment but no
         finding (Requirements 30.5, 30.6).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
         if not harvested:
             return findings
 
         # Partition into homogeneous scheme groups.
-        groups: Dict[str, List[str]] = {}
+        groups: dict[str, list[str]] = {}
         for value in harvested:
             version = self._uuid_version(value)
             if version is not None:
-                groups.setdefault(f'uuid-v{version}', []).append(value)
+                groups.setdefault(f"uuid-v{version}", []).append(value)
             elif str(value).isdigit():
-                groups.setdefault('digits', []).append(value)
+                groups.setdefault("digits", []).append(value)
             else:
-                groups.setdefault('other', []).append(value)
+                groups.setdefault("other", []).append(value)
 
         for group_key, samples in groups.items():
             # Sort digit samples so monotonic stepping can be detected.
-            if group_key == 'digits':
+            if group_key == "digits":
                 samples = sorted(samples, key=lambda s: int(s))
 
             assessment = self.analyze_identifier_predictability(samples)
@@ -3217,12 +3348,12 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             findings.append(
                 Finding(
                     id=str(uuid.uuid4()),
-                    scan_id='',
-                    category='BOLA_PREDICTABLE_IDENTIFIER',
-                    owasp_category='API1',
+                    scan_id="",
+                    category="BOLA_PREDICTABLE_IDENTIFIER",
+                    owasp_category="API1",
                     severity=Severity.MEDIUM,
-                    endpoint='(identifier scheme)',
-                    method='GET',
+                    endpoint="(identifier scheme)",
+                    method="GET",
                     status_code=0,
                     response_size=0,
                     response_time=0.0,
@@ -3236,13 +3367,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         "UUIDv4) for objects so identifiers cannot be guessed or "
                         "enumerated."
                     ),
-                    payload=', '.join(str(s) for s in sample_preview),
+                    payload=", ".join(str(s) for s in sample_preview),
                     evidence_chain=self._build_evidence_chain(
-                        method='GET',
-                        endpoint='(identifier scheme)',
-                        original_id=(sample_preview[0] if sample_preview else ''),
-                        substituted_id='(scheme analysis)',
-                        auth_context='(scheme analysis)',
+                        method="GET",
+                        endpoint="(identifier scheme)",
+                        original_id=(sample_preview[0] if sample_preview else ""),
+                        substituted_id="(scheme analysis)",
+                        auth_context="(scheme analysis)",
                         baseline_comparison=(
                             f"Static Identifier_Predictability analysis of "
                             f"{len(samples)} harvested sample(s); scheme "
@@ -3280,8 +3411,14 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
     # Candidate HTTP methods explored by verb tampering. Ordered safe-first so a
     # Safe_Mode run naturally keeps only the leading (safe) variants.
-    VERB_TAMPERING_METHODS: Tuple[str, ...] = (
-        "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE",
+    VERB_TAMPERING_METHODS: tuple[str, ...] = (
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
     )
 
     # Header used by frameworks to override the effective HTTP method. A request
@@ -3302,20 +3439,17 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         return Request(
             method=overrides.get("method", base.method),
             url=overrides.get("url", base.url),
-            headers=overrides["headers"] if "headers" in overrides
-                    else dict(base.headers),
-            params=overrides["params"] if "params" in overrides
-                   else dict(base.params),
-            data=overrides["data"] if "data" in overrides
-                 else copy.deepcopy(base.data),
-            json=overrides["json"] if "json" in overrides
-                 else copy.deepcopy(base.json),
+            headers=overrides["headers"] if "headers" in overrides else dict(base.headers),
+            params=overrides["params"] if "params" in overrides else dict(base.params),
+            data=overrides["data"] if "data" in overrides else copy.deepcopy(base.data),
+            json=overrides["json"] if "json" in overrides else copy.deepcopy(base.json),
             timeout=overrides.get("timeout", base.timeout),
             auth_context=overrides.get("auth_context", base.auth_context),
         )
 
-    def _effective_method_is_state_changing(self, wire_method: str,
-                                            override_method: Optional[str]) -> bool:
+    def _effective_method_is_state_changing(
+        self, wire_method: str, override_method: str | None
+    ) -> bool:
         """True when a verb-tampering probe's effective method changes state.
 
         A probe's effective method is the method the server acts upon: the
@@ -3332,8 +3466,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             return True
         return False
 
-    def _build_verb_tampering_probes(self, base_request: Request,
-                                     test_name: str = "verb_tampering") -> List[Request]:
+    def _build_verb_tampering_probes(
+        self, base_request: Request, test_name: str = "verb_tampering"
+    ) -> list[Request]:
         """Build verb-tampering probes that vary the effective HTTP method (Req 31.1).
 
         For each candidate method different from the base request's method two
@@ -3354,7 +3489,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
           behind the Requirement 28 destructive guardrails and only emitted when
           :meth:`_destructive_allowed` permits it (Requirement 31.2).
         """
-        probes: List[Request] = []
+        probes: list[Request] = []
         base_method = base_request.method.upper()
 
         for candidate in self.VERB_TAMPERING_METHODS:
@@ -3375,8 +3510,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return probes
 
-    def _verb_probe_permitted(self, wire_method: str, override_method: Optional[str],
-                              test_name: str) -> bool:
+    def _verb_probe_permitted(
+        self, wire_method: str, override_method: str | None, test_name: str
+    ) -> bool:
         """Return True when a verb-tampering probe may be emitted.
 
         Applies the Safe_Mode restriction to Safe_Methods (Requirement 31.6) and
@@ -3387,29 +3523,34 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         state_changing = self._effective_method_is_state_changing(wire_method, override_method)
 
         if self.safe_mode and state_changing:
-            self.logger.info("Skipping verb-tampering probe in safe mode",
-                             test=test_name,
-                             wire_method=wire_method.upper(),
-                             override_method=(override_method.upper()
-                                              if override_method else None))
+            self.logger.info(
+                "Skipping verb-tampering probe in safe mode",
+                test=test_name,
+                wire_method=wire_method.upper(),
+                override_method=(override_method.upper() if override_method else None),
+            )
             return False
 
         if state_changing and not self._destructive_allowed():
-            self.logger.info("Skipping state-changing verb-tampering probe",
-                             reason="destructive opt-in absent",
-                             test=test_name,
-                             wire_method=wire_method.upper(),
-                             override_method=(override_method.upper()
-                                              if override_method else None))
+            self.logger.info(
+                "Skipping state-changing verb-tampering probe",
+                reason="destructive opt-in absent",
+                test=test_name,
+                wire_method=wire_method.upper(),
+                override_method=(override_method.upper() if override_method else None),
+            )
             return False
 
         return True
 
-    def _build_parameter_pollution_probe(self, base_request: Request,
-                                         parameter_name: str, own_id: Any,
-                                         victim_id: Any,
-                                         test_name: str = "parameter_pollution"
-                                         ) -> Optional[Request]:
+    def _build_parameter_pollution_probe(
+        self,
+        base_request: Request,
+        parameter_name: str,
+        own_id: Any,
+        victim_id: Any,
+        test_name: str = "parameter_pollution",
+    ) -> Request | None:
         """Build an HTTP parameter-pollution probe (Requirement 31.3).
 
         Supplies a DUPLICATED identifier query parameter that pairs the
@@ -3423,8 +3564,11 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         State_Changing_Method (Requirement 31.6).
         """
         if self.safe_mode and self.is_state_changing(base_request.method):
-            self.logger.info("Skipping parameter-pollution probe in safe mode",
-                             test=test_name, method=base_request.method.upper())
+            self.logger.info(
+                "Skipping parameter-pollution probe in safe mode",
+                test=test_name,
+                method=base_request.method.upper(),
+            )
             return None
 
         parsed = urlparse(base_request.url)
@@ -3435,10 +3579,13 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         new_url = urlunparse(parsed._replace(query=new_query))
         return self._clone_request(base_request, url=new_url)
 
-    def _build_placement_probes(self, base_request: Request,
-                                identifier: ObjectIdentifier, candidate_id: Any,
-                                test_name: str = "placement"
-                                ) -> Dict[str, Request]:
+    def _build_placement_probes(
+        self,
+        base_request: Request,
+        identifier: ObjectIdentifier,
+        candidate_id: Any,
+        test_name: str = "placement",
+    ) -> dict[str, Request]:
         """Build identifier-placement probes across path, query, body, headers (Req 31.4).
 
         Produces one probe per placement that substitutes ``candidate_id`` into a
@@ -3459,13 +3606,16 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         uses a State_Changing_Method (Requirement 31.6).
         """
         if self.safe_mode and self.is_state_changing(base_request.method):
-            self.logger.info("Skipping placement probes in safe mode",
-                             test=test_name, method=base_request.method.upper())
+            self.logger.info(
+                "Skipping placement probes in safe mode",
+                test=test_name,
+                method=base_request.method.upper(),
+            )
             return {}
 
         candidate = str(candidate_id)
         param_name = identifier.parameter_name or "id"
-        probes: Dict[str, Request] = {}
+        probes: dict[str, Request] = {}
 
         # --- path placement ------------------------------------------------
         # Reuse _substitute_identifier where it applies (path-located id);
@@ -3474,10 +3624,9 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             path_url = self._substitute_identifier(identifier, candidate)
         else:
             parsed = urlparse(base_request.url)
-            segments = parsed.path.split('/')
-            new_segments = [candidate if seg == identifier.value else seg
-                            for seg in segments]
-            path_url = urlunparse(parsed._replace(path='/'.join(new_segments)))
+            segments = parsed.path.split("/")
+            new_segments = [candidate if seg == identifier.value else seg for seg in segments]
+            path_url = urlunparse(parsed._replace(path="/".join(new_segments)))
         probes["path"] = self._clone_request(base_request, url=path_url)
 
         # --- query placement ----------------------------------------------
@@ -3499,7 +3648,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return probes
 
-    def encode_identifier_variants(self, identifier_value: Any) -> Dict[str, Any]:
+    def encode_identifier_variants(self, identifier_value: Any) -> dict[str, Any]:
         """Produce encoded representations of an identifier (Requirement 31.5).
 
         Returns a mapping with three encoded forms of ``identifier_value``:

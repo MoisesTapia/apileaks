@@ -19,11 +19,6 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-import os
-import time
-from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import urljoin
 
 from core.logging import get_logger
 
@@ -57,6 +52,7 @@ ASSETNOTE_PREFIX = "assetnote:"
 # Catalogue helpers
 # ---------------------------------------------------------------------------
 
+
 def _catalogue_path(url: str) -> Path:
     """Local cache path for a catalogue JSON file."""
     name = url.rstrip("/").split("/")[-1]
@@ -74,6 +70,7 @@ def _fetch_text(url: str, timeout: float = 30.0) -> str:
     """Synchronous HTTP GET via httpx (already a project dependency)."""
     try:
         import httpx
+
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url)
             response.raise_for_status()
@@ -82,7 +79,7 @@ def _fetch_text(url: str, timeout: float = 30.0) -> str:
         raise RuntimeError(f"Failed to fetch {url}: {exc}") from exc
 
 
-def _load_catalogue(refresh: bool = False) -> List[Dict]:
+def _load_catalogue(refresh: bool = False) -> list[dict]:
     """Load the merged Assetnote wordlist catalogue.
 
     Fetches both ``automated.json`` and ``manual.json`` from the CDN on the
@@ -97,7 +94,7 @@ def _load_catalogue(refresh: bool = False) -> List[Dict]:
         ``alias``     – short alias used with the ``assetnote:`` prefix
     """
     _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    entries: List[Dict] = []
+    entries: list[dict] = []
 
     for cat_url in _CATALOGUE_URLS:
         cache_path = _catalogue_path(cat_url)
@@ -136,9 +133,6 @@ def _load_catalogue(refresh: bool = False) -> List[Dict]:
 def _normalise_catalogue(raw: list, base_url: str) -> list[dict]:
     """Normalise a raw catalogue list into a consistent entry format."""
     normalised: list[dict] = []
-def _normalise_catalogue(raw: List, base_url: str) -> List[Dict]:
-    """Normalise a raw catalogue list into a consistent entry format."""
-    normalised: List[Dict] = []
     for item in raw or []:
         if not isinstance(item, dict):
             continue
@@ -158,14 +152,16 @@ def _normalise_catalogue(raw: List, base_url: str) -> List[Dict]:
         # e.g. "httparchive_apiroutes_2021_03_28.txt" -> "apiroutes-210328"
         alias = _derive_alias(filename)
 
-        normalised.append({
-            "name": filename,
-            "alias": alias,
-            "url": download_url,
-            "count": int(item.get("count", 0) or 0),
-            "filesize": item.get("filesize") or item.get("size") or "",
-            "description": item.get("description") or "",
-        })
+        normalised.append(
+            {
+                "name": filename,
+                "alias": alias,
+                "url": download_url,
+                "count": int(item.get("count", 0) or 0),
+                "filesize": item.get("filesize") or item.get("size") or "",
+                "description": item.get("description") or "",
+            }
+        )
     return normalised
 
 
@@ -184,6 +180,7 @@ def _derive_alias(filename: str) -> str:
 
     # Detect a trailing date pattern _YYYY_MM_DD.
     import re
+
     date_match = re.search(r"_(\d{4})_(\d{2})_(\d{2})$", stem)
     if date_match:
         y, m, d = date_match.groups()
@@ -202,11 +199,12 @@ def _derive_alias(filename: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def list_wordlists(
-    filter_term: Optional[str] = None,
+    filter_term: str | None = None,
     refresh: bool = False,
     limit: int = 50,
-) -> List[Dict]:
+) -> list[dict]:
     """Return wordlist metadata, optionally filtered by a substring.
 
     Args:
@@ -221,10 +219,7 @@ def list_wordlists(
 
     if filter_term:
         ft = filter_term.lower()
-        entries = [
-            e for e in entries
-            if ft in e["name"].lower() or ft in e["alias"].lower()
-        ]
+        entries = [e for e in entries if ft in e["name"].lower() or ft in e["alias"].lower()]
 
     # Annotate with cache status.
     for entry in entries:
@@ -267,10 +262,10 @@ def resolve_wordlist(
     if not spec.startswith(ASSETNOTE_PREFIX):
         return spec
 
-    name_or_alias = spec[len(ASSETNOTE_PREFIX):]
+    name_or_alias = spec[len(ASSETNOTE_PREFIX) :]
     # Support "assetnote:apiroutes-210328:20000" head-syntax: strip the :N suffix
     # for resolution; the caller handles slicing the file to N lines.
-    head_n: Optional[int] = None
+    head_n: int | None = None
     if ":" in name_or_alias:
         name_or_alias, head_part = name_or_alias.rsplit(":", 1)
         try:
@@ -282,6 +277,7 @@ def resolve_wordlist(
     match = _find_entry(entries, name_or_alias)
     if match is None:
         import sys
+
         logger.error("Assetnote wordlist not found", query=name_or_alias)
         sys.exit(
             f"Error: no Assetnote wordlist matching '{name_or_alias}'.\n"
@@ -302,6 +298,7 @@ def resolve_wordlist(
 
     try:
         import httpx
+
         with httpx.Client(timeout=120.0, follow_redirects=True) as client:
             with client.stream("GET", match["url"]) as resp:
                 resp.raise_for_status()
@@ -314,6 +311,7 @@ def resolve_wordlist(
         logger.info("Wordlist downloaded", alias=match["alias"], path=str(cache_path))
     except Exception as exc:
         import sys
+
         sys.exit(f"Error downloading wordlist '{match['alias']}': {exc}")
 
     if head_n is not None:
@@ -323,14 +321,15 @@ def resolve_wordlist(
 
 def _make_head_file(source: Path, n: int) -> str:
     """Write the first ``n`` lines of ``source`` to a temp file and return its path."""
-    import tempfile
     head_path = _CACHE_ROOT / f"{source.stem}_head{n}{source.suffix}"
     if head_path.exists():
         return str(head_path)
     _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     count = 0
-    with open(source, "r", encoding="utf-8", errors="replace") as src, \
-         open(head_path, "w", encoding="utf-8") as dst:
+    with (
+        open(source, encoding="utf-8", errors="replace") as src,
+        open(head_path, "w", encoding="utf-8") as dst,
+    ):
         for line in src:
             if count >= n:
                 break
@@ -340,7 +339,7 @@ def _make_head_file(source: Path, n: int) -> str:
     return str(head_path)
 
 
-def _find_entry(entries: List[Dict], query: str) -> Optional[Dict]:
+def _find_entry(entries: list[dict], query: str) -> dict | None:
     """Find a catalogue entry by alias (exact) or name (substring)."""
     query_lower = query.lower()
     # Exact alias match first

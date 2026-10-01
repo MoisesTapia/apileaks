@@ -10,7 +10,7 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, List, Type
+from typing import Any
 
 from core.config import AuthContext, ResourceTestingConfig, Severity
 from core.logging import get_logger
@@ -52,6 +52,7 @@ def _safe_json_size(payload: Any) -> int:
 @dataclass
 class ResourceTestResult:
     """Result of a resource consumption test"""
+
     endpoint: str
     method: str
     test_type: str
@@ -66,6 +67,7 @@ class ResourceTestResult:
 @dataclass
 class RateLimitTestResult:
     """Result of rate limiting test"""
+
     endpoint: str
     method: str
     total_requests: int
@@ -99,7 +101,7 @@ class ResourceConsumptionModule(OWASPModule):
         r"^(([a-z])*)*$",
         r"(x+x+)+y",
         r"([a-zA-Z0-9]*)([a-zA-Z0-9]*)*$",
-        r"^(a*)*$"
+        r"^(a*)*$",
     ]
 
     # Complex query patterns that might cause performance issues
@@ -110,18 +112,22 @@ class ResourceConsumptionModule(OWASPModule):
         "' AND (SELECT COUNT(*) FROM users) > 1000 --",
         "' OR SLEEP(10) --",
         "' OR BENCHMARK(10000000, MD5(1)) --",
-        "' UNION SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL--"
+        "' UNION SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL--",
     ]
 
     # Large payload sizes to test (in bytes)
     PAYLOAD_SIZES = [
-        1024 * 1024,      # 1MB
-        10 * 1024 * 1024, # 10MB
-        100 * 1024 * 1024 # 100MB
+        1024 * 1024,  # 1MB
+        10 * 1024 * 1024,  # 10MB
+        100 * 1024 * 1024,  # 100MB
     ]
 
-    def __init__(self, config: ResourceTestingConfig, http_client: HTTPRequestEngine,
-                 auth_contexts: list[AuthContext]):
+    def __init__(
+        self,
+        config: ResourceTestingConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -130,10 +136,12 @@ class ResourceConsumptionModule(OWASPModule):
         # Create auth context mapping
         self.auth_context_map = {ctx.name: ctx for ctx in auth_contexts}
 
-        self.logger.info("Resource Consumption Testing Module initialized",
-                        burst_size=config.burst_size,
-                        payload_sizes=len(self.PAYLOAD_SIZES),
-                        redos_patterns=len(self.REDOS_PATTERNS))
+        self.logger.info(
+            "Resource Consumption Testing Module initialized",
+            burst_size=config.burst_size,
+            payload_sizes=len(self.PAYLOAD_SIZES),
+            redos_patterns=len(self.REDOS_PATTERNS),
+        )
 
     def get_module_name(self) -> str:
         """Get module name"""
@@ -162,7 +170,9 @@ class ResourceConsumptionModule(OWASPModule):
             # Step 2: Test large payload acceptance (Requirement 4.2)
             large_payload_findings = await self._test_large_payloads(endpoints)
             findings.extend(large_payload_findings)
-            self.logger.debug("Large payload testing completed", findings=len(large_payload_findings))
+            self.logger.debug(
+                "Large payload testing completed", findings=len(large_payload_findings)
+            )
 
             # Step 3: Test deeply nested JSON and large arrays (Requirement 4.3)
             json_nesting_findings = await self._test_json_nesting(endpoints)
@@ -177,15 +187,19 @@ class ResourceConsumptionModule(OWASPModule):
             # Step 5: Test complex queries (Requirement 4.5)
             complex_query_findings = await self._test_complex_queries(endpoints)
             findings.extend(complex_query_findings)
-            self.logger.debug("Complex query testing completed", findings=len(complex_query_findings))
+            self.logger.debug(
+                "Complex query testing completed", findings=len(complex_query_findings)
+            )
 
         except Exception as e:
             self.logger.error("Resource consumption testing failed", error=str(e))
             raise
 
-        self.logger.info("Resource consumption testing completed",
-                        total_findings=len(findings),
-                        critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]))
+        self.logger.info(
+            "Resource consumption testing completed",
+            total_findings=len(findings),
+            critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]),
+        )
 
         return findings
 
@@ -207,8 +221,8 @@ class ResourceConsumptionModule(OWASPModule):
             self.http_client.set_auth_context(self.auth_contexts[0])
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
 
             try:
                 # Perform burst test
@@ -228,21 +242,21 @@ class ResourceConsumptionModule(OWASPModule):
                         response_size=0,
                         response_time=rate_limit_result.average_response_time,
                         evidence=f"Endpoint accepts {rate_limit_result.successful_requests} rapid requests "
-                                f"without rate limiting. {rate_limit_result.evidence}",
+                        f"without rate limiting. {rate_limit_result.evidence}",
                         recommendation="Implement rate limiting to prevent abuse. "
-                                     "Consider implementing per-IP, per-user, or per-endpoint limits.",
-                        payload=f"Burst test: {self.config.burst_size} requests"
+                        "Consider implementing per-IP, per-user, or per-endpoint limits.",
+                        payload=f"Burst test: {self.config.burst_size} requests",
                     )
                     findings.append(finding)
 
-                    self.logger.warning("Missing rate limiting detected",
-                                      endpoint=endpoint_url,
-                                      successful_requests=rate_limit_result.successful_requests)
+                    self.logger.warning(
+                        "Missing rate limiting detected",
+                        endpoint=endpoint_url,
+                        successful_requests=rate_limit_result.successful_requests,
+                    )
 
             except Exception as e:
-                self.logger.debug("Rate limiting test failed",
-                                endpoint=endpoint_url,
-                                error=str(e))
+                self.logger.debug("Rate limiting test failed", endpoint=endpoint_url, error=str(e))
 
         return findings
 
@@ -300,7 +314,7 @@ class ResourceConsumptionModule(OWASPModule):
             blocked_requests=blocked_requests,
             average_response_time=average_response_time,
             rate_limited=rate_limited,
-            evidence=evidence
+            evidence=evidence,
         )
 
     async def _make_burst_request(self, endpoint: str, method: str, request_id: int) -> Response:
@@ -323,10 +337,9 @@ class ResourceConsumptionModule(OWASPModule):
             return response
 
         except Exception as e:
-            self.logger.debug("Burst request failed",
-                            endpoint=endpoint,
-                            request_id=request_id,
-                            error=str(e))
+            self.logger.debug(
+                "Burst request failed", endpoint=endpoint, request_id=request_id, error=str(e)
+            )
             raise
 
     async def _test_large_payloads(self, endpoints: list[Any]) -> list[Finding]:
@@ -347,24 +360,31 @@ class ResourceConsumptionModule(OWASPModule):
             self.http_client.set_auth_context(self.auth_contexts[0])
 
         # Filter endpoints that accept POST/PUT data
-        data_endpoints = [ep for ep in endpoints
-                         if hasattr(ep, 'method') and ep.method in ['POST', 'PUT', 'PATCH']]
+        data_endpoints = [
+            ep
+            for ep in endpoints
+            if hasattr(ep, "method") and ep.method in ["POST", "PUT", "PATCH"]
+        ]
 
         if not data_endpoints:
             # If no POST/PUT endpoints found, test a few GET endpoints with large query params
             data_endpoints = endpoints[:3]  # Test first 3 endpoints
 
         for endpoint in data_endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'POST'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "POST"
 
             for payload_size in self.config.large_payload_sizes:
                 try:
-                    result = await self._test_single_large_payload(endpoint_url, method, payload_size)
+                    result = await self._test_single_large_payload(
+                        endpoint_url, method, payload_size
+                    )
 
                     if result.success:
                         # Determine severity based on payload size
-                        severity = Severity.HIGH if payload_size >= 10 * 1024 * 1024 else Severity.MEDIUM
+                        severity = (
+                            Severity.HIGH if payload_size >= 10 * 1024 * 1024 else Severity.MEDIUM
+                        )
 
                         finding = Finding(
                             id="",
@@ -377,29 +397,34 @@ class ResourceConsumptionModule(OWASPModule):
                             status_code=result.status_code,
                             response_size=result.response_size,
                             response_time=result.response_time,
-                            evidence=f"Endpoint accepts large payload of {payload_size // (1024*1024)}MB. "
-                                    f"Response time: {result.response_time:.2f}s. {result.evidence}",
+                            evidence=f"Endpoint accepts large payload of {payload_size // (1024 * 1024)}MB. "
+                            f"Response time: {result.response_time:.2f}s. {result.evidence}",
                             recommendation="Implement payload size limits to prevent resource exhaustion. "
-                                         "Consider implementing request size validation and timeouts.",
-                            payload=f"Large payload: {payload_size} bytes"
+                            "Consider implementing request size validation and timeouts.",
+                            payload=f"Large payload: {payload_size} bytes",
                         )
                         findings.append(finding)
 
-                        self.logger.warning("Large payload accepted",
-                                          endpoint=endpoint_url,
-                                          payload_size_mb=payload_size // (1024*1024),
-                                          response_time=result.response_time)
+                        self.logger.warning(
+                            "Large payload accepted",
+                            endpoint=endpoint_url,
+                            payload_size_mb=payload_size // (1024 * 1024),
+                            response_time=result.response_time,
+                        )
 
                 except Exception as e:
-                    self.logger.debug("Large payload test failed",
-                                    endpoint=endpoint_url,
-                                    payload_size=payload_size,
-                                    error=str(e))
+                    self.logger.debug(
+                        "Large payload test failed",
+                        endpoint=endpoint_url,
+                        payload_size=payload_size,
+                        error=str(e),
+                    )
 
         return findings
 
-    async def _test_single_large_payload(self, endpoint: str, method: str,
-                                       payload_size: int) -> ResourceTestResult:
+    async def _test_single_large_payload(
+        self, endpoint: str, method: str, payload_size: int
+    ) -> ResourceTestResult:
         """
         Test single large payload on endpoint
 
@@ -412,13 +437,13 @@ class ResourceConsumptionModule(OWASPModule):
             Resource test result
         """
         # Generate large payload
-        if method in ['POST', 'PUT', 'PATCH']:
+        if method in ["POST", "PUT", "PATCH"]:
             # Create large JSON payload
-            large_data = 'x' * (payload_size - 100)  # Leave room for JSON structure
+            large_data = "x" * (payload_size - 100)  # Leave room for JSON structure
             payload = json.dumps({"data": large_data, "test": "resource_consumption"})
         else:
             # For GET requests, create large query parameter
-            large_param = 'x' * min(payload_size, 8192)  # Limit query param size
+            large_param = "x" * min(payload_size, 8192)  # Limit query param size
             endpoint = f"{endpoint}?large_param={large_param}"
             payload = None
 
@@ -427,9 +452,10 @@ class ResourceConsumptionModule(OWASPModule):
         try:
             if payload:
                 response = await self.http_client.request(
-                    method, endpoint,
+                    method,
+                    endpoint,
                     json=json.loads(payload),
-                    headers={'Content-Type': 'application/json'}
+                    headers={"Content-Type": "application/json"},
                 )
             else:
                 response = await self.http_client.request(method, endpoint)
@@ -440,7 +466,9 @@ class ResourceConsumptionModule(OWASPModule):
             # Consider successful if server accepts and processes the request
             success = 200 <= response.status_code < 400  # Only 2xx and 3xx are success
 
-            evidence = f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            evidence = (
+                f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            )
 
             return ResourceTestResult(
                 endpoint=endpoint,
@@ -451,7 +479,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=response.status_code,
                 response_size=len(response.content),
                 success=success,
-                evidence=evidence
+                evidence=evidence,
             )
 
         except Exception as e:
@@ -467,7 +495,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=0,
                 response_size=0,
                 success=False,
-                evidence=f"Request failed: {str(e)}"
+                evidence=f"Request failed: {str(e)}",
             )
 
     async def _test_json_nesting(self, endpoints: list[Any]) -> list[Finding]:
@@ -481,22 +509,27 @@ class ResourceConsumptionModule(OWASPModule):
             List of JSON nesting findings
         """
         findings = []
-        self.logger.info("Testing JSON nesting and large arrays", depth_limit=self.config.json_depth_limit)
+        self.logger.info(
+            "Testing JSON nesting and large arrays", depth_limit=self.config.json_depth_limit
+        )
 
         # Use first available auth context for testing
         if self.auth_contexts:
             self.http_client.set_auth_context(self.auth_contexts[0])
 
         # Filter endpoints that accept JSON data
-        json_endpoints = [ep for ep in endpoints
-                         if hasattr(ep, 'method') and ep.method in ['POST', 'PUT', 'PATCH']]
+        json_endpoints = [
+            ep
+            for ep in endpoints
+            if hasattr(ep, "method") and ep.method in ["POST", "PUT", "PATCH"]
+        ]
 
         if not json_endpoints:
             json_endpoints = endpoints[:3]  # Test first 3 endpoints
 
         for endpoint in json_endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'POST'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "POST"
 
             try:
                 # Test deeply nested JSON
@@ -514,10 +547,10 @@ class ResourceConsumptionModule(OWASPModule):
                         response_size=nested_result.response_size,
                         response_time=nested_result.response_time,
                         evidence=f"Endpoint accepts deeply nested JSON (depth: {self.config.json_depth_limit}). "
-                                f"Response time: {nested_result.response_time:.2f}s. {nested_result.evidence}",
+                        f"Response time: {nested_result.response_time:.2f}s. {nested_result.evidence}",
                         recommendation="Implement JSON depth limits to prevent stack overflow attacks. "
-                                     "Consider limiting nesting depth to reasonable levels (e.g., 10-20 levels).",
-                        payload=f"Nested JSON depth: {self.config.json_depth_limit}"
+                        "Consider limiting nesting depth to reasonable levels (e.g., 10-20 levels).",
+                        payload=f"Nested JSON depth: {self.config.json_depth_limit}",
                     )
                     findings.append(finding)
 
@@ -536,17 +569,15 @@ class ResourceConsumptionModule(OWASPModule):
                         response_size=array_result.response_size,
                         response_time=array_result.response_time,
                         evidence=f"Endpoint accepts large JSON array (10000 elements). "
-                                f"Response time: {array_result.response_time:.2f}s. {array_result.evidence}",
+                        f"Response time: {array_result.response_time:.2f}s. {array_result.evidence}",
                         recommendation="Implement array size limits to prevent memory exhaustion. "
-                                     "Consider limiting array elements to reasonable numbers.",
-                        payload="Large JSON array: 10000 elements"
+                        "Consider limiting array elements to reasonable numbers.",
+                        payload="Large JSON array: 10000 elements",
                     )
                     findings.append(finding)
 
             except Exception as e:
-                self.logger.debug("JSON nesting test failed",
-                                endpoint=endpoint_url,
-                                error=str(e))
+                self.logger.debug("JSON nesting test failed", endpoint=endpoint_url, error=str(e))
 
         return findings
 
@@ -588,18 +619,15 @@ class ResourceConsumptionModule(OWASPModule):
         # Create large array
         large_array = []
         for i in range(10000):  # 10k elements
-            large_array.append({
-                "id": i,
-                "data": f"element_{i}",
-                "value": random.randint(1, 1000)
-            })
+            large_array.append({"id": i, "data": f"element_{i}", "value": random.randint(1, 1000)})
 
         payload = {"array": large_array, "test": "large_array"}
 
         return await self._test_json_payload(endpoint, method, payload, "large_array")
 
-    async def _test_json_payload(self, endpoint: str, method: str,
-                               payload: dict[str, Any], test_type: str) -> ResourceTestResult:
+    async def _test_json_payload(
+        self, endpoint: str, method: str, payload: dict[str, Any], test_type: str
+    ) -> ResourceTestResult:
         """
         Test JSON payload on endpoint
 
@@ -617,9 +645,7 @@ class ResourceConsumptionModule(OWASPModule):
         try:
             with _raised_recursion_limit(100000):
                 response = await self.http_client.request(
-                    method, endpoint,
-                    json=payload,
-                    headers={'Content-Type': 'application/json'}
+                    method, endpoint, json=payload, headers={"Content-Type": "application/json"}
                 )
 
             end_time = time.time()
@@ -628,7 +654,9 @@ class ResourceConsumptionModule(OWASPModule):
             # Consider successful if server accepts and processes the request
             success = 200 <= response.status_code < 400  # Only 2xx and 3xx are success
 
-            evidence = f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            evidence = (
+                f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            )
 
             return ResourceTestResult(
                 endpoint=endpoint,
@@ -639,7 +667,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=response.status_code,
                 response_size=len(response.content),
                 success=success,
-                evidence=evidence
+                evidence=evidence,
             )
 
         except Exception as e:
@@ -655,7 +683,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=0,
                 response_size=0,
                 success=False,
-                evidence=f"Request failed: {str(e)}"
+                evidence=f"Request failed: {str(e)}",
             )
 
     async def _test_redos_patterns(self, endpoints: list[Any]) -> list[Finding]:
@@ -676,15 +704,17 @@ class ResourceConsumptionModule(OWASPModule):
             self.http_client.set_auth_context(self.auth_contexts[0])
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
 
             for pattern in self.REDOS_PATTERNS:
                 try:
                     result = await self._test_redos_pattern(endpoint_url, method, pattern)
 
                     # If response time is significantly high, it might indicate ReDoS
-                    if result.response_time > 5.0 and result.success:  # More than 5 seconds AND successful
+                    if (
+                        result.response_time > 5.0 and result.success
+                    ):  # More than 5 seconds AND successful
                         finding = Finding(
                             id="",
                             scan_id="",
@@ -697,28 +727,34 @@ class ResourceConsumptionModule(OWASPModule):
                             response_size=result.response_size,
                             response_time=result.response_time,
                             evidence=f"Potential ReDoS vulnerability detected. "
-                                    f"Response time: {result.response_time:.2f}s for pattern: {pattern}. "
-                                    f"{result.evidence}",
+                            f"Response time: {result.response_time:.2f}s for pattern: {pattern}. "
+                            f"{result.evidence}",
                             recommendation="Review regular expression usage for potential ReDoS vulnerabilities. "
-                                         "Implement timeouts for regex operations and validate input patterns.",
-                            payload=f"ReDoS pattern: {pattern}"
+                            "Implement timeouts for regex operations and validate input patterns.",
+                            payload=f"ReDoS pattern: {pattern}",
                         )
                         findings.append(finding)
 
-                        self.logger.warning("Potential ReDoS detected",
-                                          endpoint=endpoint_url,
-                                          pattern=pattern,
-                                          response_time=result.response_time)
+                        self.logger.warning(
+                            "Potential ReDoS detected",
+                            endpoint=endpoint_url,
+                            pattern=pattern,
+                            response_time=result.response_time,
+                        )
 
                 except Exception as e:
-                    self.logger.debug("ReDoS pattern test failed",
-                                    endpoint=endpoint_url,
-                                    pattern=pattern,
-                                    error=str(e))
+                    self.logger.debug(
+                        "ReDoS pattern test failed",
+                        endpoint=endpoint_url,
+                        pattern=pattern,
+                        error=str(e),
+                    )
 
         return findings
 
-    async def _test_redos_pattern(self, endpoint: str, method: str, pattern: str) -> ResourceTestResult:
+    async def _test_redos_pattern(
+        self, endpoint: str, method: str, pattern: str
+    ) -> ResourceTestResult:
         """
         Test ReDoS pattern on endpoint
 
@@ -737,17 +773,11 @@ class ResourceConsumptionModule(OWASPModule):
         start_time = time.time()
 
         try:
-            if method in ['POST', 'PUT', 'PATCH']:
+            if method in ["POST", "PUT", "PATCH"]:
                 # Send as JSON data
-                payload = {
-                    "input": malicious_input,
-                    "pattern": pattern,
-                    "test": "redos"
-                }
+                payload = {"input": malicious_input, "pattern": pattern, "test": "redos"}
                 response = await self.http_client.request(
-                    method, endpoint,
-                    json=payload,
-                    headers={'Content-Type': 'application/json'}
+                    method, endpoint, json=payload, headers={"Content-Type": "application/json"}
                 )
             else:
                 # Send as query parameter
@@ -757,7 +787,9 @@ class ResourceConsumptionModule(OWASPModule):
             end_time = time.time()
             response_time = response.elapsed  # Use the response's elapsed time
 
-            evidence = f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            evidence = (
+                f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            )
 
             return ResourceTestResult(
                 endpoint=endpoint,
@@ -768,7 +800,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=response.status_code,
                 response_size=len(response.content),
                 success=True,
-                evidence=evidence
+                evidence=evidence,
             )
 
         except Exception as e:
@@ -784,7 +816,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=0,
                 response_size=0,
                 success=False,
-                evidence=f"Request failed: {str(e)}"
+                evidence=f"Request failed: {str(e)}",
             )
 
     async def _test_complex_queries(self, endpoints: list[Any]) -> list[Finding]:
@@ -805,17 +837,15 @@ class ResourceConsumptionModule(OWASPModule):
             self.http_client.set_auth_context(self.auth_contexts[0])
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
 
             for query_pattern in self.COMPLEX_QUERY_PATTERNS:
                 try:
                     result = await self._test_complex_query(endpoint_url, method, query_pattern)
 
                     # Check for signs that complex query was processed
-                    if result.success and (result.response_time > 3.0 or
-                                         result.status_code == 500):
-
+                    if result.success and (result.response_time > 3.0 or result.status_code == 500):
                         severity = Severity.HIGH if result.status_code == 500 else Severity.MEDIUM
 
                         finding = Finding(
@@ -830,30 +860,35 @@ class ResourceConsumptionModule(OWASPModule):
                             response_size=result.response_size,
                             response_time=result.response_time,
                             evidence=f"Complex query processed by endpoint. "
-                                    f"Response time: {result.response_time:.2f}s. "
-                                    f"Query: {query_pattern[:100]}... {result.evidence}",
+                            f"Response time: {result.response_time:.2f}s. "
+                            f"Query: {query_pattern[:100]}... {result.evidence}",
                             recommendation="Implement query complexity limits and input validation. "
-                                         "Use parameterized queries and avoid dynamic query construction.",
-                            payload=f"Complex query: {query_pattern[:100]}..."
+                            "Use parameterized queries and avoid dynamic query construction.",
+                            payload=f"Complex query: {query_pattern[:100]}...",
                         )
                         findings.append(finding)
 
-                        self.logger.warning("Complex query processed",
-                                          endpoint=endpoint_url,
-                                          query_pattern=query_pattern[:50],
-                                          response_time=result.response_time,
-                                          status_code=result.status_code)
+                        self.logger.warning(
+                            "Complex query processed",
+                            endpoint=endpoint_url,
+                            query_pattern=query_pattern[:50],
+                            response_time=result.response_time,
+                            status_code=result.status_code,
+                        )
 
                 except Exception as e:
-                    self.logger.debug("Complex query test failed",
-                                    endpoint=endpoint_url,
-                                    query_pattern=query_pattern[:50],
-                                    error=str(e))
+                    self.logger.debug(
+                        "Complex query test failed",
+                        endpoint=endpoint_url,
+                        query_pattern=query_pattern[:50],
+                        error=str(e),
+                    )
 
         return findings
 
-    async def _test_complex_query(self, endpoint: str, method: str,
-                                query_pattern: str) -> ResourceTestResult:
+    async def _test_complex_query(
+        self, endpoint: str, method: str, query_pattern: str
+    ) -> ResourceTestResult:
         """
         Test complex query on endpoint
 
@@ -868,22 +903,21 @@ class ResourceConsumptionModule(OWASPModule):
         start_time = time.time()
 
         try:
-            if method in ['POST', 'PUT', 'PATCH']:
+            if method in ["POST", "PUT", "PATCH"]:
                 # Send as JSON data
                 payload = {
                     "query": query_pattern,
                     "search": query_pattern,
                     "filter": query_pattern,
-                    "test": "complex_query"
+                    "test": "complex_query",
                 }
                 response = await self.http_client.request(
-                    method, endpoint,
-                    json=payload,
-                    headers={'Content-Type': 'application/json'}
+                    method, endpoint, json=payload, headers={"Content-Type": "application/json"}
                 )
             else:
                 # Send as query parameters
                 import urllib.parse
+
                 encoded_query = urllib.parse.quote(query_pattern)
                 test_endpoint = f"{endpoint}?query={encoded_query}&search={encoded_query}"
                 response = await self.http_client.request(method, test_endpoint)
@@ -896,7 +930,9 @@ class ResourceConsumptionModule(OWASPModule):
             response_text = response.text.lower() if response.text else ""
             has_error_indicators = any(indicator in response_text for indicator in error_indicators)
 
-            evidence = f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            evidence = (
+                f"Status: {response.status_code}, Response size: {len(response.content)} bytes"
+            )
             if has_error_indicators:
                 evidence += ", Contains error indicators"
 
@@ -909,7 +945,7 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=response.status_code,
                 response_size=len(response.content),
                 success=True,
-                evidence=evidence
+                evidence=evidence,
             )
 
         except Exception as e:
@@ -925,5 +961,5 @@ class ResourceConsumptionModule(OWASPModule):
                 status_code=0,
                 response_size=0,
                 success=False,
-                evidence=f"Request failed: {str(e)}"
+                evidence=f"Request failed: {str(e)}",
             )

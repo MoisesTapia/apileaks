@@ -184,7 +184,7 @@ def _path_from_raw_url(raw: str) -> str:
     elif raw.startswith("{{"):
         # Strip a leading {{var}} template, keep the remainder as the path.
         closing = raw.find("}}")
-        path = raw[closing + 2:] if closing != -1 else ""
+        path = raw[closing + 2 :] if closing != -1 else ""
         # Drop any query/fragment that trailed the template.
         path = urlsplit(path).path
     else:
@@ -240,9 +240,7 @@ def import_postman(doc: dict) -> list[SpecSeed]:
 
 def _looks_like_openapi(doc: dict) -> bool:
     """True when a parsed document looks like an OpenAPI/Swagger spec."""
-    return isinstance(doc, dict) and (
-        "openapi" in doc or "swagger" in doc or "paths" in doc
-    )
+    return isinstance(doc, dict) and ("openapi" in doc or "swagger" in doc or "paths" in doc)
 
 
 def _looks_like_postman(doc: dict) -> bool:
@@ -282,9 +280,7 @@ def _parse_document(path: str) -> dict:
     try:
         parsed = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise SpecImportError(
-            f"Spec source '{path}' is not valid JSON or YAML: {exc}"
-        ) from exc
+        raise SpecImportError(f"Spec source '{path}' is not valid JSON or YAML: {exc}") from exc
 
     if parsed is None:
         raise SpecImportError(f"Spec source '{path}' is empty")
@@ -304,8 +300,7 @@ def load_spec(path: str) -> list[SpecSeed]:
 
     if not isinstance(doc, dict):
         raise SpecImportError(
-            f"Spec source '{path}' is not a recognized OpenAPI/Swagger or "
-            "Postman document"
+            f"Spec source '{path}' is not a recognized OpenAPI/Swagger or Postman document"
         )
 
     # Prefer Postman detection only when it does not also look like OpenAPI:
@@ -317,8 +312,7 @@ def load_spec(path: str) -> list[SpecSeed]:
         return import_postman(doc)
 
     raise SpecImportError(
-        f"Spec source '{path}' is not a recognized OpenAPI/Swagger or "
-        "Postman document"
+        f"Spec source '{path}' is not a recognized OpenAPI/Swagger or Postman document"
     )
 
 
@@ -612,9 +606,7 @@ def _extract_security_schemes(doc: dict, is_v2: bool) -> list[SpecSecurityScheme
         definitions = doc.get("securityDefinitions")
     else:
         components = doc.get("components")
-        definitions = (
-            components.get("securitySchemes") if isinstance(components, dict) else None
-        )
+        definitions = components.get("securitySchemes") if isinstance(components, dict) else None
 
     schemes: list[SpecSecurityScheme] = []
     if not isinstance(definitions, dict):
@@ -695,9 +687,7 @@ def import_schema(doc: dict) -> SpecSchema:
                     and isinstance(operation, dict)
                 ):
                     operations.append(
-                        _extract_operation(
-                            path, key, operation, path_level_params, is_v2
-                        )
+                        _extract_operation(path, key, operation, path_level_params, is_v2)
                     )
 
     return SpecSchema(
@@ -718,18 +708,14 @@ def _postman_query_parameters(url) -> list[SpecParameter]:
             if isinstance(entry, dict):
                 key = entry.get("key")
                 if isinstance(key, str) and key:
-                    parameters.append(
-                        SpecParameter(name=key, location="query")
-                    )
+                    parameters.append(SpecParameter(name=key, location="query"))
     variables = url.get("variable")
     if isinstance(variables, list):
         for entry in variables:
             if isinstance(entry, dict):
                 key = entry.get("key")
                 if isinstance(key, str) and key:
-                    parameters.append(
-                        SpecParameter(name=key, location="path")
-                    )
+                    parameters.append(SpecParameter(name=key, location="path"))
     return parameters
 
 
@@ -742,9 +728,7 @@ def _postman_header_parameters(request: dict) -> list[SpecParameter]:
             if isinstance(entry, dict):
                 key = entry.get("key")
                 if isinstance(key, str) and key:
-                    parameters.append(
-                        SpecParameter(name=key, location="header")
-                    )
+                    parameters.append(SpecParameter(name=key, location="header"))
     return parameters
 
 
@@ -802,9 +786,7 @@ def import_postman_schema(doc: dict) -> SpecSchema:
             elif isinstance(request, str):
                 path = _postman_request_path(request)
                 if path:
-                    operations.append(
-                        SpecOperation(path=path, method=DEFAULT_METHOD)
-                    )
+                    operations.append(SpecOperation(path=path, method=DEFAULT_METHOD))
             children = node.get("item")
             if isinstance(children, list):
                 walk(children)
@@ -857,9 +839,7 @@ def _parse_spec_text(text: str, source: str) -> dict:
     try:
         parsed = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise SpecImportError(
-            f"Spec source '{source}' is not valid JSON or YAML: {exc}"
-        ) from exc
+        raise SpecImportError(f"Spec source '{source}' is not valid JSON or YAML: {exc}") from exc
 
     if parsed is None:
         raise SpecImportError(f"Spec source '{source}' is empty")
@@ -878,22 +858,16 @@ async def _fetch_spec_document(url: str, http_engine) -> dict:
     crashing (Req 51.4).
     """
     if http_engine is None:
-        raise SpecImportError(
-            f"Cannot fetch spec source '{url}': no HTTP engine was provided"
-        )
+        raise SpecImportError(f"Cannot fetch spec source '{url}': no HTTP engine was provided")
 
     try:
         response = await http_engine.request("GET", url)
     except Exception as exc:  # network/transport failure surfaces as a clean error
-        raise SpecImportError(
-            f"Cannot fetch spec source '{url}': {exc}"
-        ) from exc
+        raise SpecImportError(f"Cannot fetch spec source '{url}': {exc}") from exc
 
     if response is None or not getattr(response, "is_success", False):
         status = getattr(response, "status_code", 0)
-        raise SpecImportError(
-            f"Cannot fetch spec source '{url}': HTTP status {status}"
-        )
+        raise SpecImportError(f"Cannot fetch spec source '{url}': HTTP status {status}")
 
     return _parse_spec_text(response.text or "", url)
 
@@ -915,8 +889,7 @@ async def load_schema(source: str, http_engine=None) -> SpecSchema:
     if _is_spec_url(source):
         if http_engine is None:
             raise SpecImportError(
-                f"Spec source '{source}' is a URL but no HTTP engine was "
-                "provided to fetch it"
+                f"Spec source '{source}' is a URL but no HTTP engine was provided to fetch it"
             )
         doc = await _fetch_spec_document(source, http_engine)
     else:
@@ -924,8 +897,7 @@ async def load_schema(source: str, http_engine=None) -> SpecSchema:
 
     if not isinstance(doc, dict):
         raise SpecImportError(
-            f"Spec source '{source}' is not a recognized OpenAPI/Swagger or "
-            "Postman document"
+            f"Spec source '{source}' is not a recognized OpenAPI/Swagger or Postman document"
         )
 
     if _looks_like_openapi(doc):
@@ -934,6 +906,5 @@ async def load_schema(source: str, http_engine=None) -> SpecSchema:
         return import_postman_schema(doc)
 
     raise SpecImportError(
-        f"Spec source '{source}' is not a recognized OpenAPI/Swagger or "
-        "Postman document"
+        f"Spec source '{source}' is not a recognized OpenAPI/Swagger or Postman document"
     )

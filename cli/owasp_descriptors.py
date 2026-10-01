@@ -17,7 +17,6 @@ CLI fails fast at import rather than silently omitting a subcommand.
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Optional
 
 from cli.module_options import (
     apply_auth_options,
@@ -71,8 +70,8 @@ class OwaspModuleDescriptor:
     owasp_category: str
     summary: str
     config_field: str
-    specific_options: Optional[Callable] = None
-    apply_options: Optional[Callable] = None
+    specific_options: Callable | None = None
+    apply_options: Callable | None = None
 
 
 # Descriptors in OWASP category order (API1..API10). NOTE: this order differs
@@ -179,8 +178,7 @@ def get_descriptor(key: str) -> OwaspModuleDescriptor:
         if descriptor.key == key:
             return descriptor
     raise KeyError(
-        f"Unknown OWASP module key: {key!r}. "
-        f"Registered keys are: {', '.join(all_keys())}."
+        f"Unknown OWASP module key: {key!r}. Registered keys are: {', '.join(all_keys())}."
     )
 
 

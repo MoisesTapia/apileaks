@@ -537,7 +537,7 @@ df -h    # Disk space
 After successful installation:
 
 1. **Configuration**: Read the [Configuration Guide](configuration.md)
-2. **First Scan**: Follow the [Examples](examples.md)
+2. **First Scan**: Follow the [Examples](usage-examples.md)
 3. **CLI Reference**: Check the [CLI Reference](cli-reference.md)
 4. **Development**: See [Development Setup](development.md) for contributors
 

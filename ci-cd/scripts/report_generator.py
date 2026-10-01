@@ -16,10 +16,12 @@ import sys
 import tempfile
 import time
 import uuid
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # stdlib: used only to BUILD XML (Element/SubElement/tostring)
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+
+import defusedxml.ElementTree as _safe_ET  # safe, XXE-protected parsing of XML files
 
 # ---------------------------------------------------------------------------
 # PDF library availability (try/except at import time)
@@ -293,7 +295,7 @@ class JUnitXMLGenerator:
         root = ET.Element("testsuites")
         for path in per_module_paths:
             try:
-                tree = ET.parse(path)
+                tree = _safe_ET.parse(path)
                 suite_el = tree.getroot()
                 root.append(suite_el)
             except Exception as exc:

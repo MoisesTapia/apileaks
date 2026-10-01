@@ -25,7 +25,7 @@ selection operates on an **in-memory-only** extended view,
 
 import re
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from utils.discovery_session import (
     DiscoveryResult,
@@ -73,12 +73,12 @@ class DiscoveryResultEx:
     field here, is held only in memory.
     """
 
-    result: DiscoveryResult        # the persisted projection
-    size: int = 0                  # response body size in bytes
-    words: int = 0                 # whitespace-delimited word count
-    lines: int = 0                 # newline-delimited line count
-    elapsed: float = 0.0           # response time, seconds
-    text: str = ""                 # response body, for regex matching only
+    result: DiscoveryResult  # the persisted projection
+    size: int = 0  # response body size in bytes
+    words: int = 0  # whitespace-delimited word count
+    lines: int = 0  # newline-delimited line count
+    elapsed: float = 0.0  # response time, seconds
+    text: str = ""  # response body, for regex matching only
 
 
 @dataclass(frozen=True)
@@ -105,9 +105,9 @@ class Soft404Baseline:
     already ran and counted toward the ``Request_Budget``.
     """
 
-    status_code: int               # HTTP status code of the soft-404 response
-    size: int                      # response body size in bytes
-    words: int                     # whitespace-delimited word count
+    status_code: int  # HTTP status code of the soft-404 response
+    size: int  # response body size in bytes
+    words: int  # whitespace-delimited word count
 
     def matches(self, ex: DiscoveryResultEx) -> bool:
         """Return whether ``ex`` matches this baseline on all three attributes.
@@ -157,7 +157,7 @@ class Bound:
     ``[lo, hi]``.
     """
 
-    op: str                        # one of '==','>','>=','<','<=','range'
+    op: str  # one of '==','>','>=','<','<=','range'
     lo: float
     hi: float | None = None
 
@@ -191,12 +191,12 @@ class ResponseSelector:
     from :mod:`utils.discovery_session`.
     """
 
-    status: StatusFilter | None = None      # reuse existing status semantics
-    size: Bound | None = None               # response body size in bytes
-    words: Bound | None = None              # whitespace-delimited word count
-    lines: Bound | None = None              # newline-delimited line count
-    regex: re.Pattern | None = None         # response-body regular expression
-    time: Bound | None = None               # response time, seconds
+    status: StatusFilter | None = None  # reuse existing status semantics
+    size: Bound | None = None  # response body size in bytes
+    words: Bound | None = None  # whitespace-delimited word count
+    lines: Bound | None = None  # newline-delimited line count
+    regex: re.Pattern | None = None  # response-body regular expression
+    time: Bound | None = None  # response time, seconds
 
     def satisfies(self, r: DiscoveryResultEx) -> bool:
         """Return whether record ``r`` satisfies every present predicate."""
@@ -236,9 +236,7 @@ def _parse_bound(raw: str, attribute: str) -> Bound:
     """
     value = raw.strip()
     if not value:
-        raise SelectorError(
-            f"invalid {attribute} bound: expression must not be empty"
-        )
+        raise SelectorError(f"invalid {attribute} bound: expression must not be empty")
 
     range_match = _RANGE_PATTERN.match(value)
     if range_match is not None:
@@ -246,8 +244,7 @@ def _parse_bound(raw: str, attribute: str) -> Bound:
         hi = float(range_match.group(2))
         if hi < lo:
             raise SelectorError(
-                f"invalid {attribute} range '{raw}': "
-                f"upper bound is below lower bound"
+                f"invalid {attribute} range '{raw}': upper bound is below lower bound"
             )
         return Bound(op="range", lo=lo, hi=hi)
 
@@ -255,15 +252,13 @@ def _parse_bound(raw: str, attribute: str) -> Bound:
     for candidate in _COMPARISON_OPERATORS:
         if value.startswith(candidate):
             operator = candidate
-            value = value[len(candidate):].strip()
+            value = value[len(candidate) :].strip()
             break
 
     try:
         number = float(value)
     except ValueError as exc:
-        raise SelectorError(
-            f"invalid {attribute} bound '{raw}': not a numeric value"
-        ) from exc
+        raise SelectorError(f"invalid {attribute} bound '{raw}': not a numeric value") from exc
 
     return Bound(op=operator or "==", lo=number)
 
@@ -282,9 +277,7 @@ def _parse_one_selector(expr: str) -> ResponseSelector:
     """
     attribute, separator, raw = expr.partition(":")
     if not separator:
-        raise SelectorError(
-            f"invalid selector '{expr}': expected '<attribute>:<expression>'"
-        )
+        raise SelectorError(f"invalid selector '{expr}': expected '<attribute>:<expression>'")
 
     attribute = attribute.strip().lower()
 
@@ -292,18 +285,14 @@ def _parse_one_selector(expr: str) -> ResponseSelector:
         try:
             pattern = re.compile(raw)
         except re.error as exc:
-            raise SelectorError(
-                f"invalid regex '{raw}': {exc}"
-            ) from exc
+            raise SelectorError(f"invalid regex '{raw}': {exc}") from exc
         return ResponseSelector(regex=pattern)
 
     if attribute == "status":
         try:
             status_filter = parse_status_filter(raw)
         except ValueError as exc:
-            raise SelectorError(
-                f"invalid status selector '{raw}': {exc}"
-            ) from exc
+            raise SelectorError(f"invalid status selector '{raw}': {exc}") from exc
         return ResponseSelector(status=status_filter)
 
     if attribute in NUMERIC_ATTRIBUTES:
@@ -373,9 +362,7 @@ def apply_selectors(
     """
     retained: list[DiscoveryResultEx] = []
     for record in records:
-        if status_filter is not None and not _status_matches(
-            status_filter, record.result
-        ):
+        if status_filter is not None and not _status_matches(status_filter, record.result):
             continue
         if not all(matcher.satisfies(record) for matcher in matchers):
             continue

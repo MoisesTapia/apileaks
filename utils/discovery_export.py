@@ -17,10 +17,8 @@ Any requested export format other than ``.md`` or ``.txt`` raises a descriptive
 """
 
 import os
-from typing import List
 
 from core.logging import get_logger
-
 from utils.discovery_session import (
     STATUS_CLASSES,
     DiscoveryResult,
@@ -50,7 +48,7 @@ def _format_extension(path: str) -> str:
 
 
 def _render_markdown(
-    grouped: "OrderedDict[str, List[DiscoveryResult]]",  # noqa: F821
+    grouped: "OrderedDict[str, list[DiscoveryResult]]",  # noqa: F821
 ) -> str:
     """Render grouped records as a Markdown document.
 
@@ -65,7 +63,7 @@ def _render_markdown(
     Returns:
         The Markdown document as a single string.
     """
-    lines: List[str] = ["# Discovery Results", ""]
+    lines: list[str] = ["# Discovery Results", ""]
     for status_class in STATUS_CLASSES:
         records = grouped[status_class]
         lines.append(f"## {status_class} ({len(records)})")
@@ -85,7 +83,7 @@ def _render_markdown(
 
 
 def _render_text(
-    grouped: "OrderedDict[str, List[DiscoveryResult]]",  # noqa: F821
+    grouped: "OrderedDict[str, list[DiscoveryResult]]",  # noqa: F821
 ) -> str:
     """Render grouped records as a plain-text document.
 
@@ -99,7 +97,7 @@ def _render_text(
     Returns:
         The plain-text document as a single string.
     """
-    lines: List[str] = ["Discovery Results", "================="]
+    lines: list[str] = ["Discovery Results", "================="]
     for status_class in STATUS_CLASSES:
         records = grouped[status_class]
         lines.append("")
@@ -115,7 +113,7 @@ def _render_text(
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def write_discovery_export(records: List[DiscoveryResult], path: str) -> None:
+def write_discovery_export(records: list[DiscoveryResult], path: str) -> None:
     """Write a human-readable discovery export to ``path``.
 
     The export format is selected from the file extension of ``path``: ``.md``

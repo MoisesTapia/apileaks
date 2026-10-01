@@ -26,10 +26,8 @@ descriptive :class:`UnsupportedOutputFormatError` and writes nothing: no
 import csv
 import json
 import os
-from typing import List
 
 from core.logging import get_logger
-
 from utils.discovery_session import (
     DiscoveryResult,
     group_by_status_class,
@@ -86,7 +84,7 @@ def _format_extension(path: str) -> str:
     return os.path.splitext(path)[1].lower()
 
 
-def _order_records(records: List[DiscoveryResult]) -> List[DiscoveryResult]:
+def _order_records(records: list[DiscoveryResult]) -> list[DiscoveryResult]:
     """Order records for output: grouped ``2xx``-``5xx`` first, others appended.
 
     The records assigned to a status class are emitted in ascending class order
@@ -105,20 +103,16 @@ def _order_records(records: List[DiscoveryResult]) -> List[DiscoveryResult]:
         first and unclassified records last.
     """
     grouped = group_by_status_class(records)
-    ordered: List[DiscoveryResult] = []
+    ordered: list[DiscoveryResult] = []
     for status_records in grouped.values():
         ordered.extend(status_records)
     # Append records excluded from every status class (Requirement 31.2 note):
     # they must still survive the round-trip even though they are unclassified.
-    ordered.extend(
-        record
-        for record in records
-        if status_code_class(record.status_code) is None
-    )
+    ordered.extend(record for record in records if status_code_class(record.status_code) is None)
     return ordered
 
 
-def write_discovery_output(records: List[DiscoveryResult], path: str) -> None:
+def write_discovery_output(records: list[DiscoveryResult], path: str) -> None:
     """Write a machine-readable discovery output to ``path``.
 
     The output format is selected from the file extension of ``path``: ``.csv``
@@ -178,9 +172,7 @@ def write_discovery_output(records: List[DiscoveryResult], path: str) -> None:
         else:
             with open(path, "w", encoding="utf-8") as handle:
                 for record in ordered:
-                    handle.write(
-                        json.dumps(record.to_dict(), ensure_ascii=False)
-                    )
+                    handle.write(json.dumps(record.to_dict(), ensure_ascii=False))
                     handle.write("\n")
     except OSError as exc:
         raise DiscoveryOutputError(
@@ -209,11 +201,7 @@ def _finding_to_output_dict(finding) -> dict:
     round-trippable representation.
     """
     detection_signals = list(finding.detection_signals or [])
-    new_json_fields = (
-        list(finding.new_json_fields)
-        if finding.new_json_fields is not None
-        else None
-    )
+    new_json_fields = list(finding.new_json_fields) if finding.new_json_fields is not None else None
     return {
         "category": finding.category,
         "endpoint": finding.endpoint,
@@ -245,7 +233,7 @@ def _finding_csv_cell(field_name: str, value) -> str:
     return str(value)
 
 
-def write_parameter_findings_output(findings: List, path: str) -> None:
+def write_parameter_findings_output(findings: list, path: str) -> None:
     """Write parameter-fuzzing findings to a machine-readable output at ``path``.
 
     Shares the CSV/JSON Lines machine-writer discipline used for discovery
@@ -299,10 +287,7 @@ def write_parameter_findings_output(findings: List, path: str) -> None:
                 writer.writerow(FINDING_CSV_FIELDNAMES)
                 for record in records:
                     writer.writerow(
-                        [
-                            _finding_csv_cell(name, record[name])
-                            for name in FINDING_CSV_FIELDNAMES
-                        ]
+                        [_finding_csv_cell(name, record[name]) for name in FINDING_CSV_FIELDNAMES]
                     )
         else:
             with open(path, "w", encoding="utf-8") as handle:

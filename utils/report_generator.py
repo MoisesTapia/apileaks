@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Type
+from typing import Any
 from xml.dom import minidom
 
 from core.logging import get_logger
@@ -46,12 +46,14 @@ class ReportGenerator:
             "API7": "Server Side Request Forgery",
             "API8": "Security Misconfiguration",
             "API9": "Improper Inventory Management",
-            "API10": "Unsafe Consumption of APIs"
+            "API10": "Unsafe Consumption of APIs",
         }
 
-        self.logger.info("Enterprise Report Generator initialized",
-                        template_dir=template_dir,
-                        supported_formats=["XML", "JSON", "HTML", "TXT"])
+        self.logger.info(
+            "Enterprise Report Generator initialized",
+            template_dir=template_dir,
+            supported_formats=["XML", "JSON", "HTML", "TXT"],
+        )
 
     def generate_xml_report(self, results: Any) -> str:
         """
@@ -80,37 +82,53 @@ class ReportGenerator:
         ET.SubElement(scan_info, "timestamp").text = results.timestamp.isoformat() + "Z"
         ET.SubElement(scan_info, "target").text = results.target_url
         ET.SubElement(scan_info, "duration_seconds").text = str(
-            results.performance_metrics.duration.total_seconds() if results.performance_metrics.duration else 0
+            results.performance_metrics.duration.total_seconds()
+            if results.performance_metrics.duration
+            else 0
         )
         ET.SubElement(scan_info, "tool_version").text = "APILeak v0.3.0"
         ET.SubElement(scan_info, "scan_type").text = "API Security Assessment"
         ET.SubElement(scan_info, "safe_mode").text = str(
-            getattr(getattr(results, 'configuration', None), 'safe_mode', False)
+            getattr(getattr(results, "configuration", None), "safe_mode", False)
         ).lower()
 
         # Statistics section
         statistics = ET.SubElement(root, "statistics")
         ET.SubElement(statistics, "total_findings").text = str(results.statistics.findings_count)
-        ET.SubElement(statistics, "critical_findings").text = str(results.statistics.critical_findings)
+        ET.SubElement(statistics, "critical_findings").text = str(
+            results.statistics.critical_findings
+        )
         ET.SubElement(statistics, "high_findings").text = str(results.statistics.high_findings)
         ET.SubElement(statistics, "medium_findings").text = str(results.statistics.medium_findings)
         ET.SubElement(statistics, "low_findings").text = str(results.statistics.low_findings)
         ET.SubElement(statistics, "info_findings").text = str(results.statistics.info_findings)
         ET.SubElement(statistics, "total_requests").text = str(results.statistics.total_requests)
-        ET.SubElement(statistics, "endpoints_discovered").text = str(results.statistics.endpoints_discovered)
+        ET.SubElement(statistics, "endpoints_discovered").text = str(
+            results.statistics.endpoints_discovered
+        )
 
         # Performance metrics
         performance = ET.SubElement(root, "performance_metrics")
-        ET.SubElement(performance, "requests_per_second").text = str(results.performance_metrics.requests_per_second)
-        ET.SubElement(performance, "average_response_time").text = str(results.performance_metrics.average_response_time)
+        ET.SubElement(performance, "requests_per_second").text = str(
+            results.performance_metrics.requests_per_second
+        )
+        ET.SubElement(performance, "average_response_time").text = str(
+            results.performance_metrics.average_response_time
+        )
 
         # OWASP coverage section
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             owasp_coverage = results.findings_collector.get_owasp_coverage()
             coverage_elem = ET.SubElement(root, "owasp_coverage")
-            ET.SubElement(coverage_elem, "tested_categories").text = str(owasp_coverage["tested_categories"])
-            ET.SubElement(coverage_elem, "total_categories").text = str(owasp_coverage["total_categories"])
-            ET.SubElement(coverage_elem, "coverage_percentage").text = f"{owasp_coverage['coverage_percentage']:.1f}"
+            ET.SubElement(coverage_elem, "tested_categories").text = str(
+                owasp_coverage["tested_categories"]
+            )
+            ET.SubElement(coverage_elem, "total_categories").text = str(
+                owasp_coverage["total_categories"]
+            )
+            ET.SubElement(
+                coverage_elem, "coverage_percentage"
+            ).text = f"{owasp_coverage['coverage_percentage']:.1f}"
 
             # Individual category coverage
             categories_elem = ET.SubElement(coverage_elem, "categories")
@@ -126,9 +144,9 @@ class ReportGenerator:
         findings_elem = ET.SubElement(root, "findings")
 
         findings_list = []
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             findings_list = results.findings_collector.get_prioritized_findings()
-        elif hasattr(results, 'findings') and results.findings:
+        elif hasattr(results, "findings") and results.findings:
             findings_list = results.findings
 
         for finding in findings_list:
@@ -172,7 +190,7 @@ class ReportGenerator:
                     header_elem.text = header_value
 
         # Discovered endpoints section
-        if hasattr(results, 'discovered_endpoints') and results.discovered_endpoints:
+        if hasattr(results, "discovered_endpoints") and results.discovered_endpoints:
             endpoints_elem = ET.SubElement(root, "discovered_endpoints")
             for endpoint in results.discovered_endpoints:
                 ep_elem = ET.SubElement(endpoints_elem, "endpoint")
@@ -181,21 +199,21 @@ class ReportGenerator:
                 ET.SubElement(ep_elem, "status_code").text = str(endpoint.status_code)
                 ET.SubElement(ep_elem, "response_size").text = str(endpoint.response_size)
                 ET.SubElement(ep_elem, "response_time").text = str(endpoint.response_time)
-                if hasattr(endpoint, 'discovered_via'):
+                if hasattr(endpoint, "discovered_via"):
                     ET.SubElement(ep_elem, "discovered_via").text = endpoint.discovered_via
 
         # Convert to pretty-printed XML string.
         # minidom.parseString is called on XML we generated ourselves via ElementTree,
         # not on untrusted external input, so XXE and XML-injection risks do not apply.
-        xml_str = ET.tostring(root, encoding='unicode')
+        xml_str = ET.tostring(root, encoding="unicode")
         dom = minidom.parseString(xml_str)  # nosec B318
         pretty_xml = dom.toprettyxml(indent="  ")
 
         # Remove empty lines and fix encoding declaration
-        lines = [line for line in pretty_xml.split('\n') if line.strip()]
+        lines = [line for line in pretty_xml.split("\n") if line.strip()]
         lines[0] = '<?xml version="1.0" encoding="UTF-8"?>'
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def generate_json_report(self, results: Any) -> str:
         """
@@ -214,7 +232,7 @@ class ReportGenerator:
 
         # Get discovered endpoints with detailed information
         discovered_endpoints = []
-        if hasattr(results, 'discovered_endpoints') and results.discovered_endpoints:
+        if hasattr(results, "discovered_endpoints") and results.discovered_endpoints:
             for endpoint in results.discovered_endpoints:
                 endpoint_data = {
                     "url": endpoint.url,
@@ -222,14 +240,18 @@ class ReportGenerator:
                     "status_code": endpoint.status_code,
                     "response_size": endpoint.response_size,
                     "response_time": endpoint.response_time,
-                    "discovered_via": getattr(endpoint, 'discovered_via', 'unknown'),
-                    "endpoint_type": getattr(endpoint, 'endpoint_type', 'standard'),
-                    "auth_required": getattr(endpoint, 'auth_required', False)
+                    "discovered_via": getattr(endpoint, "discovered_via", "unknown"),
+                    "endpoint_type": getattr(endpoint, "endpoint_type", "standard"),
+                    "auth_required": getattr(endpoint, "auth_required", False),
                 }
 
                 # Add status classification
-                if hasattr(endpoint, 'status'):
-                    endpoint_data["status"] = endpoint.status.value if hasattr(endpoint.status, 'value') else str(endpoint.status)
+                if hasattr(endpoint, "status"):
+                    endpoint_data["status"] = (
+                        endpoint.status.value
+                        if hasattr(endpoint.status, "value")
+                        else str(endpoint.status)
+                    )
                 else:
                     # Classify based on status code
                     if 200 <= endpoint.status_code < 300:
@@ -247,32 +269,32 @@ class ReportGenerator:
         fuzzing_details = {}
         parameter_details = []
 
-        if hasattr(results, 'fuzzing_results') and results.fuzzing_results:
+        if hasattr(results, "fuzzing_results") and results.fuzzing_results:
             fuzzing_details = {
                 "endpoints_tested": results.fuzzing_results.get("endpoints_tested", 0),
                 "endpoints_discovered": results.fuzzing_results.get("endpoints_discovered", 0),
                 "parameters_tested": results.fuzzing_results.get("parameters_tested", 0),
                 "headers_tested": results.fuzzing_results.get("headers_tested", 0),
                 "total_requests": results.fuzzing_results.get("total_requests", 0),
-                "success_rate": results.fuzzing_results.get("success_rate", 0.0)
+                "success_rate": results.fuzzing_results.get("success_rate", 0.0),
             }
 
             # Include parameter testing details if available
-            if 'parameter_details' in results.fuzzing_results:
-                parameter_details = results.fuzzing_results['parameter_details']
+            if "parameter_details" in results.fuzzing_results:
+                parameter_details = results.fuzzing_results["parameter_details"]
 
         # Get OWASP coverage analysis
         owasp_coverage = {}
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             owasp_coverage = results.findings_collector.get_owasp_coverage()
 
         # Get findings with complete details
         findings_data = []
         findings_list = []
 
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             findings_list = results.findings_collector.get_prioritized_findings()
-        elif hasattr(results, 'findings') and results.findings:
+        elif hasattr(results, "findings") and results.findings:
             findings_list = results.findings
 
         for finding in findings_list:
@@ -281,7 +303,9 @@ class ReportGenerator:
                 "scan_id": finding.scan_id,
                 "category": finding.category,
                 "owasp_category": finding.owasp_category,
-                "owasp_description": self.owasp_categories.get(finding.owasp_category, "Unknown") if finding.owasp_category else None,
+                "owasp_description": self.owasp_categories.get(finding.owasp_category, "Unknown")
+                if finding.owasp_category
+                else None,
                 "severity": finding.severity.value,
                 "endpoint": finding.endpoint,
                 "method": finding.method,
@@ -294,8 +318,8 @@ class ReportGenerator:
                 "metadata": {
                     "payload": finding.payload,
                     "response_snippet": finding.response_snippet,
-                    "headers": finding.headers or {}
-                }
+                    "headers": finding.headers or {},
+                },
             }
             findings_data.append(finding_data)
 
@@ -306,15 +330,17 @@ class ReportGenerator:
                 "version": "1.0",
                 "generated_by": "APILeak v0.3.0",
                 "generated_at": datetime.now().isoformat() + "Z",
-                "schema_version": "apileak-v1.0"
+                "schema_version": "apileak-v1.0",
             },
             "scan_info": {
                 "scan_id": results.scan_id,
                 "timestamp": results.timestamp.isoformat() + "Z",
                 "target": results.target_url,
-                "duration_seconds": results.performance_metrics.duration.total_seconds() if results.performance_metrics.duration else 0,
+                "duration_seconds": results.performance_metrics.duration.total_seconds()
+                if results.performance_metrics.duration
+                else 0,
                 "scan_type": "API Security Assessment",
-                "safe_mode": getattr(getattr(results, 'configuration', None), 'safe_mode', False)
+                "safe_mode": getattr(getattr(results, "configuration", None), "safe_mode", False),
             },
             "statistics": {
                 "findings": {
@@ -324,20 +350,24 @@ class ReportGenerator:
                         "high": results.statistics.high_findings,
                         "medium": results.statistics.medium_findings,
                         "low": results.statistics.low_findings,
-                        "info": results.statistics.info_findings
-                    }
+                        "info": results.statistics.info_findings,
+                    },
                 },
                 "testing": {
                     "total_requests": results.statistics.total_requests,
                     "endpoints_discovered": results.statistics.endpoints_discovered,
-                    "unique_endpoints_tested": len({f.endpoint for f in findings_list}) if findings_list else 0
-                }
+                    "unique_endpoints_tested": len({f.endpoint for f in findings_list})
+                    if findings_list
+                    else 0,
+                },
             },
             "performance_metrics": {
                 "requests_per_second": results.performance_metrics.requests_per_second,
                 "average_response_time": results.performance_metrics.average_response_time,
                 "start_time": results.performance_metrics.start_time.isoformat() + "Z",
-                "end_time": results.performance_metrics.end_time.isoformat() + "Z" if results.performance_metrics.end_time else None
+                "end_time": results.performance_metrics.end_time.isoformat() + "Z"
+                if results.performance_metrics.end_time
+                else None,
             },
             "owasp_coverage": owasp_coverage,
             "discovered_endpoints": discovered_endpoints,
@@ -347,8 +377,8 @@ class ReportGenerator:
             "summary": {
                 "risk_assessment": self._calculate_risk_assessment(results.statistics),
                 "top_vulnerabilities": self._get_top_vulnerability_categories(findings_list),
-                "recommendations": self._generate_summary_recommendations(findings_list)
-            }
+                "recommendations": self._generate_summary_recommendations(findings_list),
+            },
         }
 
         return json.dumps(report_data, indent=2, ensure_ascii=False)
@@ -370,12 +400,13 @@ class ReportGenerator:
         self.logger.info("Generating SARIF 2.1.0 report for code scanning / CI integration")
 
         findings_list = []
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             findings_list = results.findings_collector.get_prioritized_findings()
-        elif hasattr(results, 'findings') and results.findings:
+        elif hasattr(results, "findings") and results.findings:
             findings_list = results.findings
 
         from utils.sarif_formatter import SARIFFormatter
+
         return SARIFFormatter().to_json(findings_list)
 
     def _calculate_risk_assessment(self, statistics) -> str:
@@ -408,7 +439,7 @@ class ReportGenerator:
         sorted_categories = sorted(
             category_counts.items(),
             key=lambda x: (x[1]["critical"], x[1]["high"], x[1]["count"]),
-            reverse=True
+            reverse=True,
         )
 
         return [
@@ -417,7 +448,7 @@ class ReportGenerator:
                 "description": self.owasp_categories.get(cat, cat),
                 "total_findings": data["count"],
                 "critical_findings": data["critical"],
-                "high_findings": data["high"]
+                "high_findings": data["high"],
             }
             for cat, data in sorted_categories[:5]  # Top 5
         ]
@@ -434,7 +465,9 @@ class ReportGenerator:
         if "API2" in categories:
             recommendations.append("Strengthen authentication mechanisms and token validation")
         if "API3" in categories:
-            recommendations.append("Review data exposure and implement property-level authorization")
+            recommendations.append(
+                "Review data exposure and implement property-level authorization"
+            )
         if "API5" in categories:
             recommendations.append("Implement function-level authorization controls")
         if "API7" in categories:
@@ -442,11 +475,13 @@ class ReportGenerator:
 
         # Add general recommendations if no specific patterns found
         if not recommendations:
-            recommendations.extend([
-                "Review API security configuration",
-                "Implement comprehensive input validation",
-                "Add security headers and CORS policies"
-            ])
+            recommendations.extend(
+                [
+                    "Review API security configuration",
+                    "Implement comprehensive input validation",
+                    "Add security headers and CORS policies",
+                ]
+            )
 
         return recommendations[:5]  # Limit to top 5 recommendations
 
@@ -468,10 +503,10 @@ class ReportGenerator:
 
         # Get findings and statistics
         findings_list = []
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             findings_list = results.findings_collector.get_prioritized_findings()
             owasp_coverage = results.findings_collector.get_owasp_coverage()
-        elif hasattr(results, 'findings') and results.findings:
+        elif hasattr(results, "findings") and results.findings:
             findings_list = results.findings
             owasp_coverage = {"categories": {}, "coverage_percentage": 0}
         else:
@@ -483,7 +518,7 @@ class ReportGenerator:
             "High": results.statistics.high_findings,
             "Medium": results.statistics.medium_findings,
             "Low": results.statistics.low_findings,
-            "Info": results.statistics.info_findings
+            "Info": results.statistics.info_findings,
         }
 
         # OWASP category data
@@ -758,7 +793,7 @@ class ReportGenerator:
                 </div>
                 <div class="meta-item">
                     <strong>Generated</strong>
-                    {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+                    {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}
                 </div>
                 <div class="meta-item">
                     <strong>Duration</strong>
@@ -817,8 +852,8 @@ class ReportGenerator:
 
         <div id="owasp" class="tab-content">
             <h2>OWASP API Security Top 10 Coverage</h2>
-            <p>Coverage: <strong>{owasp_coverage.get('coverage_percentage', 0):.1f}%</strong>
-               ({owasp_coverage.get('tested_categories', 0)}/{owasp_coverage.get('total_categories', 10)} categories tested)</p>
+            <p>Coverage: <strong>{owasp_coverage.get("coverage_percentage", 0):.1f}%</strong>
+               ({owasp_coverage.get("tested_categories", 0)}/{owasp_coverage.get("total_categories", 10)} categories tested)</p>
 
             <div class="chart-container">
                 <canvas id="owaspChart"></canvas>
@@ -886,7 +921,7 @@ class ReportGenerator:
             new Chart(owaspCtx, {{
                 type: 'bar',
                 data: {{
-                    labels: {list(owasp_data.keys()) if owasp_data else ['No OWASP findings']},
+                    labels: {list(owasp_data.keys()) if owasp_data else ["No OWASP findings"]},
                     datasets: [{{
                         label: 'Findings Count',
                         data: {list(owasp_data.values()) if owasp_data else [0]},
@@ -943,14 +978,20 @@ class ReportGenerator:
 
         for finding in findings_list:
             severity_class = f"severity-{finding.severity.value.lower()}"
-            evidence_preview = finding.evidence[:100] + "..." if len(finding.evidence) > 100 else finding.evidence
-            recommendation_preview = finding.recommendation[:100] + "..." if len(finding.recommendation) > 100 else finding.recommendation
+            evidence_preview = (
+                finding.evidence[:100] + "..." if len(finding.evidence) > 100 else finding.evidence
+            )
+            recommendation_preview = (
+                finding.recommendation[:100] + "..."
+                if len(finding.recommendation) > 100
+                else finding.recommendation
+            )
 
             html += f"""
                 <tr>
                     <td><span class="severity-badge {severity_class}">{finding.severity.value}</span></td>
                     <td>{finding.category}</td>
-                    <td>{f'<span class="owasp-badge">{finding.owasp_category}</span>' if finding.owasp_category else 'N/A'}</td>
+                    <td>{f'<span class="owasp-badge">{finding.owasp_category}</span>' if finding.owasp_category else "N/A"}</td>
                     <td><code>{finding.endpoint}</code></td>
                     <td><strong>{finding.method}</strong></td>
                     <td title="{finding.evidence}">{evidence_preview}</td>
@@ -967,7 +1008,7 @@ class ReportGenerator:
 
     def _generate_endpoints_table_html(self, results) -> str:
         """Generate HTML table for discovered endpoints"""
-        if not hasattr(results, 'discovered_endpoints') or not results.discovered_endpoints:
+        if not hasattr(results, "discovered_endpoints") or not results.discovered_endpoints:
             return "<p>No endpoints were discovered during the scan.</p>"
 
         html = """
@@ -995,8 +1036,8 @@ class ReportGenerator:
             elif endpoint.status_code >= 400:
                 status_class = "severity-high"  # Orange for errors
 
-            auth_required = getattr(endpoint, 'auth_required', False)
-            discovered_via = getattr(endpoint, 'discovered_via', 'unknown')
+            auth_required = getattr(endpoint, "auth_required", False)
+            discovered_via = getattr(endpoint, "discovered_via", "unknown")
 
             html += f"""
                 <tr>
@@ -1006,7 +1047,7 @@ class ReportGenerator:
                     <td>{endpoint.response_size} bytes</td>
                     <td>{endpoint.response_time:.3f}s</td>
                     <td>{discovered_via}</td>
-                    <td>{'Yes' if auth_required else 'No'}</td>
+                    <td>{"Yes" if auth_required else "No"}</td>
                 </tr>
             """
 
@@ -1052,8 +1093,10 @@ class ReportGenerator:
         if top_vulns:
             html += "<p><strong>Top Vulnerability Categories:</strong></p><ul>"
             for vuln in top_vulns[:3]:  # Top 3
-                html += f"<li><strong>{vuln['category']}</strong>: {vuln['total_findings']} findings"
-                if vuln['critical_findings'] > 0:
+                html += (
+                    f"<li><strong>{vuln['category']}</strong>: {vuln['total_findings']} findings"
+                )
+                if vuln["critical_findings"] > 0:
                     html += f" ({vuln['critical_findings']} critical)"
                 html += "</li>"
             html += "</ul>"
@@ -1063,7 +1106,7 @@ class ReportGenerator:
             <div class="recommendations">
                 <h3>Priority Recommendations</h3>
                 <ul>
-                    {''.join(f'<li>{rec}</li>' for rec in recommendations)}
+                    {"".join(f"<li>{rec}</li>" for rec in recommendations)}
                 </ul>
             </div>
             """
@@ -1071,6 +1114,7 @@ class ReportGenerator:
         html += "</div>"
 
         return html
+
     def generate_txt_report(self, results: Any) -> str:
         """
         Generate comprehensive human-readable text report
@@ -1088,10 +1132,10 @@ class ReportGenerator:
 
         # Get findings and statistics
         findings_list = []
-        if hasattr(results, 'findings_collector') and results.findings_collector:
+        if hasattr(results, "findings_collector") and results.findings_collector:
             findings_list = results.findings_collector.get_prioritized_findings()
             owasp_coverage = results.findings_collector.get_owasp_coverage()
-        elif hasattr(results, 'findings') and results.findings:
+        elif hasattr(results, "findings") and results.findings:
             findings_list = results.findings
             owasp_coverage = {"categories": {}, "coverage_percentage": 0}
         else:
@@ -1102,10 +1146,10 @@ class ReportGenerator:
 
         # Get discovered endpoints with detailed breakdown
         discovered_endpoints_section = ""
-        if hasattr(results, 'discovered_endpoints') and results.discovered_endpoints:
-            discovered_endpoints_section = "\n" + "="*80 + "\n"
+        if hasattr(results, "discovered_endpoints") and results.discovered_endpoints:
+            discovered_endpoints_section = "\n" + "=" * 80 + "\n"
             discovered_endpoints_section += "DISCOVERED ENDPOINTS\n"
-            discovered_endpoints_section += "="*80 + "\n"
+            discovered_endpoints_section += "=" * 80 + "\n"
 
             # Group endpoints by status
             valid_endpoints = []
@@ -1114,7 +1158,7 @@ class ReportGenerator:
             other_endpoints = []
 
             for endpoint in results.discovered_endpoints:
-                if hasattr(endpoint, 'status_code'):
+                if hasattr(endpoint, "status_code"):
                     if 200 <= endpoint.status_code < 300:
                         valid_endpoints.append(endpoint)
                     elif endpoint.status_code in [401, 403]:
@@ -1125,41 +1169,55 @@ class ReportGenerator:
                         other_endpoints.append(endpoint)
 
             if valid_endpoints:
-                discovered_endpoints_section += f"\n✅ ACCESSIBLE ENDPOINTS ({len(valid_endpoints)}):\n"
+                discovered_endpoints_section += (
+                    f"\n✅ ACCESSIBLE ENDPOINTS ({len(valid_endpoints)}):\n"
+                )
                 discovered_endpoints_section += "-" * 50 + "\n"
                 for endpoint in valid_endpoints:
                     discovered_endpoints_section += f"  {endpoint.method:6} {endpoint.url}\n"
                     discovered_endpoints_section += f"         Status: {endpoint.status_code} | Size: {endpoint.response_size}B | Time: {endpoint.response_time:.3f}s\n"
-                    if hasattr(endpoint, 'discovered_via'):
-                        discovered_endpoints_section += f"         Found via: {endpoint.discovered_via}\n"
+                    if hasattr(endpoint, "discovered_via"):
+                        discovered_endpoints_section += (
+                            f"         Found via: {endpoint.discovered_via}\n"
+                        )
                     discovered_endpoints_section += "\n"
 
             if auth_required:
-                discovered_endpoints_section += f"\n🔐 AUTHENTICATION REQUIRED ({len(auth_required)}):\n"
+                discovered_endpoints_section += (
+                    f"\n🔐 AUTHENTICATION REQUIRED ({len(auth_required)}):\n"
+                )
                 discovered_endpoints_section += "-" * 50 + "\n"
                 for endpoint in auth_required:
-                    discovered_endpoints_section += f"  {endpoint.method:6} {endpoint.url} ({endpoint.status_code})\n"
-                    if hasattr(endpoint, 'discovered_via'):
-                        discovered_endpoints_section += f"         Found via: {endpoint.discovered_via}\n"
+                    discovered_endpoints_section += (
+                        f"  {endpoint.method:6} {endpoint.url} ({endpoint.status_code})\n"
+                    )
+                    if hasattr(endpoint, "discovered_via"):
+                        discovered_endpoints_section += (
+                            f"         Found via: {endpoint.discovered_via}\n"
+                        )
                     discovered_endpoints_section += "\n"
 
             if error_endpoints:
                 discovered_endpoints_section += f"\n❌ ERROR RESPONSES ({len(error_endpoints)}):\n"
                 discovered_endpoints_section += "-" * 50 + "\n"
                 for endpoint in error_endpoints[:10]:  # Limit to first 10
-                    discovered_endpoints_section += f"  {endpoint.method:6} {endpoint.url} ({endpoint.status_code})\n"
+                    discovered_endpoints_section += (
+                        f"  {endpoint.method:6} {endpoint.url} ({endpoint.status_code})\n"
+                    )
                 if len(error_endpoints) > 10:
-                    discovered_endpoints_section += f"  ... and {len(error_endpoints) - 10} more error endpoints\n"
+                    discovered_endpoints_section += (
+                        f"  ... and {len(error_endpoints) - 10} more error endpoints\n"
+                    )
                 discovered_endpoints_section += "\n"
 
         # Get fuzzing details with comprehensive breakdown
         fuzzing_section = ""
         parameters_section = ""
 
-        if hasattr(results, 'fuzzing_results') and results.fuzzing_results:
-            fuzzing_section = "\n" + "="*80 + "\n"
+        if hasattr(results, "fuzzing_results") and results.fuzzing_results:
+            fuzzing_section = "\n" + "=" * 80 + "\n"
             fuzzing_section += "FUZZING ANALYSIS\n"
-            fuzzing_section += "="*80 + "\n"
+            fuzzing_section += "=" * 80 + "\n"
             fuzzing_details = results.fuzzing_results
 
             fuzzing_section += f"Endpoints Tested: {fuzzing_details.get('endpoints_tested', 0)}\n"
@@ -1174,32 +1232,36 @@ class ReportGenerator:
                 parameters_section += "PARAMETER TESTING DETAILS\n"
                 parameters_section += "-" * 50 + "\n"
 
-                if 'parameter_details' in fuzzing_details and fuzzing_details['parameter_details']:
-                    param_details = fuzzing_details['parameter_details']
+                if "parameter_details" in fuzzing_details and fuzzing_details["parameter_details"]:
+                    param_details = fuzzing_details["parameter_details"]
 
                     # Group by status
                     responsive_params = []
                     non_responsive_params = []
 
                     for param_info in param_details:
-                        if param_info.get('status') == 'difference_found':
+                        if param_info.get("status") == "difference_found":
                             responsive_params.append(param_info)
                         else:
                             non_responsive_params.append(param_info)
 
                     if responsive_params:
-                        parameters_section += f"\n✅ RESPONSIVE PARAMETERS ({len(responsive_params)}):\n"
+                        parameters_section += (
+                            f"\n✅ RESPONSIVE PARAMETERS ({len(responsive_params)}):\n"
+                        )
                         for param_info in responsive_params:
-                            param_name = param_info.get('name', 'unknown')
-                            baseline_size = param_info.get('baseline_size', 0)
-                            test_size = param_info.get('test_size', 0)
+                            param_name = param_info.get("name", "unknown")
+                            baseline_size = param_info.get("baseline_size", 0)
+                            test_size = param_info.get("test_size", 0)
                             parameters_section += f"  • {param_name}: Response changed from {baseline_size}B to {test_size}B\n"
 
                     if non_responsive_params:
-                        parameters_section += f"\n❌ NON-RESPONSIVE PARAMETERS ({len(non_responsive_params)}):\n"
+                        parameters_section += (
+                            f"\n❌ NON-RESPONSIVE PARAMETERS ({len(non_responsive_params)}):\n"
+                        )
                         for param_info in non_responsive_params[:5]:  # Show first 5
-                            param_name = param_info.get('name', 'unknown')
-                            baseline_size = param_info.get('baseline_size', 0)
+                            param_name = param_info.get("name", "unknown")
+                            baseline_size = param_info.get("baseline_size", 0)
                             parameters_section += f"  • {param_name}: No significant response change ({baseline_size}B baseline)\n"
                         if len(non_responsive_params) > 5:
                             parameters_section += f"  ... and {len(non_responsive_params) - 5} more non-responsive parameters\n"
@@ -1210,10 +1272,12 @@ class ReportGenerator:
         # Generate OWASP coverage section
         owasp_section = ""
         if owasp_coverage.get("categories"):
-            owasp_section = "\n" + "="*80 + "\n"
+            owasp_section = "\n" + "=" * 80 + "\n"
             owasp_section += "OWASP API SECURITY TOP 10 COVERAGE\n"
-            owasp_section += "="*80 + "\n"
-            owasp_section += f"Overall Coverage: {owasp_coverage.get('coverage_percentage', 0):.1f}% "
+            owasp_section += "=" * 80 + "\n"
+            owasp_section += (
+                f"Overall Coverage: {owasp_coverage.get('coverage_percentage', 0):.1f}% "
+            )
             owasp_section += f"({owasp_coverage.get('tested_categories', 0)}/{owasp_coverage.get('total_categories', 10)} categories)\n\n"
 
             # Show tested categories
@@ -1231,10 +1295,12 @@ class ReportGenerator:
                 owasp_section += "-" * 30 + "\n"
                 for category, data in tested_categories:
                     owasp_section += f"  {category}: {data['description']}\n"
-                    owasp_section += f"    Findings: {data['findings_count']} (Risk: {data['risk_level']})\n"
-                    if data['critical_findings'] > 0:
+                    owasp_section += (
+                        f"    Findings: {data['findings_count']} (Risk: {data['risk_level']})\n"
+                    )
+                    if data["critical_findings"] > 0:
                         owasp_section += f"    Critical: {data['critical_findings']}\n"
-                    if data['high_findings'] > 0:
+                    if data["high_findings"] > 0:
                         owasp_section += f"    High: {data['high_findings']}\n"
                     owasp_section += "\n"
 
@@ -1248,9 +1314,9 @@ class ReportGenerator:
         # Generate detailed findings section
         findings_section = ""
         if findings_list:
-            findings_section = "\n" + "="*80 + "\n"
+            findings_section = "\n" + "=" * 80 + "\n"
             findings_section += "SECURITY FINDINGS DETAILS\n"
-            findings_section += "="*80 + "\n"
+            findings_section += "=" * 80 + "\n"
 
             # Group findings by severity
             findings_by_severity = {}
@@ -1267,7 +1333,7 @@ class ReportGenerator:
                 "HIGH": "⚠️",
                 "MEDIUM": "⚡",
                 "LOW": "ℹ️",
-                "INFO": "📋"
+                "INFO": "📋",
             }
 
             for severity in severity_order:
@@ -1289,39 +1355,45 @@ class ReportGenerator:
                             findings_section += f"   Payload: {finding.payload}\n"
 
                         if finding.response_snippet:
-                            snippet = finding.response_snippet[:200] + "..." if len(finding.response_snippet) > 200 else finding.response_snippet
+                            snippet = (
+                                finding.response_snippet[:200] + "..."
+                                if len(finding.response_snippet) > 200
+                                else finding.response_snippet
+                            )
                             findings_section += f"   Response: {snippet}\n"
 
-                        findings_section += f"   Timestamp: {finding.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                        findings_section += (
+                            f"   Timestamp: {finding.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                        )
 
         # Generate recommendations section
         recommendations_section = ""
         if findings_list:
             recommendations = self._generate_summary_recommendations(findings_list)
             if recommendations:
-                recommendations_section = "\n" + "="*80 + "\n"
+                recommendations_section = "\n" + "=" * 80 + "\n"
                 recommendations_section += "PRIORITY RECOMMENDATIONS\n"
-                recommendations_section += "="*80 + "\n"
+                recommendations_section += "=" * 80 + "\n"
                 for i, rec in enumerate(recommendations, 1):
                     recommendations_section += f"{i}. {rec}\n"
 
         # Build the complete report
         txt_content = f"""
-{"="*80}
+{"=" * 80}
 APILEAK SECURITY ASSESSMENT REPORT
-{"="*80}
+{"=" * 80}
 
 SCAN INFORMATION:
-{"-"*20}
+{"-" * 20}
 Scan ID:           {results.scan_id}
 Target:            {results.target_url}
-Timestamp:         {results.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}
+Timestamp:         {results.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")}
 Duration:          {results.performance_metrics.duration.total_seconds() if results.performance_metrics.duration else 0:.2f} seconds
 Tool Version:      APILeak v0.3.0
-Report Generated:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+Report Generated:  {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}
 
 EXECUTIVE SUMMARY:
-{"-"*20}
+{"-" * 20}
 Overall Risk Level: {risk_assessment}
 Total Findings:     {results.statistics.findings_count}
 Critical Findings:  {results.statistics.critical_findings}
@@ -1331,7 +1403,7 @@ Low Findings:       {results.statistics.low_findings}
 Info Findings:      {results.statistics.info_findings}
 
 PERFORMANCE METRICS:
-{"-"*20}
+{"-" * 20}
 Total Requests:     {results.statistics.total_requests:,}
 Requests/Second:    {results.performance_metrics.requests_per_second:.2f}
 Avg Response Time:  {results.performance_metrics.average_response_time:.3f}s
@@ -1343,9 +1415,9 @@ Endpoints Found:    {results.statistics.endpoints_discovered}
 {findings_section}
 {recommendations_section}
 
-{"="*80}
+{"=" * 80}
 END OF REPORT
-{"="*80}
+{"=" * 80}
 
 Generated by APILeak v0.3.0 - Enterprise API Security Testing Tool
 For support and documentation: https://github.com/apileak/apileak
@@ -1353,7 +1425,14 @@ For support and documentation: https://github.com/apileak/apileak
 
         return txt_content
 
-    def save_reports(self, results: Any, output_dir: str, scan_type: str = "full", output_filename: str = None, formats: list[str] | None = None) -> list[str]:
+    def save_reports(
+        self,
+        results: Any,
+        output_dir: str,
+        scan_type: str = "full",
+        output_filename: str = None,
+        formats: list[str] | None = None,
+    ) -> list[str]:
         """
         Save comprehensive reports in all configured formats with precise timestamps
 
@@ -1386,39 +1465,35 @@ For support and documentation: https://github.com/apileak/apileak
             "xml": {
                 "generator": self.generate_xml_report,
                 "description": "XML report compatible with Nessus and Burp Suite",
-                "mime_type": "application/xml"
+                "mime_type": "application/xml",
             },
             "json": {
                 "generator": self.generate_json_report,
                 "description": "Structured JSON report for automation and CI/CD",
-                "mime_type": "application/json"
+                "mime_type": "application/json",
             },
             "html": {
                 "generator": self.generate_html_report,
                 "description": "Interactive HTML report with charts and navigation",
-                "mime_type": "text/html"
+                "mime_type": "text/html",
             },
             "txt": {
                 "generator": self.generate_txt_report,
                 "description": "Human-readable text report for technical teams",
-                "mime_type": "text/plain"
+                "mime_type": "text/plain",
             },
             "sarif": {
                 "generator": self.generate_sarif_report,
                 "description": "SARIF 2.1.0 report for code scanning / CI integration",
-                "mime_type": "application/sarif+json"
-            }
+                "mime_type": "application/sarif+json",
+            },
         }
 
         # Honor configured formats when provided. When `formats` is None,
         # preserve the original behavior (xml, json, html, txt). When provided,
         # generate exactly those formats that are known.
         if formats is not None:
-            formats = {
-                name: info
-                for name, info in formats_all.items()
-                if name in formats
-            }
+            formats = {name: info for name, info in formats_all.items() if name in formats}
         else:
             formats = {
                 name: info
@@ -1437,7 +1512,7 @@ For support and documentation: https://github.com/apileak/apileak
                 "formats_generated": [],
                 "total_findings": results.statistics.findings_count,
                 "critical_findings": results.statistics.critical_findings,
-                "generation_duration_seconds": 0
+                "generation_duration_seconds": 0,
             }
         }
 
@@ -1445,9 +1520,9 @@ For support and documentation: https://github.com/apileak/apileak
 
         for format_name, format_info in formats.items():
             try:
-                self.logger.info("Generating report",
-                               format=format_name,
-                               description=format_info["description"])
+                self.logger.info(
+                    "Generating report", format=format_name, description=format_info["description"]
+                )
 
                 format_start = datetime.now()
                 content = format_info["generator"](results)
@@ -1467,14 +1542,16 @@ For support and documentation: https://github.com/apileak/apileak
                 filepath = output_path / filename
 
                 # Write file with proper encoding
-                encoding = 'utf-8'
-                with open(filepath, 'w', encoding=encoding, newline='') as f:
+                encoding = "utf-8"
+                with open(filepath, "w", encoding=encoding, newline="") as f:
                     f.write(content)
 
                 # Verify file was written correctly
                 file_size = filepath.stat().st_size
                 if file_size == 0:
-                    self.logger.error("Generated file is empty", format=format_name, path=str(filepath))
+                    self.logger.error(
+                        "Generated file is empty", format=format_name, path=str(filepath)
+                    )
                     continue
 
                 file_info = {
@@ -1484,35 +1561,39 @@ For support and documentation: https://github.com/apileak/apileak
                     "mime_type": format_info["mime_type"],
                     "size_bytes": file_size,
                     "generation_time_seconds": format_duration,
-                    "encoding": encoding
+                    "encoding": encoding,
                 }
 
                 generated_files.append(file_info)
-                metadata["report_generation"]["formats_generated"].append({
-                    "format": format_name,
-                    "filename": filename,
-                    "size_bytes": file_size,
-                    "generation_time_seconds": format_duration
-                })
+                metadata["report_generation"]["formats_generated"].append(
+                    {
+                        "format": format_name,
+                        "filename": filename,
+                        "size_bytes": file_size,
+                        "generation_time_seconds": format_duration,
+                    }
+                )
 
-                self.logger.info("Report generated successfully",
-                               format=format_name,
-                               path=str(filepath),
-                               size_mb=file_size / 1024 / 1024,
-                               generation_time=format_duration)
+                self.logger.info(
+                    "Report generated successfully",
+                    format=format_name,
+                    path=str(filepath),
+                    size_mb=file_size / 1024 / 1024,
+                    generation_time=format_duration,
+                )
 
             except Exception as e:
-                self.logger.error("Failed to generate report",
-                                format=format_name,
-                                error=str(e),
-                                error_type=type(e).__name__)
+                self.logger.error(
+                    "Failed to generate report",
+                    format=format_name,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
 
                 # Add error info to metadata
-                metadata["report_generation"].setdefault("errors", []).append({
-                    "format": format_name,
-                    "error": str(e),
-                    "error_type": type(e).__name__
-                })
+                metadata["report_generation"].setdefault("errors", []).append(
+                    {"format": format_name, "error": str(e), "error_type": type(e).__name__}
+                )
 
         # Calculate total generation time
         total_duration = (datetime.now() - generation_start).total_seconds()
@@ -1523,7 +1604,7 @@ For support and documentation: https://github.com/apileak/apileak
             metadata_filename = f"apileak_metadata_{scan_type}_{timestamp}.json"
             metadata_filepath = output_path / metadata_filename
 
-            with open(metadata_filepath, 'w', encoding='utf-8') as f:
+            with open(metadata_filepath, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
 
             metadata_info = {
@@ -1533,7 +1614,7 @@ For support and documentation: https://github.com/apileak/apileak
                 "mime_type": "application/json",
                 "size_bytes": metadata_filepath.stat().st_size,
                 "generation_time_seconds": 0,
-                "encoding": "utf-8"
+                "encoding": "utf-8",
             }
 
             generated_files.append(metadata_info)
@@ -1545,11 +1626,13 @@ For support and documentation: https://github.com/apileak/apileak
 
         # Generate summary report
         try:
-            summary_content = self._generate_summary_report(results, generated_files, total_duration)
+            summary_content = self._generate_summary_report(
+                results, generated_files, total_duration
+            )
             summary_filename = f"apileak_summary_{scan_type}_{timestamp}.txt"
             summary_filepath = output_path / summary_filename
 
-            with open(summary_filepath, 'w', encoding='utf-8') as f:
+            with open(summary_filepath, "w", encoding="utf-8") as f:
                 f.write(summary_content)
 
             summary_info = {
@@ -1559,7 +1642,7 @@ For support and documentation: https://github.com/apileak/apileak
                 "mime_type": "text/plain",
                 "size_bytes": summary_filepath.stat().st_size,
                 "generation_time_seconds": 0,
-                "encoding": "utf-8"
+                "encoding": "utf-8",
             }
 
             generated_files.append(summary_info)
@@ -1567,15 +1650,19 @@ For support and documentation: https://github.com/apileak/apileak
         except Exception as e:
             self.logger.error("Failed to generate summary report", error=str(e))
 
-        self.logger.info("Report generation completed",
-                        files_generated=len([f for f in generated_files if f["format"] != "metadata"]),
-                        total_size_mb=sum(f["size_bytes"] for f in generated_files) / 1024 / 1024,
-                        total_duration=total_duration,
-                        output_directory=str(output_path))
+        self.logger.info(
+            "Report generation completed",
+            files_generated=len([f for f in generated_files if f["format"] != "metadata"]),
+            total_size_mb=sum(f["size_bytes"] for f in generated_files) / 1024 / 1024,
+            total_duration=total_duration,
+            output_directory=str(output_path),
+        )
 
         return generated_files
 
-    def _generate_summary_report(self, results: Any, generated_files: list[dict], generation_duration: float) -> str:
+    def _generate_summary_report(
+        self, results: Any, generated_files: list[dict], generation_duration: float
+    ) -> str:
         """Generate executive summary of report generation"""
 
         summary = f"""
@@ -1585,14 +1672,14 @@ APILeak Report Generation Summary
 Scan Information:
 - Scan ID: {results.scan_id}
 - Target: {results.target_url}
-- Timestamp: {results.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}
+- Timestamp: {results.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")}
 - Duration: {results.performance_metrics.duration.total_seconds() if results.performance_metrics.duration else 0:.2f}s
 
 Report Generation:
-- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+- Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}
 - Generation Time: {generation_duration:.2f}s
-- Files Created: {len([f for f in generated_files if f['format'] not in ['metadata', 'summary']])}
-- Total Size: {sum(f['size_bytes'] for f in generated_files) / 1024 / 1024:.2f} MB
+- Files Created: {len([f for f in generated_files if f["format"] not in ["metadata", "summary"]])}
+- Total Size: {sum(f["size_bytes"] for f in generated_files) / 1024 / 1024:.2f} MB
 
 Generated Files:
 """

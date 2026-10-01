@@ -27,7 +27,6 @@ raise a descriptive error naming the offending value on invalid input so the
 
 import re
 from dataclasses import dataclass
-from typing import FrozenSet, Optional, Tuple
 
 from utils.discovery_session import (
     MAX_STATUS_CODE,
@@ -80,8 +79,8 @@ class PathScope:
     (Requirements 33.4, 33.10).
     """
 
-    include: Tuple[re.Pattern, ...] = ()
-    exclude: Tuple[re.Pattern, ...] = ()
+    include: tuple[re.Pattern, ...] = ()
+    exclude: tuple[re.Pattern, ...] = ()
 
     def admits(self, path: str, url: str) -> bool:
         """Return whether the candidate is permitted by this scope.
@@ -102,9 +101,7 @@ class PathScope:
         if any(pattern.search(path) or pattern.search(url) for pattern in self.exclude):
             return False
         if self.include:
-            return any(
-                pattern.search(path) or pattern.search(url) for pattern in self.include
-            )
+            return any(pattern.search(path) or pattern.search(url) for pattern in self.include)
         return True
 
 
@@ -125,15 +122,13 @@ def parse_path_scope(include_exprs, exclude_exprs) -> PathScope:
             message names the offending pattern (Requirement 33.8).
     """
 
-    def _compile_all(exprs) -> Tuple[re.Pattern, ...]:
+    def _compile_all(exprs) -> tuple[re.Pattern, ...]:
         compiled = []
         for expr in exprs or ():
             try:
                 compiled.append(re.compile(expr))
             except re.error as exc:
-                raise PathScopeError(
-                    f"invalid path pattern '{expr}': {exc}"
-                ) from exc
+                raise PathScopeError(f"invalid path pattern '{expr}': {exc}") from exc
         return tuple(compiled)
 
     return PathScope(
@@ -152,8 +147,8 @@ class StorageStatusSelection:
     :class:`StatusFilter`; exclude takes precedence over include.
     """
 
-    include: Optional[StatusFilter] = None
-    exclude: Optional[StatusFilter] = None
+    include: StatusFilter | None = None
+    exclude: StatusFilter | None = None
 
     def admits(self, status_code: int) -> bool:
         """Return whether a record with ``status_code`` is stored.
@@ -176,8 +171,8 @@ class StorageStatusSelection:
 
 
 def parse_storage_status_selection(
-    include: Optional[str],
-    exclude: Optional[str],
+    include: str | None,
+    exclude: str | None,
 ) -> StorageStatusSelection:
     """Parse ``--include-status`` / ``--exclude-status`` into a :class:`StorageStatusSelection`.
 
@@ -202,7 +197,7 @@ def parse_storage_status_selection(
             offending value (Requirement 33.9).
     """
 
-    def _parse_one(raw: Optional[str]) -> Optional[StatusFilter]:
+    def _parse_one(raw: str | None) -> StatusFilter | None:
         if raw is None:
             return None
         try:
@@ -264,8 +259,8 @@ class RecursionScope:
     (Requirements 34.3, 34.9).
     """
 
-    status_classes: FrozenSet[str] = frozenset()
-    endpoint_types: FrozenSet[str] = frozenset()
+    status_classes: frozenset[str] = frozenset()
+    endpoint_types: frozenset[str] = frozenset()
 
     def admits(self, endpoint) -> bool:
         """Return whether ``endpoint`` satisfies EVERY supplied selection.
@@ -296,8 +291,8 @@ class RecursionScope:
 
 
 def parse_recursion_scope(
-    status_csv: Optional[str],
-    type_csv: Optional[str],
+    status_csv: str | None,
+    type_csv: str | None,
 ) -> RecursionScope:
     """Parse ``--recursion-status`` / ``--recursion-type`` into a :class:`RecursionScope`.
 
@@ -323,7 +318,7 @@ def parse_recursion_scope(
             (Requirement 34.8).
     """
 
-    def _tokens(raw: Optional[str]):
+    def _tokens(raw: str | None):
         if raw is None:
             return []
         return [token.strip() for token in raw.split(",") if token.strip()]

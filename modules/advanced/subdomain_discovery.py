@@ -7,7 +7,7 @@ import asyncio
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, List
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from utils.http_client import HTTPRequestEngine
 @dataclass
 class SubdomainResult:
     """Result of subdomain discovery"""
+
     subdomain: str
     ip_address: str | None = None
     status_code: int | None = None
@@ -32,12 +33,35 @@ class SubdomainResult:
 @dataclass
 class SubdomainDiscoveryConfig:
     """Configuration for subdomain discovery"""
+
     enabled: bool = True
-    wordlist: list[str] = field(default_factory=lambda: [
-        "api", "dev", "staging", "test", "qa", "uat", "prod", "production",
-        "www", "admin", "management", "dashboard", "portal", "app", "mobile",
-        "v1", "v2", "v3", "beta", "alpha", "demo", "sandbox", "internal"
-    ])
+    wordlist: list[str] = field(
+        default_factory=lambda: [
+            "api",
+            "dev",
+            "staging",
+            "test",
+            "qa",
+            "uat",
+            "prod",
+            "production",
+            "www",
+            "admin",
+            "management",
+            "dashboard",
+            "portal",
+            "app",
+            "mobile",
+            "v1",
+            "v2",
+            "v3",
+            "beta",
+            "alpha",
+            "demo",
+            "sandbox",
+            "internal",
+        ]
+    )
     timeout: float = 5.0
     max_concurrent: int = 10
     verify_ssl: bool = False
@@ -71,10 +95,12 @@ class SubdomainDiscovery:
         self.discovered_subdomains: list[SubdomainResult] = []
         self.accessible_subdomains: list[str] = []
 
-        self.logger.info("Subdomain Discovery initialized",
-                        wordlist_size=len(config.wordlist),
-                        timeout=config.timeout,
-                        max_concurrent=config.max_concurrent)
+        self.logger.info(
+            "Subdomain Discovery initialized",
+            wordlist_size=len(config.wordlist),
+            timeout=config.timeout,
+            max_concurrent=config.max_concurrent,
+        )
 
     async def discover_subdomains(self, target_domain: str) -> list[SubdomainResult]:
         """
@@ -93,28 +119,27 @@ class SubdomainDiscovery:
         self.logger.info("Starting subdomain discovery", target=target_domain)
 
         # Parse domain from URL if needed
-        if target_domain.startswith(('http://', 'https://')):
+        if target_domain.startswith(("http://", "https://")):
             parsed = urlparse(target_domain)
             domain = parsed.netloc
         else:
             domain = target_domain
 
         # Remove port if present
-        if ':' in domain:
-            domain = domain.split(':')[0]
+        if ":" in domain:
+            domain = domain.split(":")[0]
 
         # Generate subdomain candidates
         subdomain_candidates = self._generate_subdomain_candidates(domain)
 
-        self.logger.info("Generated subdomain candidates",
-                        count=len(subdomain_candidates),
-                        domain=domain)
+        self.logger.info(
+            "Generated subdomain candidates", count=len(subdomain_candidates), domain=domain
+        )
 
         # Test subdomains concurrently
         semaphore = asyncio.Semaphore(self.config.max_concurrent)
         tasks = [
-            self._test_subdomain(semaphore, subdomain, domain)
-            for subdomain in subdomain_candidates
+            self._test_subdomain(semaphore, subdomain, domain) for subdomain in subdomain_candidates
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -131,10 +156,12 @@ class SubdomainDiscovery:
 
         self.discovered_subdomains = valid_results
 
-        self.logger.info("Subdomain discovery completed",
-                        total_tested=len(subdomain_candidates),
-                        accessible_found=len(self.accessible_subdomains),
-                        total_results=len(valid_results))
+        self.logger.info(
+            "Subdomain discovery completed",
+            total_tested=len(subdomain_candidates),
+            accessible_found=len(self.accessible_subdomains),
+            total_results=len(valid_results),
+        )
 
         return valid_results
 
@@ -156,8 +183,9 @@ class SubdomainDiscovery:
 
         return candidates
 
-    async def _test_subdomain(self, semaphore: asyncio.Semaphore,
-                            subdomain: str, base_domain: str) -> SubdomainResult:
+    async def _test_subdomain(
+        self, semaphore: asyncio.Semaphore, subdomain: str, base_domain: str
+    ) -> SubdomainResult:
         """
         Test if a subdomain is accessible
 
@@ -178,9 +206,9 @@ class SubdomainDiscovery:
                     try:
                         ip_address = socket.gethostbyname(subdomain)
                         result.ip_address = ip_address
-                        self.logger.debug("DNS resolution successful",
-                                        subdomain=subdomain,
-                                        ip=ip_address)
+                        self.logger.debug(
+                            "DNS resolution successful", subdomain=subdomain, ip=ip_address
+                        )
                     except socket.gaierror:
                         result.error = "DNS resolution failed"
                         self.logger.debug("DNS resolution failed", subdomain=subdomain)
@@ -192,9 +220,7 @@ class SubdomainDiscovery:
                 for url in test_urls:
                     try:
                         response = await self.http_client.request(
-                            method="GET",
-                            url=url,
-                            timeout=self.config.timeout
+                            method="GET", url=url, timeout=self.config.timeout
                         )
 
                         result.status_code = response.status_code
@@ -205,17 +231,18 @@ class SubdomainDiscovery:
                         if response.status_code > 0:
                             result.is_accessible = True
 
-                            self.logger.info("Accessible subdomain found",
-                                           subdomain=subdomain,
-                                           status_code=response.status_code,
-                                           response_time=response.elapsed)
+                            self.logger.info(
+                                "Accessible subdomain found",
+                                subdomain=subdomain,
+                                status_code=response.status_code,
+                                response_time=response.elapsed,
+                            )
                             break
 
                     except Exception as e:
-                        self.logger.debug("HTTP test failed",
-                                        subdomain=subdomain,
-                                        url=url,
-                                        error=str(e))
+                        self.logger.debug(
+                            "HTTP test failed", subdomain=subdomain, url=url, error=str(e)
+                        )
                         continue
 
                 if not result.is_accessible:
@@ -223,9 +250,7 @@ class SubdomainDiscovery:
 
             except Exception as e:
                 result.error = f"Test failed: {str(e)}"
-                self.logger.error("Subdomain test error",
-                                subdomain=subdomain,
-                                error=str(e))
+                self.logger.error("Subdomain test error", subdomain=subdomain, error=str(e))
 
             return result
 
@@ -280,10 +305,10 @@ class SubdomainDiscovery:
                 response_time=0.0,
                 evidence=evidence,
                 recommendation="Review discovered subdomains for additional attack surface. "
-                             "Ensure all subdomains are properly secured and monitored.",
+                "Ensure all subdomains are properly secured and monitored.",
                 payload=None,
                 response_snippet=f"Total subdomains found: {accessible_count}",
-                headers={}
+                headers={},
             )
             findings.append(finding)
 
@@ -311,10 +336,10 @@ class SubdomainDiscovery:
                 response_time=0.0,
                 evidence=f"Found potentially sensitive subdomains: {', '.join(sensitive_found)}",
                 recommendation="Review sensitive subdomains for proper access controls. "
-                             "Development and staging environments should not be publicly accessible.",
+                "Development and staging environments should not be publicly accessible.",
                 payload=None,
                 response_snippet=f"Sensitive subdomains: {len(sensitive_found)}",
-                headers={}
+                headers={},
             )
             findings.append(finding)
 
@@ -337,7 +362,7 @@ class SubdomainDiscovery:
             "dns_resolved": len([r for r in self.discovered_subdomains if r.ip_address]),
             "http_accessible": accessible,
             "average_response_time": sum(
-                r.response_time for r in self.discovered_subdomains
-                if r.response_time
-            ) / max(1, len([r for r in self.discovered_subdomains if r.response_time]))
+                r.response_time for r in self.discovered_subdomains if r.response_time
+            )
+            / max(1, len([r for r in self.discovered_subdomains if r.response_time])),
         }

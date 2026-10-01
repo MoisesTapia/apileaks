@@ -34,13 +34,14 @@ from click.testing import CliRunner
 import apileaks
 from apileaks import cli
 from cli.owasp_descriptors import all_keys
+from core import __version__ as _APILEAK_VERSION
 
 
 CLI_TARGET = "http://cli-target.example"
 ENV_TARGET = "http://env-target.example"
 CONFIG_TARGET = "http://config-target.example"
 
-DEFAULT_USER_AGENT = "APILeak/0.2.1"
+DEFAULT_USER_AGENT = f"APILeak/{_APILEAK_VERSION}"
 DEFAULT_TIMEOUT = 10
 
 

@@ -11,7 +11,7 @@ its primary input. For convenience it is also tolerant of an object exposing a
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.config import Severity
 from utils.findings import Finding, FindingsCollector
@@ -49,7 +49,7 @@ class SARIFFormatter:
         return "note"
 
     @staticmethod
-    def _coerce_findings(results: Any) -> List[Finding]:
+    def _coerce_findings(results: Any) -> list[Finding]:
         """Extract a list of findings from the supported input shapes."""
         if results is None:
             return []
@@ -59,25 +59,25 @@ class SARIFFormatter:
         # Assume an iterable of Finding objects.
         return list(results)
 
-    def _build_rules(self, findings: List[Finding]) -> List[Dict[str, str]]:
+    def _build_rules(self, findings: list[Finding]) -> list[dict[str, str]]:
         """Derive SARIF rules from the distinct OWASP categories present.
 
         Falls back to the finding category when no OWASP category is set so
         that every referenced ruleId has a corresponding rule definition.
         """
-        rule_ids: List[str] = []
+        rule_ids: list[str] = []
         for finding in findings:
             rule_id = finding.owasp_category or finding.category
             if rule_id and rule_id not in rule_ids:
                 rule_ids.append(rule_id)
 
-        rules: List[Dict[str, str]] = []
+        rules: list[dict[str, str]] = []
         for rule_id in rule_ids:
             name = FindingsCollector.OWASP_CATEGORIES.get(rule_id, rule_id)
             rules.append({"id": rule_id, "name": name})
         return rules
 
-    def _build_result(self, finding: Finding) -> Dict[str, Any]:
+    def _build_result(self, finding: Finding) -> dict[str, Any]:
         """Build a single SARIF result entry from a finding."""
         rule_id = finding.owasp_category or finding.category
         severity_value = (
@@ -94,13 +94,7 @@ class SARIFFormatter:
             "ruleId": rule_id,
             "level": self.severity_to_level(finding.severity),
             "message": {"text": message_text},
-            "locations": [
-                {
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": finding.endpoint}
-                    }
-                }
-            ],
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": finding.endpoint}}}],
             "properties": {
                 "method": finding.method,
                 "owaspCategory": finding.owasp_category,
@@ -109,7 +103,7 @@ class SARIFFormatter:
             },
         }
 
-    def format(self, results: Any) -> Dict[str, Any]:
+    def format(self, results: Any) -> dict[str, Any]:
         """Return a SARIF 2.1.0 document (dict) for the given findings.
 
         Args:

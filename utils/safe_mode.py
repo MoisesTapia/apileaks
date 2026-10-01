@@ -54,8 +54,9 @@ class SafeModeGuard:
         the request when it is ``True`` (Requirements 21.2, 21.3).
         """
         if self.safe_mode and self.is_state_changing(method):
-            self.logger.info("Skipping state-changing probe in safe mode",
-                             test=test_name, method=method.upper())
+            self.logger.info(
+                "Skipping state-changing probe in safe mode", test=test_name, method=method.upper()
+            )
             return True
         return False
 
@@ -71,7 +72,10 @@ class SafeModeGuard:
         (Requirement 26).
         """
         if self.safe_mode and self.is_state_changing(method):
-            self.logger.info("Downgrading read probe to GET in safe mode",
-                             test=test_name, original_method=method.upper())
+            self.logger.info(
+                "Downgrading read probe to GET in safe mode",
+                test=test_name,
+                original_method=method.upper(),
+            )
             return "GET"
         return method

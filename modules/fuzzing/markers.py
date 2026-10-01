@@ -16,10 +16,10 @@ region classification).
 """
 
 import itertools
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from urllib.parse import urlparse
-from typing import Iterator, List, Optional, Sequence
 
 # One of the informational region labels below. Classification never affects
 # substitution, which is purely span-based (Requirement 40.1).
@@ -69,7 +69,7 @@ def validate_fuzz_keyword(keyword: str) -> str:
     return keyword
 
 
-def find_markers(url: str, keyword: str = "FUZZ") -> List[MarkerPosition]:
+def find_markers(url: str, keyword: str = "FUZZ") -> list[MarkerPosition]:
     """Return one :class:`MarkerPosition` per NON-OVERLAPPING literal occurrence
     of ``keyword`` in ``url``, scanned left-to-right (Requirements 39.2, 39.4).
 
@@ -79,7 +79,7 @@ def find_markers(url: str, keyword: str = "FUZZ") -> List[MarkerPosition]:
 
     ``region`` on each marker is filled by :func:`classify_marker_region`.
     """
-    markers: List[MarkerPosition] = []
+    markers: list[MarkerPosition] = []
 
     # Guard against a zero-length keyword, which would otherwise loop forever.
     # The CLI validates the keyword via validate_fuzz_keyword before discovery,
@@ -96,17 +96,13 @@ def find_markers(url: str, keyword: str = "FUZZ") -> List[MarkerPosition]:
         start = idx
         end = idx + len(keyword)
         region = classify_marker_region(url, start, end)
-        markers.append(
-            MarkerPosition(start=start, end=end, region=region, order=order)
-        )
+        markers.append(MarkerPosition(start=start, end=end, region=region, order=order))
         order += 1
         cursor = end  # advance past the whole match => non-overlapping
     return markers
 
 
-def substitute_markers(
-    url: str, markers: List[MarkerPosition], values: List[str]
-) -> str:
+def substitute_markers(url: str, markers: list[MarkerPosition], values: list[str]) -> str:
     """Return ``url`` with each marked span replaced by its paired candidate
     value, preserving every other byte of the target URL (Requirement 40.1).
 
@@ -139,7 +135,7 @@ def substitute_markers(
 
     # Pair markers with their values, then splice right-to-left so earlier
     # spans keep their original offsets as later spans are replaced.
-    paired = sorted(zip(markers, values), key=lambda mv: mv[0].start, reverse=True)
+    paired = sorted(zip(markers, values, strict=False), key=lambda mv: mv[0].start, reverse=True)
 
     result = url
     for marker, value in paired:
@@ -233,7 +229,7 @@ def classify_marker_region(url: str, start: int, end: int) -> MarkerRegion:
     path_start, path_end = _path_bounds(url)
 
     # Split the path into segments, tracking each segment's [start, end) offsets.
-    segments: List["tuple[int, int]"] = []
+    segments: list[tuple[int, int]] = []
     pos = path_start
     while pos <= path_end:
         slash = url.find("/", pos)
@@ -275,7 +271,7 @@ def classify_marker_region(url: str, start: int, end: int) -> MarkerRegion:
 def associate_wordlists(
     markers: Sequence[MarkerPosition],
     wordlists: Sequence[Sequence[str]],
-) -> List[List[str]]:
+) -> list[list[str]]:
     """Pair Marker_Wordlists with Marker_Positions in left-to-right marker order.
 
     ``markers`` already carry their 0-based ``order``; the i-th supplied wordlist
@@ -328,7 +324,7 @@ def associate_wordlists(
     # Fewer-or-equal wordlists than markers: pair by index and fill any remaining
     # positions with the last supplied wordlist (covers the single-list case,
     # Requirements 44.2 and 44.3).
-    associated: List[List[str]] = []
+    associated: list[list[str]] = []
     for i in range(n_markers):
         source = wordlists[i] if i < n_wordlists else wordlists[-1]
         associated.append(list(source))
@@ -354,7 +350,7 @@ class FuzzMode(str, Enum):
     PITCHFORK = "pitchfork"
 
 
-def parse_fuzz_mode(raw: Optional[str]) -> FuzzMode:
+def parse_fuzz_mode(raw: str | None) -> FuzzMode:
     """Map a CLI token to a :class:`FuzzMode` (case-insensitive).
 
     ``None`` or an absent value resolves to :attr:`FuzzMode.CLUSTERBOMB`, the
@@ -372,9 +368,7 @@ def parse_fuzz_mode(raw: Optional[str]) -> FuzzMode:
             return mode
 
     valid = ", ".join(m.value for m in FuzzMode)
-    raise ValueError(
-        f"Invalid Fuzz_Mode {raw!r}: expected one of {valid}"
-    )
+    raise ValueError(f"Invalid Fuzz_Mode {raw!r}: expected one of {valid}")
 
 
 def generate_marker_candidates(
@@ -403,7 +397,7 @@ def generate_marker_candidates(
     non-marked byte of the target URL is preserved (Requirement 40.1).
     """
     if mode == FuzzMode.PITCHFORK:
-        combinations = zip(*wordlists)
+        combinations = zip(*wordlists, strict=False)
     else:
         combinations = itertools.product(*wordlists)
 

@@ -20,8 +20,6 @@ Discovery_Requests issued and **omits** the consumed/remaining budget figures
 rather than reporting a remaining count (Requirement 32.5).
 """
 
-from typing import Optional
-
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from core.logging import get_logger
@@ -46,10 +44,10 @@ class DiscoveryProgress:
             omits the consumed/remaining budget figures (Requirement 32.5).
     """
 
-    def __init__(self, *, enabled: bool, total: Optional[int]):
+    def __init__(self, *, enabled: bool, total: int | None):
         self.enabled = bool(enabled)
         self.total = total
-        self._progress: Optional[Progress] = None
+        self._progress: Progress | None = None
         self._task_id = None
         self._started = False
 

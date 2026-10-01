@@ -3,27 +3,28 @@ SSRF Testing Module
 Implements OWASP API7 - Server Side Request Forgery testing
 """
 
-import re
 import statistics
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
-
-from .registry import OWASPModule
-from utils.findings import Finding
-from utils.http_client import HTTPRequestEngine, Request, Response
-from core.config import SSRFConfig, AuthContext, Severity
-from core.logging import get_logger
 
 # Imported lazily via TYPE_CHECKING to avoid circular imports; the spec_schema
 # attribute is typed as Optional[Any] at runtime.
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from core.config import AuthContext, Severity, SSRFConfig
+from core.logging import get_logger
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine, Response
+
+from .registry import OWASPModule
+
 if TYPE_CHECKING:
-    from utils.spec_import import SpecSchema
+    pass
 
 
 # ---------------------------------------------------------------------------
 # Probe dataclasses
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class InternalProbe:
@@ -42,7 +43,7 @@ class InternalProbe:
 
     payload: str
     logical_target: str
-    extra_headers: Dict[str, str]
+    extra_headers: dict[str, str]
     is_bypass: bool
 
 
@@ -65,7 +66,7 @@ class SchemeProbe:
 
 # Dangerous URL schemes to test for scheme-bypass SSRF vulnerabilities.
 # This extends the legacy ``file://`` / ``ftp://`` pair from SSRFConfig.file_protocols.
-SSRF_SCHEMES: List[str] = [
+SSRF_SCHEMES: list[str] = [
     "file://",
     "ftp://",
     "gopher://",
@@ -76,7 +77,7 @@ SSRF_SCHEMES: List[str] = [
 
 # Cloud provider instance-metadata probes. Each entry carries the full metadata
 # path *and* any provider-required headers so they are forwarded with the probe.
-CLOUD_METADATA_PROBES: List[InternalProbe] = [
+CLOUD_METADATA_PROBES: list[InternalProbe] = [
     # AWS IMDSv1
     InternalProbe(
         payload="http://169.254.169.254/latest/meta-data/iam/security-credentials/",
@@ -116,14 +117,14 @@ CLOUD_METADATA_PROBES: List[InternalProbe] = [
 
 # IP-encoding bypass probes for ``127.0.0.1``. All resolve to loopback but use
 # alternative encodings that naive blocklists may not catch.
-BYPASS_PROBES: List[InternalProbe] = [
-    InternalProbe("http://2130706433/",                   "127.0.0.1", {}, True),  # decimal
-    InternalProbe("http://0177.0.0.1/",                   "127.0.0.1", {}, True),  # octal
-    InternalProbe("http://0x7f000001/",                   "127.0.0.1", {}, True),  # hex
-    InternalProbe("http://[::1]/",                        "127.0.0.1", {}, True),  # IPv6 short
-    InternalProbe("http://[0:0:0:0:0:ffff:127.0.0.1]/",  "127.0.0.1", {}, True),  # IPv6 full
-    InternalProbe("http://0.0.0.0/",                     "127.0.0.1", {}, True),  # zero IP
-    InternalProbe("http://user@127.0.0.1/",              "127.0.0.1", {}, True),  # credentials prefix
+BYPASS_PROBES: list[InternalProbe] = [
+    InternalProbe("http://2130706433/", "127.0.0.1", {}, True),  # decimal
+    InternalProbe("http://0177.0.0.1/", "127.0.0.1", {}, True),  # octal
+    InternalProbe("http://0x7f000001/", "127.0.0.1", {}, True),  # hex
+    InternalProbe("http://[::1]/", "127.0.0.1", {}, True),  # IPv6 short
+    InternalProbe("http://[0:0:0:0:0:ffff:127.0.0.1]/", "127.0.0.1", {}, True),  # IPv6 full
+    InternalProbe("http://0.0.0.0/", "127.0.0.1", {}, True),  # zero IP
+    InternalProbe("http://user@127.0.0.1/", "127.0.0.1", {}, True),  # credentials prefix
 ]
 
 
@@ -149,9 +150,21 @@ SSRF_QUERY_PARAMS = ["url", "uri", "target", "dest", "redirect", "host"]
 # JSON body field names commonly used to supply a URL/host for server-side fetching.
 # These are injected when body_injection is enabled on POST/PUT/PATCH endpoints
 # (Requirement 3.1).
-JSON_BODY_FIELDS: List[str] = [
-    "url", "uri", "target", "webhook", "callback", "imageUrl", "avatarUrl",
-    "feedUrl", "importUrl", "source", "endpoint", "api", "service", "host",
+JSON_BODY_FIELDS: list[str] = [
+    "url",
+    "uri",
+    "target",
+    "webhook",
+    "callback",
+    "imageUrl",
+    "avatarUrl",
+    "feedUrl",
+    "importUrl",
+    "source",
+    "endpoint",
+    "api",
+    "service",
+    "host",
     "destination",
 ]
 
@@ -199,9 +212,13 @@ class SSRFTestingModule(OWASPModule):
     methods (GET/HEAD) and skips state-changing methods entirely.
     """
 
-    def __init__(self, config: SSRFConfig, http_client: HTTPRequestEngine,
-                 auth_contexts: List[AuthContext],
-                 spec_schema: "Optional[Any]" = None):
+    def __init__(
+        self,
+        config: SSRFConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+        spec_schema: "Any | None" = None,
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -222,23 +239,25 @@ class SSRFTestingModule(OWASPModule):
 
         # Deduplication tracker (Requirement 12.5, design §8).
         # Tracks (endpoint_url, category, logical_target) tuples already emitted.
-        self._emitted: Set[Tuple[str, str, str]] = set()
+        self._emitted: set[tuple[str, str, str]] = set()
         # Maps the dedup key to the first-emitted Finding so payloads can be
         # appended when a duplicate is detected.
-        self._emitted_findings: Dict[Tuple[str, str, str], Finding] = {}
+        self._emitted_findings: dict[tuple[str, str, str], Finding] = {}
 
-        self.logger.info("SSRF Testing Module initialized",
-                         internal_targets=len(config.internal_targets),
-                         additional_targets=len(config.additional_internal_targets),
-                         bypass_encodings=config.bypass_encodings,
-                         safe_mode=self.safe_mode,
-                         spec_schema=spec_schema is not None)
+        self.logger.info(
+            "SSRF Testing Module initialized",
+            internal_targets=len(config.internal_targets),
+            additional_targets=len(config.additional_internal_targets),
+            bypass_encodings=config.bypass_encodings,
+            safe_mode=self.safe_mode,
+            spec_schema=spec_schema is not None,
+        )
 
     def get_module_name(self) -> str:
         """Get module name"""
         return "ssrf"
 
-    async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
         """
         Execute SSRF tests on discovered endpoints.
 
@@ -259,11 +278,11 @@ class SSRFTestingModule(OWASPModule):
             self.logger.info("No endpoints provided for SSRF testing")
             return []
 
-        self.logger.info("Starting SSRF testing",
-                         endpoints_count=len(endpoints),
-                         safe_mode=self.safe_mode)
+        self.logger.info(
+            "Starting SSRF testing", endpoints_count=len(endpoints), safe_mode=self.safe_mode
+        )
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         # Use first available auth context for testing
         if self.auth_contexts:
@@ -271,20 +290,25 @@ class SSRFTestingModule(OWASPModule):
 
         internal_probes, scheme_probes = self._build_probe_set()
 
-        self.logger.debug("Probe set built",
-                          internal_probes=len(internal_probes),
-                          scheme_probes=len(scheme_probes))
+        self.logger.debug(
+            "Probe set built",
+            internal_probes=len(internal_probes),
+            scheme_probes=len(scheme_probes),
+        )
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
 
             # Honor safe mode: skip state-changing methods entirely and only
             # probe with non-state-changing methods.
             if self.safe_mode:
                 if method.upper() in STATE_CHANGING_METHODS:
-                    self.logger.debug("Skipping state-changing endpoint in safe mode",
-                                      endpoint=endpoint_url, method=method)
+                    self.logger.debug(
+                        "Skipping state-changing endpoint in safe mode",
+                        endpoint=endpoint_url,
+                        method=method,
+                    )
                     continue
                 if method.upper() not in SAFE_METHODS:
                     method = "GET"
@@ -295,17 +319,13 @@ class SSRFTestingModule(OWASPModule):
                 )
                 findings.extend(endpoint_findings)
             except Exception as e:
-                self.logger.debug("SSRF endpoint test failed",
-                                  endpoint=endpoint_url,
-                                  error=str(e))
+                self.logger.debug("SSRF endpoint test failed", endpoint=endpoint_url, error=str(e))
 
             try:
                 port_scan_findings = await self._test_port_scan(endpoint_url, method)
                 findings.extend(port_scan_findings)
             except Exception as e:
-                self.logger.debug("SSRF port scan test failed",
-                                  endpoint=endpoint_url,
-                                  error=str(e))
+                self.logger.debug("SSRF port scan test failed", endpoint=endpoint_url, error=str(e))
 
             try:
                 redirect_chain_findings = await self._test_redirect_chain(
@@ -313,15 +333,13 @@ class SSRFTestingModule(OWASPModule):
                 )
                 findings.extend(redirect_chain_findings)
             except Exception as e:
-                self.logger.debug("SSRF redirect-chain test failed",
-                                  endpoint=endpoint_url,
-                                  error=str(e))
+                self.logger.debug(
+                    "SSRF redirect-chain test failed", endpoint=endpoint_url, error=str(e)
+                )
 
         # --- Import sources (Full_Replay_Mode) ---
         # Load Burp XML / HAR requests and probe each one independently.
-        has_import_sources = bool(
-            self.config.burp_xml_path or self.config.har_path
-        )
+        has_import_sources = bool(self.config.burp_xml_path or self.config.har_path)
         if has_import_sources:
             try:
                 imported_requests = self._load_import_sources()
@@ -339,6 +357,7 @@ class SSRFTestingModule(OWASPModule):
                 first = endpoints[0]
                 raw = first.url if hasattr(first, "url") else str(first)
                 from urllib.parse import urlsplit, urlunsplit
+
                 parts = urlsplit(raw)
                 base_url = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
 
@@ -356,16 +375,21 @@ class SSRFTestingModule(OWASPModule):
                         error=str(exc),
                     )
 
-        self.logger.info("SSRF testing completed",
-                         total_findings=len(findings),
-                         critical_findings=len([f for f in findings
-                                                if f.severity == Severity.CRITICAL]))
+        self.logger.info(
+            "SSRF testing completed",
+            total_findings=len(findings),
+            critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]),
+        )
 
         return findings
 
-    async def _test_endpoint(self, endpoint_url: str, method: str,
-                             internal_probes: List[InternalProbe],
-                             scheme_probes: List[SchemeProbe]) -> List[Finding]:
+    async def _test_endpoint(
+        self,
+        endpoint_url: str,
+        method: str,
+        internal_probes: list[InternalProbe],
+        scheme_probes: list[SchemeProbe],
+    ) -> list[Finding]:
         """
         Test a single endpoint by injecting internal probes and scheme probes
         into query parameters and SSRF-prone headers, then delegating to body
@@ -383,7 +407,7 @@ class SSRFTestingModule(OWASPModule):
           ``FILE_PROTOCOL_ACCESS`` (CRITICAL).
         All findings are routed through ``_dedup_finding()`` before appending.
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         # Cloud metadata logical targets — probes for these emit SSRF_CLOUD_METADATA
         # when a signature match is found (Requirement 6.6, 2.4).
@@ -394,7 +418,7 @@ class SSRFTestingModule(OWASPModule):
             payload = probe.payload
 
             for injection_type, probe_kwargs in (
-                ("query", {"params": {p: payload for p in SSRF_QUERY_PARAMS}}),
+                ("query", {"params": dict.fromkeys(SSRF_QUERY_PARAMS, payload)}),
                 ("header", {"headers": self._build_probe_headers(probe, payload)}),
             ):
                 result = await self._probe(endpoint_url, method, **probe_kwargs)
@@ -414,7 +438,8 @@ class SSRFTestingModule(OWASPModule):
                     self._match_signature(
                         self._response_text(result) if result else "",
                         INTERNAL_TARGET_SIGNATURES,
-                    ) is not None
+                    )
+                    is not None
                 )
 
                 # --- Category/severity override ---
@@ -447,8 +472,8 @@ class SSRFTestingModule(OWASPModule):
             payload = probe.payload
 
             for injection_type, probe_kwargs in (
-                ("query", {"params": {p: payload for p in SSRF_QUERY_PARAMS}}),
-                ("header", {"headers": {h: payload for h in SSRF_PRONE_HEADERS}}),
+                ("query", {"params": dict.fromkeys(SSRF_QUERY_PARAMS, payload)}),
+                ("header", {"headers": dict.fromkeys(SSRF_PRONE_HEADERS, payload)}),
             ):
                 result = await self._probe(endpoint_url, method, **probe_kwargs)
 
@@ -482,9 +507,7 @@ class SSRFTestingModule(OWASPModule):
                         endpoint=endpoint_url,
                         method=method,
                         status_code=result.status_code,
-                        response_size=(
-                            len(result.content) if result.content is not None else 0
-                        ),
+                        response_size=(len(result.content) if result.content is not None else 0),
                         response_time=result.elapsed,
                         evidence=(
                             f"Dangerous URL scheme '{probe.scheme}://' returned a "
@@ -517,7 +540,7 @@ class SSRFTestingModule(OWASPModule):
 
         return findings
 
-    def _build_probe_headers(self, probe: "InternalProbe", payload: str) -> Dict[str, str]:
+    def _build_probe_headers(self, probe: "InternalProbe", payload: str) -> dict[str, str]:
         """Build the header dict for an InternalProbe injection.
 
         Merges the standard SSRF-prone headers (each set to *payload*) with any
@@ -526,7 +549,7 @@ class SSRFTestingModule(OWASPModule):
         probe payload on any key collision, which is intentional: provider
         headers must take their specific values rather than the SSRF payload.
         """
-        headers = {h: payload for h in SSRF_PRONE_HEADERS}
+        headers = dict.fromkeys(SSRF_PRONE_HEADERS, payload)
         if probe.extra_headers:
             headers.update(probe.extra_headers)
         return headers
@@ -535,9 +558,9 @@ class SSRFTestingModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-        internal_probes: "List[InternalProbe]",
-        scheme_probes: "List[SchemeProbe]",
-    ) -> "List[Finding]":
+        internal_probes: "list[InternalProbe]",
+        scheme_probes: "list[SchemeProbe]",
+    ) -> "list[Finding]":
         """JSON body injection for POST/PUT/PATCH endpoints (Requirement 3).
 
         For each JSON body field name in ``JSON_BODY_FIELDS``, this method
@@ -593,15 +616,11 @@ class SSRFTestingModule(OWASPModule):
         # This is the fix for the common case where discovery only sees the
         # endpoint as GET but the API actually accepts a URL in a POST body.
         body_methods_override = [
-            m.upper() for m in (self.config.body_injection_methods or [])
-            if m.strip()
+            m.upper() for m in (self.config.body_injection_methods or []) if m.strip()
         ]
         if body_methods_override:
             # Operator-forced methods: only keep the body-carrying ones.
-            effective_methods = [
-                m for m in body_methods_override
-                if m in {"POST", "PUT", "PATCH"}
-            ]
+            effective_methods = [m for m in body_methods_override if m in {"POST", "PUT", "PATCH"}]
             if not effective_methods:
                 self.logger.debug(
                     "body_injection_methods configured but none are POST/PUT/PATCH; "
@@ -616,7 +635,7 @@ class SSRFTestingModule(OWASPModule):
                 return []
             effective_methods = [method.upper()]
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
         # JSON Content-Type header required for body injection probes.
         json_content_type_header = {"Content-Type": "application/json"}
 
@@ -656,9 +675,7 @@ class SSRFTestingModule(OWASPModule):
                         continue
 
                     # Enrich evidence with the field name and method used (Req 3.5, 13.3).
-                    raw_finding.evidence = (
-                        f"[body:{field_name}] {raw_finding.evidence}"
-                    )
+                    raw_finding.evidence = f"[body:{field_name}] {raw_finding.evidence}"
                     # Enrich payload field to record injection type, method and field name.
                     raw_finding.payload = f"body[{field_name}]={probe.payload}"
                     raw_finding.method = probe_method
@@ -671,7 +688,8 @@ class SSRFTestingModule(OWASPModule):
                         self._match_signature(
                             self._response_text(result) if result else "",
                             INTERNAL_TARGET_SIGNATURES,
-                        ) is not None
+                        )
+                        is not None
                     )
 
                     if probe.is_bypass and (signature_matched or is_2xx):
@@ -718,9 +736,7 @@ class SSRFTestingModule(OWASPModule):
 
                     if file_finding is not None:
                         # Enrich evidence and payload with body-injection context.
-                        file_finding.evidence = (
-                            f"[body:{field_name}] {file_finding.evidence}"
-                        )
+                        file_finding.evidence = f"[body:{field_name}] {file_finding.evidence}"
                         file_finding.payload = f"body[{field_name}]={probe.payload}"
                         deduped = self._dedup_finding(file_finding, probe.scheme)
                         if deduped is not None:
@@ -773,7 +789,7 @@ class SSRFTestingModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-    ) -> "List[Finding]":
+    ) -> "list[Finding]":
         """Out-of-band / blind SSRF detection via callback URL injection (Req 4).
 
         Injects the operator-supplied ``config.callback_url`` into every
@@ -808,7 +824,7 @@ class SSRFTestingModule(OWASPModule):
             return []
 
         callback_url: str = self.config.callback_url
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         OOB_RECOMMENDATION = (
             "Check your out-of-band (OOB) listener (e.g. Burp Collaborator, Interactsh) "
@@ -818,7 +834,7 @@ class SSRFTestingModule(OWASPModule):
             "features in the application."
         )
 
-        def _is_blind_hit(result: Optional[Response]) -> bool:
+        def _is_blind_hit(result: Response | None) -> bool:
             """True when response is 2xx with no reflected internal-target content."""
             if result is None:
                 return False
@@ -940,7 +956,7 @@ class SSRFTestingModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-    ) -> "List[Finding]":
+    ) -> "list[Finding]":
         """Internal port scanning via SSRF probes (Requirements 7.1–7.5, 2.5, 10.3).
 
         Injects ``http://127.0.0.1:{port}/`` payloads into every ``SSRF_QUERY_PARAMS``
@@ -986,13 +1002,13 @@ class SSRFTestingModule(OWASPModule):
             return []
 
         # Collect (port, status_code, response_time_ms) for every probe.
-        results: List[Tuple[int, int, float]] = []
+        results: list[tuple[int, int, float]] = []
 
         for port in self.config.scan_ports:
             payload = f"http://127.0.0.1:{port}/"
             # Inject into each query param and take the first non-None response
             # (or None if all fail).
-            response: Optional[Response] = None
+            response: Response | None = None
             for param in SSRF_QUERY_PARAMS:
                 response = await self._probe(
                     endpoint_url,
@@ -1018,7 +1034,7 @@ class SSRFTestingModule(OWASPModule):
         all_times = [r[2] for r in results]
         median_ms: float = statistics.median(all_times)
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         for port, status_code, response_time_ms in results:
             # Emit when status is outside the 4xx range OR the response was
@@ -1083,8 +1099,8 @@ class SSRFTestingModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-        internal_probes: "List[InternalProbe]",
-    ) -> "List[Finding]":
+        internal_probes: "list[InternalProbe]",
+    ) -> "list[Finding]":
         """Redirect-chain SSRF detection (Requirements 8.1–8.3, 10.4).
 
         Tests for open-redirect-based SSRF by injecting two redirect-chain
@@ -1127,7 +1143,7 @@ class SSRFTestingModule(OWASPModule):
         if self.config.safe_mode:
             return []
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         for probe in internal_probes:
             target = probe.logical_target
@@ -1148,11 +1164,11 @@ class SSRFTestingModule(OWASPModule):
                 for injection_type, probe_kwargs in (
                     (
                         "query",
-                        {"params": {p: payload for p in SSRF_QUERY_PARAMS}},
+                        {"params": dict.fromkeys(SSRF_QUERY_PARAMS, payload)},
                     ),
                     (
                         "header",
-                        {"headers": {h: payload for h in SSRF_PRONE_HEADERS}},
+                        {"headers": dict.fromkeys(SSRF_PRONE_HEADERS, payload)},
                     ),
                 ):
                     result = await self._probe(endpoint_url, method, **probe_kwargs)
@@ -1185,9 +1201,7 @@ class SSRFTestingModule(OWASPModule):
                         endpoint=endpoint_url,
                         method=method,
                         status_code=result.status_code,
-                        response_size=(
-                            len(result.content) if result.content is not None else 0
-                        ),
+                        response_size=(len(result.content) if result.content is not None else 0),
                         response_time=result.elapsed,
                         evidence=(
                             f"Internal target content reached via {technique} "
@@ -1213,7 +1227,7 @@ class SSRFTestingModule(OWASPModule):
 
         return findings
 
-    def _dedup_finding(self, finding: Finding, logical_target: str) -> Optional[Finding]:
+    def _dedup_finding(self, finding: Finding, logical_target: str) -> Finding | None:
         """Deduplicate findings by ``(endpoint_url, category, logical_target)``.
 
         This implements the deduplication tracker described in design §8 and
@@ -1246,8 +1260,8 @@ class SSRFTestingModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-        imported_request: "Optional[Any]" = None,
-    ) -> List[str]:
+        imported_request: "Any | None" = None,
+    ) -> list[str]:
         """Resolve body field names via the priority chain (highest → lowest):
 
         1. ``extra_body_fields`` from ``--ssrf-body-field``
@@ -1258,7 +1272,7 @@ class SSRFTestingModule(OWASPModule):
         Deduplication preserves first-seen order.
         """
         seen: set = set()
-        result: List[str] = []
+        result: list[str] = []
 
         def _add(fields):
             for f in fields:
@@ -1276,6 +1290,7 @@ class SSRFTestingModule(OWASPModule):
         # 3. Spec-aware fields (only when no imported_request provided).
         if imported_request is None and self.spec_schema is not None:
             from urllib.parse import urlsplit
+
             path = urlsplit(endpoint_url).path or "/"
             operation = self.spec_schema.operation_for(path, method)
             if operation is not None:
@@ -1283,15 +1298,32 @@ class SSRFTestingModule(OWASPModule):
                 if schema and isinstance(schema.get("properties"), dict):
                     declared_props = list(schema["properties"].keys())
                     ssrf_prone_set = set(JSON_BODY_FIELDS)
-                    URL_KEYWORDS = {"url", "uri", "host", "endpoint", "target",
-                                    "webhook", "callback", "redirect", "link",
-                                    "href", "src", "source", "dest", "destination",
-                                    "fetch", "import", "feed", "avatar", "image",
-                                    "thumbnail"}
+                    URL_KEYWORDS = {
+                        "url",
+                        "uri",
+                        "host",
+                        "endpoint",
+                        "target",
+                        "webhook",
+                        "callback",
+                        "redirect",
+                        "link",
+                        "href",
+                        "src",
+                        "source",
+                        "dest",
+                        "destination",
+                        "fetch",
+                        "import",
+                        "feed",
+                        "avatar",
+                        "image",
+                        "thumbnail",
+                    }
                     spec_fields = [
-                        f for f in declared_props
-                        if f in ssrf_prone_set
-                        or any(kw in f.lower() for kw in URL_KEYWORDS)
+                        f
+                        for f in declared_props
+                        if f in ssrf_prone_set or any(kw in f.lower() for kw in URL_KEYWORDS)
                     ]
                     _add(spec_fields)
 
@@ -1300,15 +1332,15 @@ class SSRFTestingModule(OWASPModule):
 
         return result
 
-    def _load_import_sources(self) -> "List[Any]":
+    def _load_import_sources(self) -> "list[Any]":
         """Load all import sources and return a combined list of ImportedRequests.
 
         Raises ``ImportSourceError`` before any probes if a file is missing or
         unparseable (Requirement 12).
         """
-        from utils.import_sources import BurpXmlImporter, HarImporter, ImportSourceError
+        from utils.import_sources import BurpXmlImporter, HarImporter
 
-        imported: List[Any] = []
+        imported: list[Any] = []
 
         if self.config.burp_xml_path:
             self.logger.info(
@@ -1344,9 +1376,9 @@ class SSRFTestingModule(OWASPModule):
         self,
         imported_req: "Any",
         base_url: str,
-        internal_probes: List[InternalProbe],
-        scheme_probes: List[SchemeProbe],
-    ) -> List[Finding]:
+        internal_probes: list[InternalProbe],
+        scheme_probes: list[SchemeProbe],
+    ) -> list[Finding]:
         """Full_Replay_Mode: probe an endpoint derived from an ImportedRequest.
 
         The original headers (auth, cookies, etc.) are preserved in every probe
@@ -1381,6 +1413,7 @@ class SSRFTestingModule(OWASPModule):
         # Build the full probe URL: target base + imported path (Requirement 10).
         # Strip scheme and host from the path if it is a full URL (Req 10.3).
         from urllib.parse import urlsplit, urlunsplit
+
         _path_parts = urlsplit(imported_req.path)
         if _path_parts.scheme and _path_parts.netloc:
             # Full URL — keep only path and query string.
@@ -1396,7 +1429,7 @@ class SSRFTestingModule(OWASPModule):
         if not body_fields:
             return []
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
         # Merge original headers as the base; add Content-Type if missing.
         # The imported request carries its own auth/cookie headers (Req 9.1), so
         # we temporarily clear the module-level auth context to prevent it from
@@ -1421,7 +1454,8 @@ class SSRFTestingModule(OWASPModule):
                     body[field_name] = probe.payload
 
                     result = await self._probe(
-                        probe_url, method,
+                        probe_url,
+                        method,
                         headers=base_headers,
                         json=body,
                     )
@@ -1442,7 +1476,8 @@ class SSRFTestingModule(OWASPModule):
                         self._match_signature(
                             self._response_text(result) if result else "",
                             INTERNAL_TARGET_SIGNATURES,
-                        ) is not None
+                        )
+                        is not None
                     )
 
                     if probe.is_bypass and (sig_matched or is_2xx):
@@ -1473,7 +1508,8 @@ class SSRFTestingModule(OWASPModule):
                     body[field_name] = probe.payload
 
                     result = await self._probe(
-                        probe_url, method,
+                        probe_url,
+                        method,
                         headers=base_headers,
                         json=body,
                     )
@@ -1491,7 +1527,8 @@ class SSRFTestingModule(OWASPModule):
                             findings.append(deduped)
                     elif result is not None and result.status_code < 500:
                         bypass_finding = Finding(
-                            id="", scan_id="",
+                            id="",
+                            scan_id="",
                             category="SSRF_SCHEME_BYPASS",
                             owasp_category="API7",
                             severity=Severity.HIGH,
@@ -1526,7 +1563,7 @@ class SSRFTestingModule(OWASPModule):
 
         return findings
 
-    def _build_probe_set(self) -> Tuple[List[InternalProbe], List[SchemeProbe]]:
+    def _build_probe_set(self) -> tuple[list[InternalProbe], list[SchemeProbe]]:
         """
         Build the full probe set from config and module-level constants.
 
@@ -1543,20 +1580,22 @@ class SSRFTestingModule(OWASPModule):
         Returns:
             Tuple of (internal_probes, scheme_probes).
         """
-        internal_probes: List[InternalProbe] = []
+        internal_probes: list[InternalProbe] = []
 
         # 1. Built-in internal_targets from config
-        for target in (self.config.internal_targets or []):
+        for target in self.config.internal_targets or []:
             if "://" in target:
                 payload = target
             else:
                 payload = f"http://{target}/"
-            internal_probes.append(InternalProbe(
-                payload=payload,
-                logical_target=target,
-                extra_headers={},
-                is_bypass=False,
-            ))
+            internal_probes.append(
+                InternalProbe(
+                    payload=payload,
+                    logical_target=target,
+                    extra_headers={},
+                    is_bypass=False,
+                )
+            )
 
         # 2. Cloud metadata probes (constant)
         internal_probes.extend(CLOUD_METADATA_PROBES)
@@ -1566,20 +1605,22 @@ class SSRFTestingModule(OWASPModule):
             internal_probes.extend(BYPASS_PROBES)
 
         # 4. User-supplied additional internal targets
-        for target in (self.config.additional_internal_targets or []):
+        for target in self.config.additional_internal_targets or []:
             if "://" in target:
                 payload = target
             else:
                 payload = f"http://{target}/"
-            internal_probes.append(InternalProbe(
-                payload=payload,
-                logical_target=target,
-                extra_headers={},
-                is_bypass=False,
-            ))
+            internal_probes.append(
+                InternalProbe(
+                    payload=payload,
+                    logical_target=target,
+                    extra_headers={},
+                    is_bypass=False,
+                )
+            )
 
         # --- Scheme probes ---
-        scheme_probes: List[SchemeProbe] = []
+        scheme_probes: list[SchemeProbe] = []
 
         def _scheme_probe_from_string(scheme: str) -> SchemeProbe:
             """Convert a raw scheme string (e.g. ``"file://"``) into a SchemeProbe."""
@@ -1595,7 +1636,7 @@ class SSRFTestingModule(OWASPModule):
             scheme_probes.append(_scheme_probe_from_string(scheme))
 
         # 2. User-supplied additional schemes
-        for scheme in (self.config.additional_schemes or []):
+        for scheme in self.config.additional_schemes or []:
             scheme_probes.append(_scheme_probe_from_string(scheme))
 
         return internal_probes, scheme_probes
@@ -1615,34 +1656,42 @@ class SSRFTestingModule(OWASPModule):
         # ftp:// or other protocols
         return f"{protocol}//127.0.0.1/etc/passwd"
 
-    async def _probe(self, endpoint_url: str, method: str,
-                     params: Optional[Dict[str, str]] = None,
-                     headers: Optional[Dict[str, str]] = None,
-                     json: Optional[Dict[str, Any]] = None) -> Optional[Response]:
+    async def _probe(
+        self,
+        endpoint_url: str,
+        method: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Response | None:
         """
         Issue a single probe request. Returns the Response or None on failure.
         Per-probe exceptions are logged at debug and swallowed so they do not
         abort the whole module.
         """
         try:
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             if params:
-                kwargs['params'] = params
+                kwargs["params"] = params
             if headers:
-                kwargs['headers'] = headers
+                kwargs["headers"] = headers
             if json is not None:
-                kwargs['json'] = json
+                kwargs["json"] = json
             return await self.http_client.request(method, endpoint_url, **kwargs)
         except Exception as e:
-            self.logger.debug("SSRF probe request failed",
-                              endpoint=endpoint_url,
-                              method=method,
-                              error=str(e))
+            self.logger.debug(
+                "SSRF probe request failed", endpoint=endpoint_url, method=method, error=str(e)
+            )
             return None
 
-    def _analyze_internal_response(self, endpoint_url: str, method: str, payload: str,
-                                   response: Optional[Response],
-                                   injection_point: str) -> Optional[Finding]:
+    def _analyze_internal_response(
+        self,
+        endpoint_url: str,
+        method: str,
+        payload: str,
+        response: Response | None,
+        injection_point: str,
+    ) -> Finding | None:
         """
         Detect internal/metadata access. A finding is emitted when:
         - The response body contains an INTERNAL_TARGET_SIGNATURES match, OR
@@ -1663,9 +1712,9 @@ class SSRFTestingModule(OWASPModule):
         matched = self._match_signature(body, INTERNAL_TARGET_SIGNATURES)
 
         signature_hit = matched is not None
-        success_codes = getattr(self.config, 'success_status_codes', list(range(200, 300)))
+        success_codes = getattr(self.config, "success_status_codes", list(range(200, 300)))
         success_hit = response.status_code in success_codes
-        require_sig = getattr(self.config, 'require_signature', False)
+        require_sig = getattr(self.config, "require_signature", False)
 
         # When require_signature is True, plain success responses without a
         # body signature are not evidence of SSRF — suppress the finding.
@@ -1677,17 +1726,23 @@ class SSRFTestingModule(OWASPModule):
                 return None
 
         if signature_hit:
-            evidence = (f"Internal target content reached via {injection_point} injection. "
-                        f"Signature matched: '{matched}'. Status: {response.status_code}.")
+            evidence = (
+                f"Internal target content reached via {injection_point} injection. "
+                f"Signature matched: '{matched}'. Status: {response.status_code}."
+            )
         else:
-            evidence = (f"Injected internal target returned a successful response "
-                        f"({response.status_code}) via {injection_point} injection, "
-                        f"indicating the server fetched the supplied target.")
+            evidence = (
+                f"Injected internal target returned a successful response "
+                f"({response.status_code}) via {injection_point} injection, "
+                f"indicating the server fetched the supplied target."
+            )
 
-        self.logger.warning("Potential SSRF internal access detected",
-                            endpoint=endpoint_url,
-                            injection_point=injection_point,
-                            payload=payload)
+        self.logger.warning(
+            "Potential SSRF internal access detected",
+            endpoint=endpoint_url,
+            injection_point=injection_point,
+            payload=payload,
+        )
 
         return Finding(
             id="",
@@ -1702,15 +1757,20 @@ class SSRFTestingModule(OWASPModule):
             response_time=response.elapsed,
             evidence=evidence,
             recommendation="Validate and allow-list outbound request targets. Block access to "
-                           "internal/loopback and cloud-metadata addresses, disable unused URL "
-                           "fetch features, and do not reflect user-controlled hosts/headers into "
-                           "server-side requests.",
-            payload=f"{injection_point}={payload}"
+            "internal/loopback and cloud-metadata addresses, disable unused URL "
+            "fetch features, and do not reflect user-controlled hosts/headers into "
+            "server-side requests.",
+            payload=f"{injection_point}={payload}",
         )
 
-    def _analyze_file_response(self, endpoint_url: str, method: str, payload: str,
-                               response: Optional[Response],
-                               injection_point: str) -> Optional[Finding]:
+    def _analyze_file_response(
+        self,
+        endpoint_url: str,
+        method: str,
+        payload: str,
+        response: Response | None,
+        injection_point: str,
+    ) -> Finding | None:
         """
         Detect file-protocol access by matching file-system content signatures
         (e.g. /etc/passwd markers, directory listings) in the response body.
@@ -1724,10 +1784,12 @@ class SSRFTestingModule(OWASPModule):
         if matched is None:
             return None
 
-        self.logger.warning("Potential file-protocol access detected",
-                            endpoint=endpoint_url,
-                            injection_point=injection_point,
-                            payload=payload)
+        self.logger.warning(
+            "Potential file-protocol access detected",
+            endpoint=endpoint_url,
+            injection_point=injection_point,
+            payload=payload,
+        )
 
         return Finding(
             id="",
@@ -1740,30 +1802,32 @@ class SSRFTestingModule(OWASPModule):
             status_code=response.status_code,
             response_size=len(response.content) if response.content is not None else 0,
             response_time=response.elapsed,
-            evidence=(f"File-system content returned via {injection_point} injection of a "
-                      f"file/ftp-protocol payload. Signature matched: '{matched}'. "
-                      f"Status: {response.status_code}."),
+            evidence=(
+                f"File-system content returned via {injection_point} injection of a "
+                f"file/ftp-protocol payload. Signature matched: '{matched}'. "
+                f"Status: {response.status_code}."
+            ),
             recommendation="Disable support for dangerous URL schemes (file://, ftp://, gopher://, "
-                           "etc.) in server-side fetchers. Allow-list permitted schemes/hosts and "
-                           "reject user-supplied protocol handlers.",
-            payload=f"{injection_point}={payload}"
+            "etc.) in server-side fetchers. Allow-list permitted schemes/hosts and "
+            "reject user-supplied protocol handlers.",
+            payload=f"{injection_point}={payload}",
         )
 
     @staticmethod
     def _response_text(response: Response) -> str:
         """Safely extract text content from a response for signature matching."""
-        if getattr(response, 'text', None):
+        if getattr(response, "text", None):
             return response.text
-        content = getattr(response, 'content', None)
+        content = getattr(response, "content", None)
         if content:
             try:
-                return content.decode('utf-8', errors='ignore')
+                return content.decode("utf-8", errors="ignore")
             except Exception:
                 return ""
         return ""
 
     @staticmethod
-    def _match_signature(body: str, signatures: List[str]) -> Optional[str]:
+    def _match_signature(body: str, signatures: list[str]) -> str | None:
         """Return the first signature found in the body (case-insensitive)."""
         if not body:
             return None

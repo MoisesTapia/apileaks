@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type
+from typing import TYPE_CHECKING, Any, Optional
 
 import yaml
 
@@ -35,11 +35,13 @@ def _default_secret_patterns() -> "dict[str, str]":
     :class:`SecretScanConfig` is actually instantiated breaks that cycle.
     """
     from utils.secret_scanner import DEFAULT_SECRET_PATTERNS
+
     return dict(DEFAULT_SECRET_PATTERNS)
 
 
 class Severity(str, Enum):
     """Finding severity levels"""
+
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
@@ -49,6 +51,7 @@ class Severity(str, Enum):
 
 class AuthType(str, Enum):
     """Authentication types"""
+
     BEARER = "bearer"
     BASIC = "basic"
     API_KEY = "api_key"
@@ -58,6 +61,7 @@ class AuthType(str, Enum):
 @dataclass
 class TargetConfig:
     """Target configuration"""
+
     base_url: str
     api_version: str | None = None
     default_method: str = "GET"
@@ -68,6 +72,7 @@ class TargetConfig:
 @dataclass
 class EndpointFuzzingConfig:
     """Endpoint fuzzing configuration"""
+
     enabled: bool = True
     wordlist: str = "wordlists/endpoints.txt"
     methods: list[str] = field(default_factory=lambda: ["GET", "POST", "PUT", "DELETE"])
@@ -108,7 +113,7 @@ class EndpointFuzzingConfig:
     fuzz_mode: str = "clusterbomb"
     # Per-marker wordlists in marker order (Requirement 39/43). ``None`` means no
     # marker mode is configured, preserving the wordlist/candidate_set paths.
-    marker_wordlists: Optional[List[List[str]]] = None
+    marker_wordlists: list[list[str]] | None = None
     # Rich SpecSchema loaded from --openapi / --postman sources. When not None,
     # the EndpointFuzzer uses the declared per-route parameters, headers, and
     # request body to send contextually correct requests (spec-aware mode).
@@ -125,12 +130,13 @@ class EndpointFuzzingConfig:
     # (non-404) responses during scanning, discovery is halted early and the host
     # is flagged as a wildcard. 0 disables the feature. Defaults to 10, matching
     # the EndpointFuzzer.DEFAULT_QUARANTINE_THRESHOLD.
-    quarantine_threshold: Optional[int] = None  # None => use class default (10)
+    quarantine_threshold: int | None = None  # None => use class default (10)
 
 
 @dataclass
 class ParameterFuzzingConfig:
     """Parameter fuzzing configuration"""
+
     enabled: bool = True
     query_wordlist: str = "wordlists/parameters.txt"
     body_wordlist: str = "wordlists/parameters.txt"
@@ -168,6 +174,7 @@ class ParameterFuzzingConfig:
 @dataclass
 class HeaderFuzzingConfig:
     """Header fuzzing configuration"""
+
     enabled: bool = True
     wordlist: str = "wordlists/headers.txt"
     custom_headers: dict[str, str] = field(default_factory=dict)
@@ -187,6 +194,7 @@ class HitConfirmationConfig:
     confirmation requests. ``enabled=False`` (the default) preserves the
     existing single-request behavior (Requirement 35.1).
     """
+
     enabled: bool = False
     count: int = 1
 
@@ -194,6 +202,7 @@ class HitConfirmationConfig:
 @dataclass
 class FuzzingConfig:
     """Fuzzing configuration"""
+
     endpoints: EndpointFuzzingConfig = field(default_factory=EndpointFuzzingConfig)
     parameters: ParameterFuzzingConfig = field(default_factory=ParameterFuzzingConfig)
     headers: HeaderFuzzingConfig = field(default_factory=HeaderFuzzingConfig)
@@ -255,6 +264,7 @@ class FuzzingConfig:
 @dataclass
 class BOLAConfig:
     """BOLA testing configuration"""
+
     enabled: bool = True
     id_patterns: list[str] = field(default_factory=lambda: ["sequential", "guid", "uuid"])
     test_contexts: list[str] = field(default_factory=lambda: ["anonymous", "user", "admin"])
@@ -289,6 +299,7 @@ class BOLAConfig:
 @dataclass
 class AuthTestingConfig:
     """Authentication testing configuration"""
+
     enabled: bool = True
     jwt_testing: bool = True
     weak_secrets_wordlist: str = "wordlists/jwt_secrets.txt"
@@ -355,7 +366,7 @@ class AuthTestingConfig:
     # -------------------------------------------------------------------
     # URL of the OTP/MFA verification endpoint (e.g. /api/v1/auth/otp/verify).
     # Required for OTP brute-force and OTP race-condition probes.
-    otp_endpoint: Optional[str] = None
+    otp_endpoint: str | None = None
     # Number of digits in the OTP code (4 or 6 are the most common).
     otp_digits: int = 6
     # JSON field name carrying the OTP code in the verification request body.
@@ -363,7 +374,7 @@ class AuthTestingConfig:
     # Session / provisional token field name sent alongside the OTP code.
     otp_session_field: str = "session_token"
     # Operator-supplied provisional/session token obtained before the OTP step.
-    otp_session_token: Optional[str] = None
+    otp_session_token: str | None = None
     # Number of parallel goroutines for the OTP race-condition probe.
     otp_race_concurrency: int = 50
     # -------------------------------------------------------------------
@@ -397,13 +408,14 @@ class AuthTestingConfig:
 @dataclass
 class PropertyTestingConfig:
     """Property level authorization testing configuration"""
+
     enabled: bool = True
-    sensitive_fields: list[str] = field(default_factory=lambda: [
-        "password", "api_key", "secret", "token", "ssn", "credit_card"
-    ])
-    mass_assignment_fields: list[str] = field(default_factory=lambda: [
-        "is_admin", "role", "permissions", "user_id"
-    ])
+    sensitive_fields: list[str] = field(
+        default_factory=lambda: ["password", "api_key", "secret", "token", "ssn", "credit_card"]
+    )
+    mass_assignment_fields: list[str] = field(
+        default_factory=lambda: ["is_admin", "role", "permissions", "user_id"]
+    )
     # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
     # the global safe_mode setting (subtask 4.2). Defaults to False.
     safe_mode: bool = False
@@ -412,20 +424,22 @@ class PropertyTestingConfig:
 @dataclass
 class ResourceTestingConfig:
     """Resource consumption testing configuration"""
+
     enabled: bool = True
     burst_size: int = 100
-    large_payload_sizes: list[int] = field(default_factory=lambda: [1024*1024, 10*1024*1024])
+    large_payload_sizes: list[int] = field(default_factory=lambda: [1024 * 1024, 10 * 1024 * 1024])
     json_depth_limit: int = 1000
 
 
 @dataclass
 class FunctionAuthConfig:
     """Function level authorization testing configuration (OWASP API5)."""
+
     enabled: bool = True
     # Known administrative URL path prefixes to probe with low-privilege tokens.
-    admin_endpoints: list[str] = field(default_factory=lambda: [
-        "/admin", "/api/admin", "/management", "/dashboard"
-    ])
+    admin_endpoints: list[str] = field(
+        default_factory=lambda: ["/admin", "/api/admin", "/management", "/dashboard"]
+    )
     # HTTP methods treated as privileged for verb-tampering probes.
     dangerous_methods: list[str] = field(default_factory=lambda: ["DELETE", "PUT", "PATCH"])
     # -----------------------------------------------------------------------
@@ -440,35 +454,68 @@ class FunctionAuthConfig:
     # Level 3 – Mass-assignment role injection.
     # JSON field names and values tried as privilege-escalation payloads.
     # -----------------------------------------------------------------------
-    role_fields: list[str] = field(default_factory=lambda: [
-        "role", "roles", "user_role", "userRole", "user_type", "userType",
-        "is_admin", "isAdmin", "admin", "privilege", "access_level",
-        "accessLevel", "permission", "permissions",
-    ])
-    role_values: list[str] = field(default_factory=lambda: [
-        "admin", "administrator", "ADMIN", "SUPER_ADMIN", "superadmin",
-        "root", "owner", "manager",
-    ])
+    role_fields: list[str] = field(
+        default_factory=lambda: [
+            "role",
+            "roles",
+            "user_role",
+            "userRole",
+            "user_type",
+            "userType",
+            "is_admin",
+            "isAdmin",
+            "admin",
+            "privilege",
+            "access_level",
+            "accessLevel",
+            "permission",
+            "permissions",
+        ]
+    )
+    role_values: list[str] = field(
+        default_factory=lambda: [
+            "admin",
+            "administrator",
+            "ADMIN",
+            "SUPER_ADMIN",
+            "superadmin",
+            "root",
+            "owner",
+            "manager",
+        ]
+    )
     # -----------------------------------------------------------------------
     # Level 4 – API version downgrade.
     # Version strings to try when downgrading discovered versioned endpoints.
     # -----------------------------------------------------------------------
-    api_versions: list[str] = field(default_factory=lambda: [
-        "v1", "v2", "v3", "v4", "v0",
-    ])
+    api_versions: list[str] = field(
+        default_factory=lambda: [
+            "v1",
+            "v2",
+            "v3",
+            "v4",
+            "v0",
+        ]
+    )
     # -----------------------------------------------------------------------
     # Output – persist BFLA matrix to a JSON file for downstream analysis.
     # -----------------------------------------------------------------------
-    bfla_output_file: Optional[str] = None
+    bfla_output_file: str | None = None
 
 
 @dataclass
 class SSRFConfig:
     """SSRF testing configuration"""
+
     enabled: bool = True
-    internal_targets: list[str] = field(default_factory=lambda: [
-        "127.0.0.1", "localhost", "169.254.169.254", "metadata.google.internal"
-    ])
+    internal_targets: list[str] = field(
+        default_factory=lambda: [
+            "127.0.0.1",
+            "localhost",
+            "169.254.169.254",
+            "metadata.google.internal",
+        ]
+    )
     file_protocols: list[str] = field(default_factory=lambda: ["file://", "ftp://"])
 
     # Expanded fields (Requirement 1.1–1.7)
@@ -483,9 +530,9 @@ class SSRFConfig:
     # Gate for internal port-scanning probes (Req 1.5).
     allow_port_scan: bool = False
     # Ports to probe when allow_port_scan is True (Req 1.6).
-    scan_ports: list[int] = field(default_factory=lambda: [
-        22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
-    ])
+    scan_ports: list[int] = field(
+        default_factory=lambda: [22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017]
+    )
     # When True, IP-encoding bypass payloads (decimal, octal, hex, IPv6) are
     # generated and injected alongside the plain internal targets (Req 1.7).
     bypass_encodings: bool = True
@@ -527,6 +574,7 @@ class MultiStepFlow:
     execute the steps in order and detect whether the complete sequence can be
     repeated without any rate-limiting or anti-automation control.
     """
+
     name: str = "unnamed_flow"
     steps: list[dict] = field(default_factory=list)
 
@@ -534,12 +582,26 @@ class MultiStepFlow:
 @dataclass
 class BusinessFlowConfig:
     """Business flow (unrestricted access to sensitive flows) testing configuration"""
+
     enabled: bool = True
-    sensitive_flow_patterns: list[str] = field(default_factory=lambda: [
-        "/checkout", "/purchase", "/order", "/transfer", "/register",
-        "/coupon", "/payment", "/booking", "/reserve", "/redeem",
-        "/vote", "/referral", "/invite", "/subscribe",
-    ])
+    sensitive_flow_patterns: list[str] = field(
+        default_factory=lambda: [
+            "/checkout",
+            "/purchase",
+            "/order",
+            "/transfer",
+            "/register",
+            "/coupon",
+            "/payment",
+            "/booking",
+            "/reserve",
+            "/redeem",
+            "/vote",
+            "/referral",
+            "/invite",
+            "/subscribe",
+        ]
+    )
     repetition_limit: int = 50
     # Detector 2: quota / resource decrement check.
     # When True the module compares the 1st and Nth response for a field that
@@ -547,10 +609,20 @@ class BusinessFlowConfig:
     # If the value does not change across N repetitions it emits
     # BUSINESS_FLOW_QUOTA_NOT_ENFORCED.
     check_quota_decrement: bool = True
-    quota_fields: list[str] = field(default_factory=lambda: [
-        "stock", "quantity", "remaining", "available", "count",
-        "seats", "quota", "credits", "balance", "limit",
-    ])
+    quota_fields: list[str] = field(
+        default_factory=lambda: [
+            "stock",
+            "quantity",
+            "remaining",
+            "available",
+            "count",
+            "seats",
+            "quota",
+            "credits",
+            "balance",
+            "limit",
+        ]
+    )
     # Detector 3: multi-step flow sequences.
     # Each MultiStepFlow defines an ordered list of requests that together
     # constitute a sensitive business transaction. The module runs each sequence
@@ -565,15 +637,22 @@ class BusinessFlowConfig:
 @dataclass
 class SecurityMisconfigConfig:
     """Security misconfiguration testing configuration"""
+
     enabled: bool = True
-    required_headers: list[str] = field(default_factory=lambda: [
-        "Strict-Transport-Security", "X-Content-Type-Options",
-        "X-Frame-Options", "Content-Security-Policy"])
+    required_headers: list[str] = field(
+        default_factory=lambda: [
+            "Strict-Transport-Security",
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+            "Content-Security-Policy",
+        ]
+    )
 
 
 @dataclass
 class InventoryConfig:
     """Improper inventory management testing configuration"""
+
     enabled: bool = True
     detect_deprecated: bool = True
 
@@ -581,9 +660,14 @@ class InventoryConfig:
 @dataclass
 class UnsafeConsumptionConfig:
     """Unsafe consumption of APIs testing configuration"""
+
     enabled: bool = True
-    upstream_indicators: list[str] = field(default_factory=lambda: ["proxy", "upstream", "external", "aggregate"])
-    malformed_payloads: list[str] = field(default_factory=lambda: ['{"__proto__":{}}', "<script>", "' OR 1=1--", "\u0000"])
+    upstream_indicators: list[str] = field(
+        default_factory=lambda: ["proxy", "upstream", "external", "aggregate"]
+    )
+    malformed_payloads: list[str] = field(
+        default_factory=lambda: ['{"__proto__":{}}', "<script>", "' OR 1=1--", "\u0000"]
+    )
     # Redirect-following detection (OWASP API10 Scenario #2): probe upstream
     # endpoints with a synthetic redirect target and detect whether the API
     # blindly follows it.  ``check_redirects`` enables the probe;
@@ -600,10 +684,21 @@ class UnsafeConsumptionConfig:
 @dataclass
 class OWASPConfig:
     """OWASP testing configuration"""
-    enabled_modules: list[str] = field(default_factory=lambda: [
-        "bola", "auth", "property", "resource", "function_auth", "ssrf",
-        "business_flow", "security_misconfig", "inventory", "unsafe_consumption"
-    ])
+
+    enabled_modules: list[str] = field(
+        default_factory=lambda: [
+            "bola",
+            "auth",
+            "property",
+            "resource",
+            "function_auth",
+            "ssrf",
+            "business_flow",
+            "security_misconfig",
+            "inventory",
+            "unsafe_consumption",
+        ]
+    )
     bola_testing: BOLAConfig = field(default_factory=BOLAConfig)
     auth_testing: AuthTestingConfig = field(default_factory=AuthTestingConfig)
     property_testing: PropertyTestingConfig = field(default_factory=PropertyTestingConfig)
@@ -611,9 +706,13 @@ class OWASPConfig:
     function_auth_testing: FunctionAuthConfig = field(default_factory=FunctionAuthConfig)
     ssrf_testing: SSRFConfig = field(default_factory=SSRFConfig)
     business_flow_testing: BusinessFlowConfig = field(default_factory=BusinessFlowConfig)
-    security_misconfig_testing: SecurityMisconfigConfig = field(default_factory=SecurityMisconfigConfig)
+    security_misconfig_testing: SecurityMisconfigConfig = field(
+        default_factory=SecurityMisconfigConfig
+    )
     inventory_testing: InventoryConfig = field(default_factory=InventoryConfig)
-    unsafe_consumption_testing: UnsafeConsumptionConfig = field(default_factory=UnsafeConsumptionConfig)
+    unsafe_consumption_testing: UnsafeConsumptionConfig = field(
+        default_factory=UnsafeConsumptionConfig
+    )
     # Optional Spec_Schema merged from the repeatable ``--openapi`` / ``--postman``
     # sources supplied to the ``full`` command (Requirement 49.2). Defaults to
     # ``None`` and is NOT sourced from YAML by ``_build_owasp_config``, so
@@ -639,9 +738,10 @@ class ActorProfile:
     Consumption (merging the values into requests) is handled by subtask 47.2;
     this model and its loader only make the inputs available.
     """
-    context_name: str                                                  # matches AuthContext.name
-    query: dict[str, dict[str, Any]] = field(default_factory=dict)      # endpoint -> {param: value}
-    body: dict[str, dict[str, Any]] = field(default_factory=dict)       # endpoint -> {field: value}
+
+    context_name: str  # matches AuthContext.name
+    query: dict[str, dict[str, Any]] = field(default_factory=dict)  # endpoint -> {param: value}
+    body: dict[str, dict[str, Any]] = field(default_factory=dict)  # endpoint -> {field: value}
 
 
 def load_actor_profiles(source: str) -> dict[str, ActorProfile]:
@@ -673,15 +773,15 @@ def load_actor_profiles(source: str) -> dict[str, ActorProfile]:
         raise ValueError(f"Actor profile source '{source}' does not exist")
 
     try:
-        raw_text = profile_file.read_text(encoding='utf-8')
+        raw_text = profile_file.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"Actor profile source '{source}' cannot be read: {exc}") from exc
 
     suffix = profile_file.suffix.lower()
     try:
-        if suffix in ('.yaml', '.yml'):
+        if suffix in (".yaml", ".yml"):
             data = yaml.safe_load(raw_text)
-        elif suffix == '.json':
+        elif suffix == ".json":
             data = json.loads(raw_text)
         else:
             # Unknown/absent suffix: try JSON first (a strict subset of YAML),
@@ -708,8 +808,7 @@ def load_actor_profiles(source: str) -> dict[str, ActorProfile]:
     for context_name, profile_data in data.items():
         if not isinstance(context_name, str):
             raise ValueError(
-                f"Actor profile source '{source}' has a non-string context name: "
-                f"{context_name!r}"
+                f"Actor profile source '{source}' has a non-string context name: {context_name!r}"
             )
         if not isinstance(profile_data, dict):
             raise ValueError(
@@ -718,9 +817,9 @@ def load_actor_profiles(source: str) -> dict[str, ActorProfile]:
                 f"maps (got {type(profile_data).__name__})"
             )
 
-        query = profile_data.get('query', {}) or {}
-        body = profile_data.get('body', {}) or {}
-        for section_name, section in (('query', query), ('body', body)):
+        query = profile_data.get("query", {}) or {}
+        body = profile_data.get("body", {}) or {}
+        for section_name, section in (("query", query), ("body", body)):
             if not isinstance(section, dict):
                 raise ValueError(
                     f"Actor profile source '{source}' '{section_name}' for context "
@@ -757,7 +856,8 @@ class UnauthorizedEndpointAssertion:
     broken-access-control finding (Requirement 55.2); evaluation is handled by a
     later subtask, this model and its loader only make the assertions available.
     """
-    context_name: str                       # matches AuthContext.name
+
+    context_name: str  # matches AuthContext.name
     patterns: list[str] = field(default_factory=list)  # endpoint regular expressions
 
 
@@ -790,17 +890,15 @@ def load_unauthorized_assertions(source: str) -> dict[str, list["re.Pattern"]]:
         raise ValueError(f"Unauthorized assertion source '{source}' does not exist")
 
     try:
-        raw_text = assertion_file.read_text(encoding='utf-8')
+        raw_text = assertion_file.read_text(encoding="utf-8")
     except OSError as exc:
-        raise ValueError(
-            f"Unauthorized assertion source '{source}' cannot be read: {exc}"
-        ) from exc
+        raise ValueError(f"Unauthorized assertion source '{source}' cannot be read: {exc}") from exc
 
     suffix = assertion_file.suffix.lower()
     try:
-        if suffix in ('.yaml', '.yml'):
+        if suffix in (".yaml", ".yml"):
             data = yaml.safe_load(raw_text)
-        elif suffix == '.json':
+        elif suffix == ".json":
             data = json.loads(raw_text)
         else:
             # Unknown/absent suffix: try JSON first (a strict subset of YAML),
@@ -872,6 +970,7 @@ def load_unauthorized_assertions(source: str) -> dict[str, list["re.Pattern"]]:
 @dataclass
 class AuthContext:
     """Authentication context"""
+
     name: str
     type: AuthType
     token: str
@@ -886,6 +985,7 @@ class AuthContext:
 @dataclass
 class AuthConfig:
     """Authentication configuration"""
+
     contexts: list[AuthContext] = field(default_factory=list)
     default_context: str | None = None
 
@@ -893,6 +993,7 @@ class AuthConfig:
 @dataclass
 class RateLimitConfig:
     """Rate limiting configuration"""
+
     requests_per_second: int = 10
     burst_size: int = 20
     adaptive: bool = True
@@ -903,6 +1004,7 @@ class RateLimitConfig:
 @dataclass
 class ReportConfig:
     """Report generation configuration"""
+
     formats: list[str] = field(default_factory=lambda: ["json", "html", "txt"])
     output_dir: str = "reports"
     output_filename: str | None = None
@@ -913,83 +1015,131 @@ class ReportConfig:
 @dataclass
 class AdvancedDiscoveryConfig:
     """Advanced discovery configuration"""
+
     enabled: bool = True
 
     # Framework Detection Configuration
-    framework_detection: dict[str, Any] = field(default_factory=lambda: {
-        'enabled': False,
-        'adapt_payloads': True,
-        'test_framework_endpoints': True,
-        'max_error_requests': 5,
-        'timeout': 10.0,
-        'confidence_threshold': 0.6
-    })
+    framework_detection: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "adapt_payloads": True,
+            "test_framework_endpoints": True,
+            "max_error_requests": 5,
+            "timeout": 10.0,
+            "confidence_threshold": 0.6,
+        }
+    )
 
     # Version Fuzzing Configuration
-    version_fuzzing: dict[str, Any] = field(default_factory=lambda: {
-        'enabled': False,
-        'version_patterns': [
-            "/v1", "/v2", "/v3", "/v4", "/v5",
-            "/api/v1", "/api/v2", "/api/v3", "/api/v4", "/api/v5",
-            "/api/1", "/api/2", "/api/3",
-            "/1", "/2", "/3"
-        ],
-        'test_endpoints': ["/", "/health", "/status", "/info", "/docs"],
-        'max_concurrent_requests': 5,
-        'timeout': 10.0,
-        'compare_endpoints': True,
-        'detect_deprecated': True
-    })
+    version_fuzzing: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "version_patterns": [
+                "/v1",
+                "/v2",
+                "/v3",
+                "/v4",
+                "/v5",
+                "/api/v1",
+                "/api/v2",
+                "/api/v3",
+                "/api/v4",
+                "/api/v5",
+                "/api/1",
+                "/api/2",
+                "/api/3",
+                "/1",
+                "/2",
+                "/3",
+            ],
+            "test_endpoints": ["/", "/health", "/status", "/info", "/docs"],
+            "max_concurrent_requests": 5,
+            "timeout": 10.0,
+            "compare_endpoints": True,
+            "detect_deprecated": True,
+        }
+    )
 
     # Legacy subdomain discovery (kept for backward compatibility)
     subdomain_discovery: bool = True
     cors_analysis: bool = True
     security_headers: bool = True
-    subdomain_wordlist: list[str] = field(default_factory=lambda: [
-        "api", "dev", "staging", "test", "qa", "uat", "prod", "production",
-        "www", "admin", "management", "dashboard", "portal", "app", "mobile",
-        "v1", "v2", "v3", "beta", "alpha", "demo", "sandbox", "internal"
-    ])
-    cors_test_origins: list[str] = field(default_factory=lambda: [
-        "https://evil.com", "https://attacker.com", "http://localhost:3000",
-        "https://example.com", "null", "*"
-    ])
+    subdomain_wordlist: list[str] = field(
+        default_factory=lambda: [
+            "api",
+            "dev",
+            "staging",
+            "test",
+            "qa",
+            "uat",
+            "prod",
+            "production",
+            "www",
+            "admin",
+            "management",
+            "dashboard",
+            "portal",
+            "app",
+            "mobile",
+            "v1",
+            "v2",
+            "v3",
+            "beta",
+            "alpha",
+            "demo",
+            "sandbox",
+            "internal",
+        ]
+    )
+    cors_test_origins: list[str] = field(
+        default_factory=lambda: [
+            "https://evil.com",
+            "https://attacker.com",
+            "http://localhost:3000",
+            "https://example.com",
+            "null",
+            "*",
+        ]
+    )
     max_concurrent: int = 10
     timeout: float = 10.0
 
     # WAF detection / evasion configuration
-    waf_detection: dict[str, Any] = field(default_factory=lambda: {
-        'enabled': False,
-        'adaptive_throttling': True,
-        'evasion_techniques': True
-    })
+    waf_detection: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "adaptive_throttling": True,
+            "evasion_techniques": True,
+        }
+    )
 
     # Payload encoding / obfuscation configuration
-    payload_encoding: dict[str, Any] = field(default_factory=lambda: {
-        'enabled': False,
-        'encodings': ['url', 'base64', 'html', 'unicode'],
-        'obfuscation_techniques': ['case_variation', 'mutation']
-    })
+    payload_encoding: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "encodings": ["url", "base64", "html", "unicode"],
+            "obfuscation_techniques": ["case_variation", "mutation"],
+        }
+    )
 
 
 @dataclass
 class CICDIntegrationConfig:
     """CI/CD integration configuration"""
+
     enabled: bool = False
     fail_on_severity: str = "critical"  # critical, high, medium, low
     generate_artifacts: bool = True
-    exit_codes: dict[str, int] = field(default_factory=lambda: {
-        "critical": 2,
-        "high": 1,
-        "medium": 0,
-        "low": 0
-    })
+    exit_codes: dict[str, int] = field(
+        default_factory=lambda: {"critical": 2, "high": 1, "medium": 0, "low": 0}
+    )
     artifact_formats: list[str] = field(default_factory=lambda: ["json", "xml"])
 
 
 @dataclass
 class HTTPOutputConfig:
     """HTTP output configuration"""
+
     status_code_filter: list[int] | None = None
 
 
@@ -1003,15 +1153,15 @@ class SecretScanConfig:
     :data:`DEFAULT_SECRET_PATTERNS` so enabling detection without supplying a
     custom pattern file uses the built-in high-signal patterns.
     """
+
     enabled: bool = False
-    patterns: dict[str, str] = field(
-        default_factory=_default_secret_patterns
-    )
+    patterns: dict[str, str] = field(default_factory=_default_secret_patterns)
 
 
 @dataclass
 class APILeakConfig:
     """Main APILeak configuration"""
+
     target: TargetConfig
     fuzzing: FuzzingConfig = field(default_factory=FuzzingConfig)
     owasp_testing: OWASPConfig = field(default_factory=OWASPConfig)
@@ -1066,9 +1216,11 @@ class ConfigurationManager:
             # Convert dict to APILeakConfig
             self.config = self._dict_to_config(config_data)
 
-            self.logger.info("Configuration loaded successfully from dictionary",
-                           modules_enabled=len(self.config.owasp_testing.enabled_modules),
-                           auth_contexts=len(self.config.authentication.contexts))
+            self.logger.info(
+                "Configuration loaded successfully from dictionary",
+                modules_enabled=len(self.config.owasp_testing.enabled_modules),
+                auth_contexts=len(self.config.authentication.contexts),
+            )
 
             return self.config
 
@@ -1100,10 +1252,10 @@ class ConfigurationManager:
         self.logger.info("Loading configuration", path=config_path)
 
         try:
-            with open(config_file, encoding='utf-8') as f:
-                if config_file.suffix.lower() in ['.yaml', '.yml']:
+            with open(config_file, encoding="utf-8") as f:
+                if config_file.suffix.lower() in [".yaml", ".yml"]:
                     config_data = yaml.safe_load(f)
-                elif config_file.suffix.lower() == '.json':
+                elif config_file.suffix.lower() == ".json":
                     config_data = json.load(f)
                 else:
                     raise ValueError(f"Unsupported config format: {config_file.suffix}")
@@ -1111,9 +1263,11 @@ class ConfigurationManager:
             # Convert dict to APILeakConfig
             self.config = self._dict_to_config(config_data)
 
-            self.logger.info("Configuration loaded successfully",
-                           modules_enabled=len(self.config.owasp_testing.enabled_modules),
-                           auth_contexts=len(self.config.authentication.contexts))
+            self.logger.info(
+                "Configuration loaded successfully",
+                modules_enabled=len(self.config.owasp_testing.enabled_modules),
+                auth_contexts=len(self.config.authentication.contexts),
+            )
 
             return self.config
 
@@ -1131,38 +1285,38 @@ class ConfigurationManager:
         """Convert dictionary to APILeakConfig with validation"""
         try:
             # Extract target config (required)
-            target_data = config_data.get('target', {})
-            if not target_data.get('base_url'):
+            target_data = config_data.get("target", {})
+            if not target_data.get("base_url"):
                 raise ValueError("target.base_url is required")
 
             target = TargetConfig(**target_data)
 
             # Extract optional configs with defaults
-            fuzzing_data = config_data.get('fuzzing', {})
+            fuzzing_data = config_data.get("fuzzing", {})
             fuzzing = self._build_fuzzing_config(fuzzing_data)
 
-            owasp_data = config_data.get('owasp_testing', {})
+            owasp_data = config_data.get("owasp_testing", {})
             owasp = self._build_owasp_config(owasp_data)
 
-            auth_data = config_data.get('authentication', {})
+            auth_data = config_data.get("authentication", {})
             auth = self._build_auth_config(auth_data)
 
-            rate_limit_data = config_data.get('rate_limiting', {})
+            rate_limit_data = config_data.get("rate_limiting", {})
             rate_limiting = RateLimitConfig(**rate_limit_data)
 
-            report_data = config_data.get('reporting', {})
+            report_data = config_data.get("reporting", {})
             reporting = ReportConfig(**report_data)
 
-            advanced_data = config_data.get('advanced_discovery', {})
+            advanced_data = config_data.get("advanced_discovery", {})
             advanced_discovery = AdvancedDiscoveryConfig(**advanced_data)
 
-            http_output_data = config_data.get('http_output', {})
+            http_output_data = config_data.get("http_output", {})
             http_output = HTTPOutputConfig(**http_output_data)
 
-            ci_cd_data = config_data.get('ci_cd_integration', {})
+            ci_cd_data = config_data.get("ci_cd_integration", {})
             ci_cd_integration = CICDIntegrationConfig(**ci_cd_data)
 
-            secret_scan_data = config_data.get('secret_scan', {})
+            secret_scan_data = config_data.get("secret_scan", {})
             secret_scan = self._build_secret_scan_config(secret_scan_data)
 
             return APILeakConfig(
@@ -1176,12 +1330,12 @@ class ConfigurationManager:
                 http_output=http_output,
                 ci_cd_integration=ci_cd_integration,
                 secret_scan=secret_scan,
-                safe_mode=config_data.get('safe_mode', False),
-                proxy=config_data.get('proxy'),
-                proxy_verify_ssl=config_data.get('proxy_verify_ssl', False),
-                client_cert=config_data.get('client_cert'),
-                ca_bundle=config_data.get('ca_bundle'),
-                resolve=config_data.get('resolve')
+                safe_mode=config_data.get("safe_mode", False),
+                proxy=config_data.get("proxy"),
+                proxy_verify_ssl=config_data.get("proxy_verify_ssl", False),
+                client_cert=config_data.get("client_cert"),
+                ca_bundle=config_data.get("ca_bundle"),
+                resolve=config_data.get("resolve"),
             )
 
         except Exception as e:
@@ -1190,7 +1344,7 @@ class ConfigurationManager:
 
     def _build_fuzzing_config(self, data: dict[str, Any]) -> FuzzingConfig:
         """Build fuzzing configuration from dict"""
-        endpoints_data = data.get('endpoints', {})
+        endpoints_data = data.get("endpoints", {})
         endpoints = EndpointFuzzingConfig(**endpoints_data)
 
         # Map ``fuzzing.parameters.*`` into the extended ParameterFuzzingConfig
@@ -1206,10 +1360,10 @@ class ConfigurationManager:
         # single mapping site, so ``validate_configuration()`` (invoked by the
         # CLI immediately after ``load_config_from_dict`` and before any request)
         # always runs against the fully-populated config.
-        params_data = data.get('parameters', {})
+        params_data = data.get("parameters", {})
         parameters = ParameterFuzzingConfig(**params_data)
 
-        headers_data = data.get('headers', {})
+        headers_data = data.get("headers", {})
         headers = HeaderFuzzingConfig(**headers_data)
 
         # Hit_Confirmation (Requirement 35). Defaults to disabled; when present
@@ -1217,7 +1371,7 @@ class ConfigurationManager:
         # threaded in by the CLI (subtask 40.3) via
         # ``config_dict['fuzzing']['hit_confirmation']``. Accept either a prebuilt
         # HitConfirmationConfig or a plain dict.
-        hit_confirmation_data = data.get('hit_confirmation')
+        hit_confirmation_data = data.get("hit_confirmation")
         if isinstance(hit_confirmation_data, HitConfirmationConfig):
             hit_confirmation = hit_confirmation_data
         elif hit_confirmation_data:
@@ -1229,22 +1383,22 @@ class ConfigurationManager:
             endpoints=endpoints,
             parameters=parameters,
             headers=headers,
-            recursive=data.get('recursive', True),
-            max_depth=data.get('max_depth', 3),
-            max_requests=data.get('max_requests'),
-            concurrency=data.get('concurrency', 50),
-            retries=data.get('retries', 2),
+            recursive=data.get("recursive", True),
+            max_depth=data.get("max_depth", 3),
+            max_requests=data.get("max_requests"),
+            concurrency=data.get("concurrency", 50),
+            retries=data.get("retries", 2),
             # Runtime selection objects threaded in by the CLI (subtask 38.4):
             # the parsed Path_Scope / Storage_Status_Selection objects flow
             # through ``config_dict['fuzzing']['path_scope']`` /
             # ``['storage_status']`` so they reach the EndpointFuzzer's
             # FuzzingConfig. Both default to None when absent so the keys always
             # exist on the config object (Requirements 33.1-33.7).
-            path_scope=data.get('path_scope'),
-            storage_status=data.get('storage_status'),
+            path_scope=data.get("path_scope"),
+            storage_status=data.get("storage_status"),
             # Recursion_Scope selection threaded in by the CLI; defaults to None
             # when absent so recursion uses its default eligibility (Req 34.3, 34.4).
-            recursion_scope=data.get('recursion_scope'),
+            recursion_scope=data.get("recursion_scope"),
             # Hit_Confirmation built above; defaults to disabled (Req 35.1, 35.6).
             hit_confirmation=hit_confirmation,
             # Response matchers/filters threaded in by the ``par`` CLI
@@ -1252,14 +1406,14 @@ class ConfigurationManager:
             # objects from ``parse_selectors``; both default to empty lists when
             # absent so parameter-finding selection is a no-op unless selectors
             # were supplied, and dir/scan/full are unaffected.
-            matchers=data.get('matchers', []),
-            filters=data.get('filters', []),
+            matchers=data.get("matchers", []),
+            filters=data.get("filters", []),
             # Machine-readable output settings threaded in by the ``par`` CLI
             # (Requirements 12.5, 12.6). Both default to None when absent so no
             # machine output is written unless the operator requested it, and
             # dir/scan/full are unaffected.
-            output_format=data.get('output_format'),
-            output_file=data.get('output_file'),
+            output_format=data.get("output_format"),
+            output_file=data.get("output_file"),
         )
 
     def _build_secret_scan_config(self, data: dict[str, Any]) -> SecretScanConfig:
@@ -1270,8 +1424,8 @@ class ConfigurationManager:
         used via the dataclass default factory (Requirement 30.6); a supplied
         non-empty name -> regex map overrides them.
         """
-        enabled = data.get('enabled', False)
-        patterns = data.get('patterns')
+        enabled = data.get("enabled", False)
+        patterns = data.get("patterns")
         if patterns:
             return SecretScanConfig(enabled=enabled, patterns=dict(patterns))
         return SecretScanConfig(enabled=enabled)
@@ -1279,75 +1433,86 @@ class ConfigurationManager:
     def _build_owasp_config(self, data: dict[str, Any]) -> OWASPConfig:
         """Build OWASP configuration from dict"""
         return OWASPConfig(
-            enabled_modules=data.get('enabled_modules', [
-                "bola", "auth", "property", "resource", "function_auth", "ssrf",
-                "business_flow", "security_misconfig", "inventory", "unsafe_consumption"
-            ]),
-            bola_testing=BOLAConfig(**data.get('bola_testing', {})),
-            auth_testing=AuthTestingConfig(**data.get('auth_testing', {})),
-            property_testing=PropertyTestingConfig(**data.get('property_testing', {})),
-            resource_testing=ResourceTestingConfig(**data.get('resource_testing', {})),
-            function_auth_testing=FunctionAuthConfig(**data.get('function_auth_testing', {})),
-            ssrf_testing=self._build_ssrf_config(data.get('ssrf_testing', {})),
-            business_flow_testing=BusinessFlowConfig(**data.get('business_flow_testing', {})),
-            security_misconfig_testing=SecurityMisconfigConfig(**data.get('security_misconfig_testing', {})),
-            inventory_testing=InventoryConfig(**data.get('inventory_testing', {})),
-            unsafe_consumption_testing=UnsafeConsumptionConfig(**data.get('unsafe_consumption_testing', {}))
+            enabled_modules=data.get(
+                "enabled_modules",
+                [
+                    "bola",
+                    "auth",
+                    "property",
+                    "resource",
+                    "function_auth",
+                    "ssrf",
+                    "business_flow",
+                    "security_misconfig",
+                    "inventory",
+                    "unsafe_consumption",
+                ],
+            ),
+            bola_testing=BOLAConfig(**data.get("bola_testing", {})),
+            auth_testing=AuthTestingConfig(**data.get("auth_testing", {})),
+            property_testing=PropertyTestingConfig(**data.get("property_testing", {})),
+            resource_testing=ResourceTestingConfig(**data.get("resource_testing", {})),
+            function_auth_testing=FunctionAuthConfig(**data.get("function_auth_testing", {})),
+            ssrf_testing=self._build_ssrf_config(data.get("ssrf_testing", {})),
+            business_flow_testing=BusinessFlowConfig(**data.get("business_flow_testing", {})),
+            security_misconfig_testing=SecurityMisconfigConfig(
+                **data.get("security_misconfig_testing", {})
+            ),
+            inventory_testing=InventoryConfig(**data.get("inventory_testing", {})),
+            unsafe_consumption_testing=UnsafeConsumptionConfig(
+                **data.get("unsafe_consumption_testing", {})
+            ),
         )
 
-    def _build_ssrf_config(self, data: Dict[str, Any]) -> SSRFConfig:
+    def _build_ssrf_config(self, data: dict[str, Any]) -> SSRFConfig:
         """Build SSRFConfig from a YAML/JSON config dict, mapping all known
         fields explicitly so new fields are always populated correctly even when
         the caller passes a partial or empty dict."""
         return SSRFConfig(
-            enabled=data.get('enabled', True),
-            internal_targets=data.get('internal_targets', [
-                "127.0.0.1", "localhost", "169.254.169.254", "metadata.google.internal"
-            ]),
-            file_protocols=data.get('file_protocols', ["file://", "ftp://"]),
+            enabled=data.get("enabled", True),
+            internal_targets=data.get(
+                "internal_targets",
+                ["127.0.0.1", "localhost", "169.254.169.254", "metadata.google.internal"],
+            ),
+            file_protocols=data.get("file_protocols", ["file://", "ftp://"]),
             # Safe mode and probe gating (Requirement 1.1–1.7)
-            safe_mode=data.get('safe_mode', False),
-            callback_url=data.get('callback_url', None),
-            additional_internal_targets=data.get('additional_internal_targets', []),
-            additional_schemes=data.get('additional_schemes', []),
-            allow_port_scan=data.get('allow_port_scan', False),
-            scan_ports=data.get('scan_ports', [
-                22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017
-            ]),
-            bypass_encodings=data.get('bypass_encodings', True),
+            safe_mode=data.get("safe_mode", False),
+            callback_url=data.get("callback_url", None),
+            additional_internal_targets=data.get("additional_internal_targets", []),
+            additional_schemes=data.get("additional_schemes", []),
+            allow_port_scan=data.get("allow_port_scan", False),
+            scan_ports=data.get("scan_ports", [22, 80, 443, 8080, 8443, 3306, 5432, 6379, 27017]),
+            bypass_encodings=data.get("bypass_encodings", True),
             # Body injection fields (BUG-005 fix: these were silently ignored before)
-            body_injection=data.get('body_injection', False),
-            body_injection_methods=data.get('body_injection_methods', []),
-            burp_xml_path=data.get('burp_xml_path', None),
-            har_path=data.get('har_path', None),
-            extra_body_fields=data.get('extra_body_fields', []),
+            body_injection=data.get("body_injection", False),
+            body_injection_methods=data.get("body_injection_methods", []),
+            burp_xml_path=data.get("burp_xml_path", None),
+            har_path=data.get("har_path", None),
+            extra_body_fields=data.get("extra_body_fields", []),
             # Response filtering fields (BUG-005 fix)
-            require_signature=data.get('require_signature', False),
-            success_status_codes=data.get('success_status_codes', list(range(200, 300))),
+            require_signature=data.get("require_signature", False),
+            success_status_codes=data.get("success_status_codes", list(range(200, 300))),
         )
 
     def _build_auth_config(self, data: dict[str, Any]) -> AuthConfig:
         """Build authentication configuration from dict"""
-        contexts_data = data.get('contexts', [])
+        contexts_data = data.get("contexts", [])
         contexts = []
 
         for ctx_data in contexts_data:
-            auth_type = AuthType(ctx_data.get('type', 'bearer'))
+            auth_type = AuthType(ctx_data.get("type", "bearer"))
             context = AuthContext(
-                name=ctx_data['name'],
+                name=ctx_data["name"],
                 type=auth_type,
-                token=ctx_data['token'],
-                username=ctx_data.get('username'),
-                password=ctx_data.get('password'),
-                headers=ctx_data.get('headers', {}),
-                privilege_level=ctx_data.get('privilege_level', 1)
+                token=ctx_data["token"],
+                username=ctx_data.get("username"),
+                password=ctx_data.get("password"),
+                headers=ctx_data.get("headers", {}),
+                privilege_level=ctx_data.get("privilege_level", 1),
             )
             contexts.append(context)
 
-        return AuthConfig(
-            contexts=contexts,
-            default_context=data.get('default_context')
-        )
+        return AuthConfig(contexts=contexts, default_context=data.get("default_context"))
 
     def validate_configuration(self) -> list[str]:
         """
@@ -1369,7 +1534,7 @@ class ConfigurationManager:
         wordlists = [
             self.config.fuzzing.endpoints.wordlist,
             self.config.fuzzing.parameters.query_wordlist,
-            self.config.fuzzing.headers.wordlist
+            self.config.fuzzing.headers.wordlist,
         ]
 
         for wordlist in wordlists:
@@ -1417,17 +1582,17 @@ class ConfigurationManager:
         self.logger.debug("Merging CLI overrides", overrides=list(cli_args.keys()))
 
         # Override target URL if provided
-        if 'target_url' in cli_args:
-            self.config.target.base_url = cli_args['target_url']
+        if "target_url" in cli_args:
+            self.config.target.base_url = cli_args["target_url"]
 
         # Override rate limiting if provided
-        if 'rate_limit' in cli_args:
-            self.config.rate_limiting.requests_per_second = cli_args['rate_limit']
+        if "rate_limit" in cli_args:
+            self.config.rate_limiting.requests_per_second = cli_args["rate_limit"]
 
         # Override output directory if provided
-        if 'output_dir' in cli_args:
-            self.config.reporting.output_dir = cli_args['output_dir']
+        if "output_dir" in cli_args:
+            self.config.reporting.output_dir = cli_args["output_dir"]
 
         # Override enabled modules if provided
-        if 'modules' in cli_args:
-            self.config.owasp_testing.enabled_modules = cli_args['modules']
+        if "modules" in cli_args:
+            self.config.owasp_testing.enabled_modules = cli_args["modules"]

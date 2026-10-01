@@ -8,7 +8,7 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, List, Optional, Type
+from typing import Any
 
 from core.config import AuthContext, AuthType, PropertyTestingConfig, Severity
 from core.logging import get_logger
@@ -24,6 +24,7 @@ from .registry import OWASPModule
 @dataclass
 class SensitiveField:
     """Represents a sensitive field found in API responses"""
+
     field_name: str
     field_value: str
     field_path: str  # JSON path to the field
@@ -35,6 +36,7 @@ class SensitiveField:
 @dataclass
 class MassAssignmentTest:
     """Result of a mass assignment test"""
+
     endpoint: str
     method: str
     field_name: str
@@ -48,6 +50,7 @@ class MassAssignmentTest:
 @dataclass
 class PropertyTestResult:
     """Result of a property-level authorization test"""
+
     endpoint: str
     method: str
     test_type: str
@@ -72,48 +75,102 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
     # Sensitive field patterns for detection
     SENSITIVE_FIELD_PATTERNS = {
-        'financial': [
-            r'credit_card', r'cc_number', r'account_number', r'routing_number',
-            r'bank_account', r'payment', r'billing'
+        "financial": [
+            r"credit_card",
+            r"cc_number",
+            r"account_number",
+            r"routing_number",
+            r"bank_account",
+            r"payment",
+            r"billing",
         ],
-        'password': [
-            r'password', r'passwd', r'pwd', r'pass', r'secret',
-            r'hash', r'encrypted', r'cipher'
+        "password": [
+            r"password",
+            r"passwd",
+            r"pwd",
+            r"pass",
+            r"secret",
+            r"hash",
+            r"encrypted",
+            r"cipher",
         ],
-        'api_key': [
-            r'api_key', r'apikey', r'key', r'token', r'secret',
-            r'access_token', r'refresh_token', r'bearer'
+        "api_key": [
+            r"api_key",
+            r"apikey",
+            r"key",
+            r"token",
+            r"secret",
+            r"access_token",
+            r"refresh_token",
+            r"bearer",
         ],
-        'personal_data': [
-            r'ssn', r'social_security', r'phone', r'email', r'address',
-            r'birth_date', r'dob'
+        "personal_data": [
+            r"ssn",
+            r"social_security",
+            r"phone",
+            r"email",
+            r"address",
+            r"birth_date",
+            r"dob",
         ],
-        'internal': [
-            r'internal', r'debug', r'admin', r'system', r'config',
-            r'database', r'db_', r'sql', r'query'
-        ]
+        "internal": [
+            r"internal",
+            r"debug",
+            r"admin",
+            r"system",
+            r"config",
+            r"database",
+            r"db_",
+            r"sql",
+            r"query",
+        ],
     }
 
     # Mass assignment dangerous fields
     MASS_ASSIGNMENT_FIELDS = [
-        'is_admin', 'admin', 'role', 'roles', 'permissions', 'privilege',
-        'user_id', 'id', 'account_id', 'owner_id', 'created_by',
-        'is_active', 'enabled', 'status', 'verified', 'approved',
-        'balance', 'credit', 'points', 'score', 'level'
+        "is_admin",
+        "admin",
+        "role",
+        "roles",
+        "permissions",
+        "privilege",
+        "user_id",
+        "id",
+        "account_id",
+        "owner_id",
+        "created_by",
+        "is_active",
+        "enabled",
+        "status",
+        "verified",
+        "approved",
+        "balance",
+        "credit",
+        "points",
+        "score",
+        "level",
     ]
 
     # Read-only field patterns
     READ_ONLY_FIELDS = [
-        'id', 'created_at', 'updated_at', 'timestamp', 'created_by',
-        'modified_by', 'version', 'revision', 'hash', 'checksum'
+        "id",
+        "created_at",
+        "updated_at",
+        "timestamp",
+        "created_by",
+        "modified_by",
+        "version",
+        "revision",
+        "hash",
+        "checksum",
     ]
 
     # Common HTTP methods for testing
-    TEST_METHODS = ['POST', 'PUT', 'PATCH']
+    TEST_METHODS = ["POST", "PUT", "PATCH"]
 
     # Known credential token prefixes. A value carrying one of these prefixes is
     # strong, self-sufficient evidence of an exposed credential (Requirement 12.2).
-    CREDENTIAL_PREFIXES = ('sk_', 'pk_', 'AKIA', 'ghp_', 'xoxb-')
+    CREDENTIAL_PREFIXES = ("sk_", "pk_", "AKIA", "ghp_", "xoxb-")
 
     # Minimum Shannon entropy (bits per character) required to treat an otherwise
     # unremarkable long/base64-shaped string as a real secret. Random secrets
@@ -127,8 +184,13 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
     UNAUTHORIZED_ASSERTION_CATEGORY = "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS"
     UNAUTHORIZED_ASSERTION_OWASP = "API3"
 
-    def __init__(self, config: PropertyTestingConfig, http_client: HTTPRequestEngine,
-                 auth_contexts: list[AuthContext], spec_schema=None):
+    def __init__(
+        self,
+        config: PropertyTestingConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+        spec_schema=None,
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -151,28 +213,29 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         self.auth_context_map = {ctx.name: ctx for ctx in auth_contexts}
 
         # Add anonymous context if not present
-        if 'anonymous' not in self.auth_context_map:
+        if "anonymous" not in self.auth_context_map:
             anonymous_ctx = AuthContext(
-                name='anonymous',
-                type=AuthType.BEARER,
-                token='',
-                privilege_level=0
+                name="anonymous", type=AuthType.BEARER, token="", privilege_level=0
             )
-            self.auth_context_map['anonymous'] = anonymous_ctx
+            self.auth_context_map["anonymous"] = anonymous_ctx
 
         # Combine configured sensitive fields with defaults
-        self.sensitive_fields = set(config.sensitive_fields + [
-            field for patterns in self.SENSITIVE_FIELD_PATTERNS.values()
-            for field in patterns
-        ])
+        self.sensitive_fields = set(
+            config.sensitive_fields
+            + [field for patterns in self.SENSITIVE_FIELD_PATTERNS.values() for field in patterns]
+        )
 
         # Combine configured mass assignment fields with defaults
-        self.mass_assignment_fields = set(config.mass_assignment_fields + self.MASS_ASSIGNMENT_FIELDS)
+        self.mass_assignment_fields = set(
+            config.mass_assignment_fields + self.MASS_ASSIGNMENT_FIELDS
+        )
 
-        self.logger.info("Property Level Authorization Testing Module initialized",
-                        auth_contexts=len(self.auth_contexts),
-                        sensitive_patterns=len(self.sensitive_fields),
-                        mass_assignment_fields=len(self.mass_assignment_fields))
+        self.logger.info(
+            "Property Level Authorization Testing Module initialized",
+            auth_contexts=len(self.auth_contexts),
+            sensitive_patterns=len(self.sensitive_fields),
+            mass_assignment_fields=len(self.mass_assignment_fields),
+        )
 
     def get_module_name(self) -> str:
         """Get module name"""
@@ -188,7 +251,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of property level authorization findings
         """
-        self.logger.info("Starting property level authorization testing", endpoints_count=len(endpoints))
+        self.logger.info(
+            "Starting property level authorization testing", endpoints_count=len(endpoints)
+        )
 
         if self.safe_mode:
             self.logger.info(
@@ -205,38 +270,52 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             # Step 1: Detect sensitive fields in responses
             sensitive_findings = await self._test_sensitive_data_exposure(endpoints)
             findings.extend(sensitive_findings)
-            self.logger.debug("Sensitive data exposure testing completed", findings=len(sensitive_findings))
+            self.logger.debug(
+                "Sensitive data exposure testing completed", findings=len(sensitive_findings)
+            )
 
             # Step 2: Test mass assignment vulnerabilities
             mass_assignment_findings = await self._test_mass_assignment(endpoints)
             findings.extend(mass_assignment_findings)
-            self.logger.debug("Mass assignment testing completed", findings=len(mass_assignment_findings))
+            self.logger.debug(
+                "Mass assignment testing completed", findings=len(mass_assignment_findings)
+            )
 
             # Step 3: Test read-only property modification
             readonly_findings = await self._test_readonly_property_modification(endpoints)
             findings.extend(readonly_findings)
-            self.logger.debug("Read-only property testing completed", findings=len(readonly_findings))
+            self.logger.debug(
+                "Read-only property testing completed", findings=len(readonly_findings)
+            )
 
             # Step 4: Detect undocumented fields
             undocumented_findings = await self._test_undocumented_fields(endpoints)
             findings.extend(undocumented_findings)
-            self.logger.debug("Undocumented fields testing completed", findings=len(undocumented_findings))
+            self.logger.debug(
+                "Undocumented fields testing completed", findings=len(undocumented_findings)
+            )
 
             # Step 5: Declarative Unauthorized_Endpoint_Assertions (Req 55). Only
             # runs when an auth context carries operator-declared patterns;
             # otherwise the module behaves exactly as before (Req 55.5).
             assertion_findings = await self._run_unauthorized_assertions(endpoints)
             findings.extend(assertion_findings)
-            self.logger.debug("Unauthorized-endpoint assertion evaluation completed",
-                              findings=len(assertion_findings))
+            self.logger.debug(
+                "Unauthorized-endpoint assertion evaluation completed",
+                findings=len(assertion_findings),
+            )
 
         except Exception as e:
-            self.logger.error("Property level authorization testing failed during execution", error=str(e))
+            self.logger.error(
+                "Property level authorization testing failed during execution", error=str(e)
+            )
             raise
 
-        self.logger.info("Property level authorization testing completed",
-                        total_findings=len(findings),
-                        critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]))
+        self.logger.info(
+            "Property level authorization testing completed",
+            total_findings=len(findings),
+            critical_findings=len([f for f in findings if f.severity == Severity.CRITICAL]),
+        )
 
         return findings
 
@@ -258,8 +337,8 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             self.http_client.set_auth_context(auth_context)
 
             for endpoint in endpoints:
-                endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-                method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+                endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+                method = endpoint.method if hasattr(endpoint, "method") else "GET"
                 # Safe mode: sensitive-data exposure analysis is a read probe;
                 # never replay a state-changing method (Requirements 11.1, 21.2,
                 # 21.3).
@@ -268,8 +347,10 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 try:
                     # Make request to endpoint
                     params, _ = apply_actor_profile(auth_context, endpoint_url)
-                    request_kwargs = {'params': params} if params else {}
-                    response = await self.http_client.request(method, endpoint_url, **request_kwargs)
+                    request_kwargs = {"params": params} if params else {}
+                    response = await self.http_client.request(
+                        method, endpoint_url, **request_kwargs
+                    )
 
                     if response.is_success and response.text:
                         # Analyze response for sensitive fields
@@ -281,8 +362,10 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                             # reported when exposed to a context not authorized to
                             # view it (Req 12.4). Credentials/financial/internal
                             # data are always reported.
-                            if (sensitive_field.sensitivity_type == 'personal_data'
-                                    and self._is_authorized_to_view(sensitive_field, auth_context)):
+                            if (
+                                sensitive_field.sensitivity_type == "personal_data"
+                                and self._is_authorized_to_view(sensitive_field, auth_context)
+                            ):
                                 self.logger.debug(
                                     "Personal data exposed only to an authorized "
                                     "context; not reporting",
@@ -299,9 +382,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
                             finding = Finding(
                                 id=str(uuid.uuid4()),
-                                scan_id='',
-                                category='SENSITIVE_DATA_EXPOSURE',
-                                owasp_category='API3',
+                                scan_id="",
+                                category="SENSITIVE_DATA_EXPOSURE",
+                                owasp_category="API3",
                                 severity=severity,
                                 endpoint=endpoint_url,
                                 method=method,
@@ -309,29 +392,33 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                                 response_size=len(response.content),
                                 response_time=response.elapsed,
                                 evidence=f"Sensitive field '{sensitive_field.field_name}' exposed in response. "
-                                        f"Type: {sensitive_field.sensitivity_type}, "
-                                        f"Path: {sensitive_field.field_path}, "
-                                        f"Context: {sensitive_field.context}, "
-                                        f"Auth: {auth_context.name}",
+                                f"Type: {sensitive_field.sensitivity_type}, "
+                                f"Path: {sensitive_field.field_path}, "
+                                f"Context: {sensitive_field.context}, "
+                                f"Auth: {auth_context.name}",
                                 recommendation="Remove sensitive fields from API responses or implement "
-                                             "proper field-level authorization to hide sensitive data "
-                                             "based on user permissions.",
+                                "proper field-level authorization to hide sensitive data "
+                                "based on user permissions.",
                                 payload=f"Field: {sensitive_field.field_name}",
-                                response_snippet=response.text[:500] if response.text else None
+                                response_snippet=response.text[:500] if response.text else None,
                             )
                             findings.append(finding)
 
-                            self.logger.warning("Sensitive data exposure detected",
-                                              field=sensitive_field.field_name,
-                                              type=sensitive_field.sensitivity_type,
-                                              endpoint=endpoint_url,
-                                              auth_context=auth_context.name)
+                            self.logger.warning(
+                                "Sensitive data exposure detected",
+                                field=sensitive_field.field_name,
+                                type=sensitive_field.sensitivity_type,
+                                endpoint=endpoint_url,
+                                auth_context=auth_context.name,
+                            )
 
                 except Exception as e:
-                    self.logger.debug("Sensitive data exposure test failed",
-                                    endpoint=endpoint_url,
-                                    auth_context=auth_context.name,
-                                    error=str(e))
+                    self.logger.debug(
+                        "Sensitive data exposure test failed",
+                        endpoint=endpoint_url,
+                        auth_context=auth_context.name,
+                        error=str(e),
+                    )
 
         return findings
 
@@ -358,13 +445,13 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     field_path=f"headers.{header_name}",
                     endpoint=endpoint,
                     sensitivity_type=sensitivity_type,
-                    context='response_headers'
+                    context="response_headers",
                 )
                 sensitive_fields.append(sensitive_field)
 
         # Check response body for sensitive data
         try:
-            if 'application/json' in response.headers.get('content-type', ''):
+            if "application/json" in response.headers.get("content-type", ""):
                 data = json.loads(response.text)
                 json_fields = self._extract_sensitive_fields_from_json(data, endpoint)
                 sensitive_fields.extend(json_fields)
@@ -375,8 +462,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return sensitive_fields
 
-    def _extract_sensitive_fields_from_json(self, data: Any, endpoint: str,
-                                          path: str = '') -> list[SensitiveField]:
+    def _extract_sensitive_fields_from_json(
+        self, data: Any, endpoint: str, path: str = ""
+    ) -> list[SensitiveField]:
         """Recursively extract sensitive fields from JSON data"""
         sensitive_fields = []
 
@@ -393,7 +481,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         field_path=current_path,
                         endpoint=endpoint,
                         sensitivity_type=sensitivity_type,
-                        context='response_body'
+                        context="response_body",
                     )
                     sensitive_fields.append(sensitive_field)
 
@@ -408,7 +496,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         field_path=current_path,
                         endpoint=endpoint,
                         sensitivity_type=sensitivity_type,
-                        context='response_body'
+                        context="response_body",
                     )
                     sensitive_fields.append(sensitive_field)
 
@@ -435,9 +523,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # Look for key-value patterns in text
         patterns = [
-            r'(\w*(?:password|passwd|pwd|pass|secret)\w*)\s*[:=]\s*([^\s\n]+)',
-            r'(\w*(?:api_key|apikey|key|token)\w*)\s*[:=]\s*([^\s\n]+)',
-            r'(\w*(?:ssn|social_security|credit_card)\w*)\s*[:=]\s*([^\s\n]+)'
+            r"(\w*(?:password|passwd|pwd|pass|secret)\w*)\s*[:=]\s*([^\s\n]+)",
+            r"(\w*(?:api_key|apikey|key|token)\w*)\s*[:=]\s*([^\s\n]+)",
+            r"(\w*(?:ssn|social_security|credit_card)\w*)\s*[:=]\s*([^\s\n]+)",
         ]
 
         for pattern in patterns:
@@ -453,7 +541,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     field_path=f"text_content.{field_name}",
                     endpoint=endpoint,
                     sensitivity_type=sensitivity_type,
-                    context='response_text'
+                    context="response_text",
                 )
                 sensitive_fields.append(sensitive_field)
 
@@ -481,7 +569,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 if re.search(pattern, field_lower):
                     return sensitivity_type
 
-        return 'unknown'
+        return "unknown"
 
     def _contains_sensitive_data(self, value: str, field_name: str | None = None) -> bool:
         """
@@ -508,10 +596,10 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # Patterns that are self-sufficient evidence of sensitive data.
         sufficient_patterns = [
-            r'\d{3}-\d{2}-\d{4}',                               # SSN pattern
-            r'\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}',          # Credit card pattern
-            r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}', # Email pattern
-            r'sk_[a-zA-Z0-9]{20,}',                             # Stripe-style secret key
+            r"\d{3}-\d{2}-\d{4}",  # SSN pattern
+            r"\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}",  # Credit card pattern
+            r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}",  # Email pattern
+            r"sk_[a-zA-Z0-9]{20,}",  # Stripe-style secret key
         ]
         for pattern in sufficient_patterns:
             if re.search(pattern, value):
@@ -524,8 +612,8 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # Credential-SHAPE patterns: necessary but not sufficient. A match here
         # only counts when corroborated below (Requirement 12.2).
         credential_shape_patterns = [
-            r'[A-Za-z0-9]{32,}',            # long alphanumeric (API-key shape)
-            r'[A-Za-z0-9+/]{20,}={0,2}',    # base64-encoded blob
+            r"[A-Za-z0-9]{32,}",  # long alphanumeric (API-key shape)
+            r"[A-Za-z0-9+/]{20,}={0,2}",  # base64-encoded blob
         ]
         matches_credential_shape = any(
             re.search(pattern, value) for pattern in credential_shape_patterns
@@ -564,19 +652,20 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
     def _detect_value_sensitivity_type(self, value: str) -> str:
         """Detect sensitivity type based on value patterns"""
-        if re.search(r'\b[A-Za-z0-9]{32,}\b', value):
-            return 'api_key'
-        elif re.search(r'\b\d{3}-\d{2}-\d{4}\b', value):
-            return 'personal_data'
-        elif re.search(r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b', value):
-            return 'financial'
-        elif re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', value):
-            return 'personal_data'
+        if re.search(r"\b[A-Za-z0-9]{32,}\b", value):
+            return "api_key"
+        elif re.search(r"\b\d{3}-\d{2}-\d{4}\b", value):
+            return "personal_data"
+        elif re.search(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b", value):
+            return "financial"
+        elif re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", value):
+            return "personal_data"
         else:
-            return 'unknown'
+            return "unknown"
 
-    def _classify_sensitive_data_severity(self, sensitive_field: SensitiveField,
-                                        auth_context: AuthContext) -> Severity:
+    def _classify_sensitive_data_severity(
+        self, sensitive_field: SensitiveField, auth_context: AuthContext
+    ) -> Severity:
         """
         Classify severity of sensitive data exposure.
 
@@ -592,32 +681,33 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             Severity level
         """
         sensitivity_type = sensitive_field.sensitivity_type
-        privilege_level = getattr(auth_context, 'privilege_level', 1)
+        privilege_level = getattr(auth_context, "privilege_level", 1)
 
         # Critical: Passwords, API keys, financial data should never appear in a
         # response body regardless of who requested it.
-        if sensitivity_type in ['password', 'api_key', 'financial']:
+        if sensitivity_type in ["password", "api_key", "financial"]:
             return Severity.CRITICAL
 
         # Personal data: severity scales with how little the requesting context
         # should be seeing personal data. A lone email does not by itself drive
         # an escalation; only the data type and privilege level do.
-        if sensitivity_type == 'personal_data':
-            if privilege_level <= 0:      # anonymous / unauthenticated
+        if sensitivity_type == "personal_data":
+            if privilege_level <= 0:  # anonymous / unauthenticated
                 return Severity.HIGH
-            if privilege_level < 2:       # regular user
+            if privilege_level < 2:  # regular user
                 return Severity.MEDIUM
-            return Severity.LOW           # high-privilege / administrative access
+            return Severity.LOW  # high-privilege / administrative access
 
         # Medium: Internal/debug data exposed
-        if sensitivity_type == 'internal':
+        if sensitivity_type == "internal":
             return Severity.MEDIUM
 
         # Default to medium for unknown sensitive data
         return Severity.MEDIUM
 
-    def _is_authorized_to_view(self, sensitive_field: SensitiveField,
-                               auth_context: AuthContext) -> bool:
+    def _is_authorized_to_view(
+        self, sensitive_field: SensitiveField, auth_context: AuthContext
+    ) -> bool:
         """
         Decide whether the requesting Auth_Context is authorized to view the
         given personal-data field (Requirements 12.3, 12.4).
@@ -640,7 +730,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             True if the context is authorized to view the data, False otherwise.
         """
-        privilege_level = getattr(auth_context, 'privilege_level', 1)
+        privilege_level = getattr(auth_context, "privilege_level", 1)
 
         # Anonymous / unauthenticated contexts are never authorized.
         if privilege_level <= 0:
@@ -653,8 +743,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         # Regular users are authorized only for data that belongs to them.
         return self._data_belongs_to_context(sensitive_field, auth_context)
 
-    def _data_belongs_to_context(self, sensitive_field: SensitiveField,
-                                 auth_context: AuthContext) -> bool:
+    def _data_belongs_to_context(
+        self, sensitive_field: SensitiveField, auth_context: AuthContext
+    ) -> bool:
         """
         Heuristic ownership check: does the personal-data value identify the
         requesting context itself (e.g. the context's own username/email)?
@@ -671,14 +762,14 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             True if the value appears to belong to the requesting context.
         """
         identity_markers = []
-        username = getattr(auth_context, 'username', None)
+        username = getattr(auth_context, "username", None)
         if username:
             identity_markers.append(username.lower())
 
         if not identity_markers:
             return False
 
-        value = (sensitive_field.field_value or '').lower()
+        value = (sensitive_field.field_value or "").lower()
         return any(marker and marker in value for marker in identity_markers)
 
     async def _test_mass_assignment(self, endpoints: list[Any]) -> list[Finding]:
@@ -699,7 +790,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             self.http_client.set_auth_context(auth_context)
 
             for endpoint in endpoints:
-                endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
+                endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
 
                 # Test mass assignment with different HTTP methods
                 for method in self.TEST_METHODS:
@@ -715,22 +806,25 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         findings.extend(mass_assignment_findings)
 
                     except Exception as e:
-                        self.logger.debug("Mass assignment test failed",
-                                        endpoint=endpoint_url,
-                                        method=method,
-                                        auth_context=auth_context.name,
-                                        error=str(e))
+                        self.logger.debug(
+                            "Mass assignment test failed",
+                            endpoint=endpoint_url,
+                            method=method,
+                            auth_context=auth_context.name,
+                            error=str(e),
+                        )
 
         return findings
 
-    async def _test_endpoint_mass_assignment(self, endpoint_url: str, method: str,
-                                           auth_context: AuthContext) -> list[Finding]:
+    async def _test_endpoint_mass_assignment(
+        self, endpoint_url: str, method: str, auth_context: AuthContext
+    ) -> list[Finding]:
         """Test mass assignment for a specific endpoint"""
         findings = []
 
         # First, make a baseline request to understand the endpoint
         try:
-            baseline_response = await self.http_client.request('GET', endpoint_url)
+            baseline_response = await self.http_client.request("GET", endpoint_url)
             if not baseline_response.is_success:
                 return findings
 
@@ -738,9 +832,11 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             existing_fields = self._extract_fields_from_response(baseline_response)
 
         except Exception as e:
-            self.logger.debug("Baseline request failed for mass assignment test",
-                            endpoint=endpoint_url,
-                            error=str(e))
+            self.logger.debug(
+                "Baseline request failed for mass assignment test",
+                endpoint=endpoint_url,
+                error=str(e),
+            )
             return findings
 
         # When a merged Spec_Schema resolves an operation for this
@@ -774,7 +870,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
                     # Add some existing fields to make request more realistic
                     if existing_fields:
-                        sample_fields = dict(list(existing_fields.items())[:3])  # Take first 3 fields
+                        sample_fields = dict(
+                            list(existing_fields.items())[:3]
+                        )  # Take first 3 fields
                         test_payload.update(sample_fields)
 
                 # Merge any Actor_Profile per-endpoint query/body values for this
@@ -787,9 +885,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 )
 
                 # Make request with mass assignment payload
-                request_kwargs = {'json': test_payload}
+                request_kwargs = {"json": test_payload}
                 if params:
-                    request_kwargs['params'] = params
+                    request_kwargs["params"] = params
                 test_response = await self.http_client.request(
                     method, endpoint_url, **request_kwargs
                 )
@@ -799,13 +897,15 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     test_response, endpoint_url, dangerous_field, test_payload[dangerous_field]
                 )
                 if persistence_evidence:
-                    severity = self._classify_mass_assignment_severity(dangerous_field, auth_context)
+                    severity = self._classify_mass_assignment_severity(
+                        dangerous_field, auth_context
+                    )
 
                     finding = Finding(
                         id=str(uuid.uuid4()),
-                        scan_id='',
-                        category='MASS_ASSIGNMENT',
-                        owasp_category='API3',
+                        scan_id="",
+                        category="MASS_ASSIGNMENT",
+                        owasp_category="API3",
                         severity=severity,
                         endpoint=endpoint_url,
                         method=method,
@@ -813,27 +913,31 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         response_size=len(test_response.content),
                         response_time=test_response.elapsed,
                         evidence=f"Mass assignment vulnerability detected. "
-                                f"Injected field '{dangerous_field}' with value "
-                                f"'{test_payload[dangerous_field]}' was bound and persisted. "
-                                f"{persistence_evidence}",
+                        f"Injected field '{dangerous_field}' with value "
+                        f"'{test_payload[dangerous_field]}' was bound and persisted. "
+                        f"{persistence_evidence}",
                         recommendation="Implement input validation and use allow-lists for accepted fields. "
-                                     "Reject requests containing unexpected or dangerous fields.",
+                        "Reject requests containing unexpected or dangerous fields.",
                         payload=json.dumps(test_payload),
-                        response_snippet=test_response.text[:500] if test_response.text else None
+                        response_snippet=test_response.text[:500] if test_response.text else None,
                     )
                     findings.append(finding)
 
-                    self.logger.warning("Mass assignment vulnerability detected",
-                                      field=dangerous_field,
-                                      endpoint=endpoint_url,
-                                      method=method,
-                                      auth_context=auth_context.name)
+                    self.logger.warning(
+                        "Mass assignment vulnerability detected",
+                        field=dangerous_field,
+                        endpoint=endpoint_url,
+                        method=method,
+                        auth_context=auth_context.name,
+                    )
 
             except Exception as e:
-                self.logger.debug("Mass assignment test failed for field",
-                                field=dangerous_field,
-                                endpoint=endpoint_url,
-                                error=str(e))
+                self.logger.debug(
+                    "Mass assignment test failed for field",
+                    field=dangerous_field,
+                    endpoint=endpoint_url,
+                    error=str(e),
+                )
 
         return findings
 
@@ -842,7 +946,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         fields = {}
 
         try:
-            if 'application/json' in response.headers.get('content-type', ''):
+            if "application/json" in response.headers.get("content-type", ""):
                 data = json.loads(response.text)
                 if isinstance(data, dict):
                     # Extract top-level fields
@@ -858,26 +962,26 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """Generate appropriate test value for a field"""
         field_lower = field_name.lower()
 
-        if 'admin' in field_lower or 'is_admin' in field_lower:
+        if "admin" in field_lower or "is_admin" in field_lower:
             return True
-        elif 'role' in field_lower:
-            return 'admin'
-        elif 'permission' in field_lower:
-            return ['admin', 'write', 'delete']
-        elif 'id' in field_lower:
+        elif "role" in field_lower:
+            return "admin"
+        elif "permission" in field_lower:
+            return ["admin", "write", "delete"]
+        elif "id" in field_lower:
             return 999999
-        elif 'active' in field_lower or 'enabled' in field_lower:
+        elif "active" in field_lower or "enabled" in field_lower:
             return True
-        elif 'balance' in field_lower or 'credit' in field_lower:
+        elif "balance" in field_lower or "credit" in field_lower:
             return 1000000
-        elif 'level' in field_lower or 'score' in field_lower:
+        elif "level" in field_lower or "score" in field_lower:
             return 100
         else:
-            return 'test_value'
+            return "test_value"
 
-    async def _is_mass_assignment_successful(self, test_response: Response,
-                                             endpoint: str, field_name: str,
-                                             test_value: Any) -> str | None:
+    async def _is_mass_assignment_successful(
+        self, test_response: Response, endpoint: str, field_name: str, test_value: Any
+    ) -> str | None:
         """
         Determine if mass assignment was successful via persistence verification.
 
@@ -902,24 +1006,27 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # 1. Exact field/value reflected directly in the write response body.
         if self._reflects_injected_value(test_response, field_name, test_value):
-            return (f"Injected field '{field_name}' with value '{test_value}' was "
-                    f"reflected in the write response body "
-                    f"(status {test_response.status_code}).")
+            return (
+                f"Injected field '{field_name}' with value '{test_value}' was "
+                f"reflected in the write response body "
+                f"(status {test_response.status_code})."
+            )
 
         # 2. Exact field/value confirmed by a safe re-read of the same object.
         reread_response = await self._reget_object(endpoint)
         if reread_response is not None and self._reflects_injected_value(
             reread_response, field_name, test_value
         ):
-            return (f"Injected field '{field_name}' with value '{test_value}' persisted "
-                    f"and was confirmed by re-reading the object via GET "
-                    f"(status {reread_response.status_code}).")
+            return (
+                f"Injected field '{field_name}' with value '{test_value}' persisted "
+                f"and was confirmed by re-reading the object via GET "
+                f"(status {reread_response.status_code})."
+            )
 
         # Neither the write response nor the re-read reflected the injected value.
         return None
 
-    def _reflects_injected_value(self, response: Response | None, field: str,
-                                 value: Any) -> bool:
+    def _reflects_injected_value(self, response: Response | None, field: str, value: Any) -> bool:
         """
         Check whether the exact injected field/value pair is reflected in a JSON response.
 
@@ -934,13 +1041,13 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             True if the field is present with the injected value, False otherwise.
         """
-        if response is None or not getattr(response, 'text', None):
+        if response is None or not getattr(response, "text", None):
             return False
 
-        content_type = ''
+        content_type = ""
         if response.headers:
-            content_type = response.headers.get('content-type', '')
-        if 'application/json' not in content_type:
+            content_type = response.headers.get("content-type", "")
+        if "application/json" not in content_type:
             return False
 
         try:
@@ -987,30 +1094,33 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             The successful re-read Response, or None when the re-read fails.
         """
         try:
-            response = await self.http_client.request('GET', endpoint)
+            response = await self.http_client.request("GET", endpoint)
             if response.is_success:
                 return response
         except Exception as e:
-            self.logger.debug("Re-read GET failed during mass assignment verification",
-                              endpoint=endpoint,
-                              error=str(e))
+            self.logger.debug(
+                "Re-read GET failed during mass assignment verification",
+                endpoint=endpoint,
+                error=str(e),
+            )
         return None
 
-    def _classify_mass_assignment_severity(self, field_name: str,
-                                         auth_context: AuthContext) -> Severity:
+    def _classify_mass_assignment_severity(
+        self, field_name: str, auth_context: AuthContext
+    ) -> Severity:
         """Classify severity of mass assignment vulnerability"""
         field_lower = field_name.lower()
 
         # Critical: Admin privilege escalation
-        if any(term in field_lower for term in ['admin', 'role', 'permission']):
+        if any(term in field_lower for term in ["admin", "role", "permission"]):
             return Severity.CRITICAL
 
         # High: User ID manipulation or financial fields
-        if any(term in field_lower for term in ['user_id', 'id', 'balance', 'credit']):
+        if any(term in field_lower for term in ["user_id", "id", "balance", "credit"]):
             return Severity.HIGH
 
         # Medium: Status or configuration changes
-        if any(term in field_lower for term in ['active', 'enabled', 'status']):
+        if any(term in field_lower for term in ["active", "enabled", "status"]):
             return Severity.MEDIUM
 
         return Severity.MEDIUM
@@ -1033,7 +1143,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             self.http_client.set_auth_context(auth_context)
 
             for endpoint in endpoints:
-                endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
+                endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
 
                 # Test with different HTTP methods
                 for method in self.TEST_METHODS:
@@ -1049,31 +1159,34 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         findings.extend(readonly_findings)
 
                     except Exception as e:
-                        self.logger.debug("Read-only property test failed",
-                                        endpoint=endpoint_url,
-                                        method=method,
-                                        auth_context=auth_context.name,
-                                        error=str(e))
+                        self.logger.debug(
+                            "Read-only property test failed",
+                            endpoint=endpoint_url,
+                            method=method,
+                            auth_context=auth_context.name,
+                            error=str(e),
+                        )
 
         return findings
 
-    async def _test_endpoint_readonly_modification(self, endpoint_url: str, method: str,
-                                                 auth_context: AuthContext) -> list[Finding]:
+    async def _test_endpoint_readonly_modification(
+        self, endpoint_url: str, method: str, auth_context: AuthContext
+    ) -> list[Finding]:
         """Test read-only property modification for a specific endpoint"""
         findings = []
 
         # Get baseline response to identify existing fields
         try:
-            baseline_response = await self.http_client.request('GET', endpoint_url)
+            baseline_response = await self.http_client.request("GET", endpoint_url)
             if not baseline_response.is_success:
                 return findings
 
             existing_fields = self._extract_fields_from_response(baseline_response)
 
         except Exception as e:
-            self.logger.debug("Baseline request failed for read-only test",
-                            endpoint=endpoint_url,
-                            error=str(e))
+            self.logger.debug(
+                "Baseline request failed for read-only test", endpoint=endpoint_url, error=str(e)
+            )
             return findings
 
         # Test modification of read-only fields
@@ -1095,9 +1208,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     )
 
                     # Make request to modify read-only field
-                    request_kwargs = {'json': test_payload}
+                    request_kwargs = {"json": test_payload}
                     if params:
-                        request_kwargs['params'] = params
+                        request_kwargs["params"] = params
                     test_response = await self.http_client.request(
                         method, endpoint_url, **request_kwargs
                     )
@@ -1108,9 +1221,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     ):
                         finding = Finding(
                             id=str(uuid.uuid4()),
-                            scan_id='',
-                            category='READONLY_PROPERTY_MODIFICATION',
-                            owasp_category='API3',
+                            scan_id="",
+                            category="READONLY_PROPERTY_MODIFICATION",
+                            owasp_category="API3",
                             severity=Severity.HIGH,
                             endpoint=endpoint_url,
                             method=method,
@@ -1118,27 +1231,33 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                             response_size=len(test_response.content),
                             response_time=test_response.elapsed,
                             evidence=f"Read-only property '{readonly_field}' can be modified. "
-                                    f"Original value: '{original_value}', "
-                                    f"Test value: '{test_value}', "
-                                    f"Response status: {test_response.status_code}",
+                            f"Original value: '{original_value}', "
+                            f"Test value: '{test_value}', "
+                            f"Response status: {test_response.status_code}",
                             recommendation="Implement proper validation to prevent modification of read-only fields. "
-                                         "Use separate DTOs for input and output to control field access.",
+                            "Use separate DTOs for input and output to control field access.",
                             payload=json.dumps(test_payload),
-                            response_snippet=test_response.text[:500] if test_response.text else None
+                            response_snippet=test_response.text[:500]
+                            if test_response.text
+                            else None,
                         )
                         findings.append(finding)
 
-                        self.logger.warning("Read-only property modification detected",
-                                          field=readonly_field,
-                                          endpoint=endpoint_url,
-                                          method=method,
-                                          auth_context=auth_context.name)
+                        self.logger.warning(
+                            "Read-only property modification detected",
+                            field=readonly_field,
+                            endpoint=endpoint_url,
+                            method=method,
+                            auth_context=auth_context.name,
+                        )
 
                 except Exception as e:
-                    self.logger.debug("Read-only property test failed for field",
-                                    field=readonly_field,
-                                    endpoint=endpoint_url,
-                                    error=str(e))
+                    self.logger.debug(
+                        "Read-only property test failed for field",
+                        field=readonly_field,
+                        endpoint=endpoint_url,
+                        error=str(e),
+                    )
 
         return findings
 
@@ -1146,29 +1265,31 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         """Generate test value for read-only field modification"""
         field_lower = field_name.lower()
 
-        if 'id' in field_lower:
-            return 999999 if isinstance(original_value, int) else 'modified_id'
-        elif 'created' in field_lower or 'updated' in field_lower:
-            return '2099-12-31T23:59:59Z'
-        elif 'timestamp' in field_lower:
-            return '2099-12-31 23:59:59'
-        elif 'version' in field_lower or 'revision' in field_lower:
-            return 999 if isinstance(original_value, int) else 'modified_version'
-        elif 'hash' in field_lower or 'checksum' in field_lower:
-            return 'modified_hash_value'
+        if "id" in field_lower:
+            return 999999 if isinstance(original_value, int) else "modified_id"
+        elif "created" in field_lower or "updated" in field_lower:
+            return "2099-12-31T23:59:59Z"
+        elif "timestamp" in field_lower:
+            return "2099-12-31 23:59:59"
+        elif "version" in field_lower or "revision" in field_lower:
+            return 999 if isinstance(original_value, int) else "modified_version"
+        elif "hash" in field_lower or "checksum" in field_lower:
+            return "modified_hash_value"
         else:
-            return 'modified_readonly_value'
+            return "modified_readonly_value"
 
-    def _is_readonly_modification_successful(self, baseline_response: Response,
-                                           test_response: Response, field_name: str,
-                                           test_value: Any) -> bool:
+    def _is_readonly_modification_successful(
+        self, baseline_response: Response, test_response: Response, field_name: str, test_value: Any
+    ) -> bool:
         """Determine if read-only field modification was successful"""
         if not test_response.is_success:
             return False
 
         # Check if the test value appears in the response
         try:
-            if test_response.text and 'application/json' in test_response.headers.get('content-type', ''):
+            if test_response.text and "application/json" in test_response.headers.get(
+                "content-type", ""
+            ):
                 response_data = json.loads(test_response.text)
 
                 if isinstance(response_data, dict):
@@ -1206,8 +1327,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         supplied_context_count = len(self.auth_contexts)
         if supplied_context_count < 2:
             self.logger.info(
-                "Skipping undocumented-field comparison: fewer than two auth "
-                "contexts supplied",
+                "Skipping undocumented-field comparison: fewer than two auth contexts supplied",
                 module="property_level_auth",
                 supplied_auth_contexts=supplied_context_count,
             )
@@ -1223,16 +1343,18 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
             self.http_client.set_auth_context(auth_context)
 
             for endpoint in endpoints:
-                endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-                method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+                endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+                method = endpoint.method if hasattr(endpoint, "method") else "GET"
                 # Safe mode: undocumented-field discovery is a read probe; never
                 # replay a state-changing method (Requirements 11.1, 21.2, 21.3).
                 method = self.safe_read_method(method, "undocumented_fields")
 
                 try:
                     params, _ = apply_actor_profile(auth_context, endpoint_url)
-                    request_kwargs = {'params': params} if params else {}
-                    response = await self.http_client.request(method, endpoint_url, **request_kwargs)
+                    request_kwargs = {"params": params} if params else {}
+                    response = await self.http_client.request(
+                        method, endpoint_url, **request_kwargs
+                    )
 
                     if response.is_success and response.text:
                         fields = self._extract_all_fields_from_response(response)
@@ -1243,10 +1365,12 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                         all_fields[endpoint_url][auth_context.name] = fields
 
                 except Exception as e:
-                    self.logger.debug("Undocumented fields test failed",
-                                    endpoint=endpoint_url,
-                                    auth_context=auth_context.name,
-                                    error=str(e))
+                    self.logger.debug(
+                        "Undocumented fields test failed",
+                        endpoint=endpoint_url,
+                        auth_context=auth_context.name,
+                        error=str(e),
+                    )
 
         # Analyze field variations to detect undocumented fields
         for endpoint_url, context_fields in all_fields.items():
@@ -1260,7 +1384,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         fields = set()
 
         try:
-            if 'application/json' in response.headers.get('content-type', ''):
+            if "application/json" in response.headers.get("content-type", ""):
                 data = json.loads(response.text)
                 fields.update(self._get_all_json_fields(data))
         except (json.JSONDecodeError, ValueError):
@@ -1268,7 +1392,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return fields
 
-    def _get_all_json_fields(self, data: Any, prefix: str = '') -> set[str]:
+    def _get_all_json_fields(self, data: Any, prefix: str = "") -> set[str]:
         """Recursively get all field names from JSON data"""
         fields = set()
 
@@ -1289,8 +1413,9 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         return fields
 
-    def _analyze_field_variations(self, endpoint_url: str,
-                                context_fields: dict[str, set[str]]) -> list[Finding]:
+    def _analyze_field_variations(
+        self, endpoint_url: str, context_fields: dict[str, set[str]]
+    ) -> list[Finding]:
         """Analyze field variations between auth contexts to detect undocumented fields"""
         findings = []
 
@@ -1301,7 +1426,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         all_contexts = list(context_fields.keys())
 
         for i, context1 in enumerate(all_contexts):
-            for _j, context2 in enumerate(all_contexts[i+1:], i+1):
+            for _j, context2 in enumerate(all_contexts[i + 1 :], i + 1):
                 fields1 = context_fields[context1]
                 fields2 = context_fields[context2]
 
@@ -1315,55 +1440,59 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                     if self._is_potentially_undocumented(unique_field):
                         finding = Finding(
                             id=str(uuid.uuid4()),
-                            scan_id='',
-                            category='UNDOCUMENTED_FIELD',
-                            owasp_category='API3',
+                            scan_id="",
+                            category="UNDOCUMENTED_FIELD",
+                            owasp_category="API3",
                             severity=Severity.MEDIUM,
                             endpoint=endpoint_url,
-                            method='GET',
+                            method="GET",
                             status_code=200,
                             response_size=0,
                             response_time=0.0,
                             evidence=f"Field '{unique_field}' appears only for auth context '{context1}' "
-                                    f"but not for '{context2}'. This may indicate undocumented field "
-                                    f"or inconsistent API behavior.",
+                            f"but not for '{context2}'. This may indicate undocumented field "
+                            f"or inconsistent API behavior.",
                             recommendation="Document all API response fields or implement consistent "
-                                         "field filtering across all user contexts.",
-                            payload=f"Field: {unique_field}, Context: {context1}"
+                            "field filtering across all user contexts.",
+                            payload=f"Field: {unique_field}, Context: {context1}",
                         )
                         findings.append(finding)
 
-                        self.logger.info("Undocumented field detected",
-                                       field=unique_field,
-                                       endpoint=endpoint_url,
-                                       context=context1)
+                        self.logger.info(
+                            "Undocumented field detected",
+                            field=unique_field,
+                            endpoint=endpoint_url,
+                            context=context1,
+                        )
 
                 for unique_field in unique_to_context2:
                     if self._is_potentially_undocumented(unique_field):
                         finding = Finding(
                             id=str(uuid.uuid4()),
-                            scan_id='',
-                            category='UNDOCUMENTED_FIELD',
-                            owasp_category='API3',
+                            scan_id="",
+                            category="UNDOCUMENTED_FIELD",
+                            owasp_category="API3",
                             severity=Severity.MEDIUM,
                             endpoint=endpoint_url,
-                            method='GET',
+                            method="GET",
                             status_code=200,
                             response_size=0,
                             response_time=0.0,
                             evidence=f"Field '{unique_field}' appears only for auth context '{context2}' "
-                                    f"but not for '{context1}'. This may indicate undocumented field "
-                                    f"or inconsistent API behavior.",
+                            f"but not for '{context1}'. This may indicate undocumented field "
+                            f"or inconsistent API behavior.",
                             recommendation="Document all API response fields or implement consistent "
-                                         "field filtering across all user contexts.",
-                            payload=f"Field: {unique_field}, Context: {context2}"
+                            "field filtering across all user contexts.",
+                            payload=f"Field: {unique_field}, Context: {context2}",
                         )
                         findings.append(finding)
 
-                        self.logger.info("Undocumented field detected",
-                                       field=unique_field,
-                                       endpoint=endpoint_url,
-                                       context=context2)
+                        self.logger.info(
+                            "Undocumented field detected",
+                            field=unique_field,
+                            endpoint=endpoint_url,
+                            context=context2,
+                        )
 
         return findings
 
@@ -1373,8 +1502,16 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
 
         # Skip common metadata fields that are expected to vary
         common_fields = [
-            'timestamp', 'created_at', 'updated_at', 'id', 'version',
-            'status', 'message', 'success', 'error', 'code'
+            "timestamp",
+            "created_at",
+            "updated_at",
+            "id",
+            "version",
+            "status",
+            "message",
+            "success",
+            "error",
+            "code",
         ]
 
         for common_field in common_fields:

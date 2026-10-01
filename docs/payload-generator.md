@@ -753,7 +753,7 @@ for vuln_type, info in coverage.items():
 - **[Advanced Configuration](configuration.md)** - Detailed system configuration
 - **[WAF Evasion Guide](waf-evasion.md)** - WAF evasion techniques
 - **[Testing Guide](testing.md)** - Testing strategies
-- **[API Reference](api-reference.md)** - Complete API reference
+- **[CLI Reference](cli-reference.md)** - Complete command-line reference
 
 ## 🤝 Contributions
 

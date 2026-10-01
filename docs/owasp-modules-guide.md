@@ -624,4 +624,4 @@ All ten OWASP API Security Top 10 2023 modules are fully implemented and registe
 
 ---
 
-*This documentation covers APILeak version 0.3.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*
+*This documentation covers APILeak version 0.3.0. For updates, check the [project releases](https://github.com/apileak/owasp-enhancement/releases).*

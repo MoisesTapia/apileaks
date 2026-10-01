@@ -6,7 +6,7 @@ Aggregates and manages security findings from all modules
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, List
+from typing import Any
 from uuid import uuid4
 
 from core.config import Severity
@@ -27,6 +27,7 @@ class FindingClassificationError(ValueError):
 @dataclass
 class Finding:
     """Security finding data model"""
+
     id: str
     scan_id: str
     category: str
@@ -53,11 +54,13 @@ class Finding:
     # Parameter-fuzzing detection-signal fields (R3.5/R4.2/R5). All defaulted
     # so existing Finding construction sites and other commands are unaffected
     # (behavior preservation, R2).
-    detection_signal: str | None = None            # R3.5/R4.2: e.g. "reflection", "new_json_field", "status_code"
+    detection_signal: str | None = (
+        None  # R3.5/R4.2: e.g. "reflection", "new_json_field", "status_code"
+    )
     detection_signals: list[str] = field(default_factory=list)  # all signals that fired
-    reflection_location: str | None = None         # R3.5: "body" | "header"
-    new_json_fields: list[str] | None = None        # R4.2: absent-in-baseline keys detected
-    confirmation_status: str | None = None          # R5: "confirmed" | "excluded_failed_retest" | None
+    reflection_location: str | None = None  # R3.5: "body" | "header"
+    new_json_fields: list[str] | None = None  # R4.2: absent-in-baseline keys detected
+    confirmation_status: str | None = None  # R5: "confirmed" | "excluded_failed_retest" | None
 
     def __post_init__(self):
         if self.headers is None:
@@ -86,7 +89,7 @@ class FindingsCollector:
         "API7": "Server Side Request Forgery",
         "API8": "Security Misconfiguration",
         "API9": "Improper Inventory Management",
-        "API10": "Unsafe Consumption of APIs"
+        "API10": "Unsafe Consumption of APIs",
     }
 
     # Severity classification rules based on vulnerability types
@@ -99,7 +102,6 @@ class FindingsCollector:
         "ADMIN_ACCESS_ANONYMOUS": Severity.CRITICAL,
         "SENSITIVE_DATA_EXPOSURE": Severity.CRITICAL,
         "FILE_PROTOCOL_ACCESS": Severity.CRITICAL,
-
         # High severity - significant security risk
         "WEAK_JWT_ALGORITHM": Severity.HIGH,
         "TOKEN_NOT_EXPIRED": Severity.HIGH,
@@ -112,25 +114,21 @@ class FindingsCollector:
         "UNSAFE_UPSTREAM_DATA": Severity.HIGH,
         "UNSAFE_BLIND_REDIRECT": Severity.HIGH,
         "UNSAFE_CLEARTEXT_UPSTREAM": Severity.MEDIUM,
-
         # Medium severity - moderate security risk
         "MISSING_RATE_LIMITING": Severity.MEDIUM,
         "LARGE_PAYLOAD_ACCEPTED": Severity.MEDIUM,
         "MISSING_SECURITY_HEADERS": Severity.MEDIUM,
         "UNDOCUMENTED_ENDPOINT": Severity.MEDIUM,
         "PARAMETER_POLLUTION": Severity.MEDIUM,
-
         # Low severity - minor security concerns
         "INFORMATION_DISCLOSURE": Severity.LOW,
         "VERBOSE_ERROR_MESSAGES": Severity.LOW,
         "DEPRECATED_API_VERSION": Severity.LOW,
         "UNDOCUMENTED_API_VERSION": Severity.LOW,
-
         # Info - informational findings
         "ENDPOINT_DISCOVERED": Severity.INFO,
         "FRAMEWORK_DETECTED": Severity.INFO,
         "API_VERSION_FOUND": Severity.INFO,
-
         # ------------------------------------------------------------------
         # Hardened-capability categories (Req 22.1, 22.3) - BOLA / Auth /
         # JWT / Property-Level. Every category emitted by these four
@@ -152,7 +150,6 @@ class FindingsCollector:
         "BOLA_STATE_MANIPULATION": Severity.HIGH,
         "BOLA_ID_LEAKAGE": Severity.MEDIUM,
         "BOLA_PREDICTABLE_IDENTIFIER": Severity.MEDIUM,
-
         # Spec-driven Unauthorized_Endpoint_Assertion categories (Req 55, 56.1).
         # One per hardened module, each within that module's in-scope OWASP
         # category. All HIGH: a context reaching an endpoint an operator
@@ -160,7 +157,6 @@ class FindingsCollector:
         "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS": Severity.HIGH,
         "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS": Severity.HIGH,
         "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS": Severity.HIGH,
-
         # API2 - Broken Authentication / JWT subsystem
         "AUTH_ANONYMOUS_ACCESS": Severity.HIGH,
         "JWT_NONE_ALGORITHM": Severity.CRITICAL,
@@ -179,7 +175,6 @@ class FindingsCollector:
         "JWT_USER_IMPERSONATION": Severity.CRITICAL,
         "JWT_EXPIRATION_BYPASS": Severity.HIGH,
         "JWT_SCAN_COMPLETED_NO_FINDINGS": Severity.INFO,
-
         # API2 - Advanced Broken-Authentication / JWT categories
         # (Reqs 37-45; strict resolution per Req 47.1, 47.2, 47.3). All map
         # to API2. Severities calibrated against comparable existing rules:
@@ -199,7 +194,6 @@ class FindingsCollector:
         "JWT_SENSITIVE_DATA_IN_PAYLOAD": Severity.MEDIUM,
         # NOTE: "JWT_KID_INJECTION" (HIGH) is defined above.
         "JWT_JKU_SSRF": Severity.HIGH,
-
         # API2 - New JWT attack categories (Reqs 58-64; strict resolution).
         # Severities per design.md: blank-secret / psychic signature are
         # CRITICAL (signature verification is effectively defeated); claim
@@ -208,7 +202,6 @@ class FindingsCollector:
         "JWT_PSYCHIC_SIGNATURE": Severity.CRITICAL,
         "JWT_CLAIM_FUZZING_ACCEPTED": Severity.HIGH,
         "JWT_TIMESTAMP_TAMPERING_ACCEPTED": Severity.HIGH,
-
         # API2 - New JWT lifetime / missing-claim categories (Req 68; strict
         # resolution). Per design.md: excessive lifetime and missing exp/aud
         # claims are MEDIUM (weakened token hygiene / audience scoping), while
@@ -218,7 +211,6 @@ class FindingsCollector:
         "JWT_MISSING_AUD_CLAIM": Severity.MEDIUM,
         "JWT_MISSING_ISS_CLAIM": Severity.LOW,
         "JWT_MISSING_JTI_CLAIM": Severity.LOW,
-
         # API3 - Broken Object Property Level Authorization
         # NOTE: "SENSITIVE_DATA_EXPOSURE" (CRITICAL) and "MASS_ASSIGNMENT"
         # (HIGH) are defined above.
@@ -227,7 +219,6 @@ class FindingsCollector:
         # NOTE: "UNDOCUMENTED_FIELD" maps to MEDIUM below via default in the
         # legacy rules; it is added explicitly here for strict resolution.
         "UNDOCUMENTED_FIELD": Severity.MEDIUM,
-
         # API5 - Broken Function Level Authorization (all four attack levels)
         "BFLA_ADMIN_ENDPOINT_EXPOSED": Severity.MEDIUM,
         "BFLA_LOW_PRIV_ACCESS": Severity.CRITICAL,
@@ -270,7 +261,6 @@ class FindingsCollector:
         "UNSAFE_UPSTREAM_DATA": "API10",
         "UNSAFE_BLIND_REDIRECT": "API10",
         "UNSAFE_CLEARTEXT_UPSTREAM": "API10",
-
         # ------------------------------------------------------------------
         # Hardened-capability categories (Req 22.2, 22.4, 26.1). OWASP
         # categories restricted to {API1, API2, API3}.
@@ -290,13 +280,11 @@ class FindingsCollector:
         "BOLA_STATE_MANIPULATION": "API1",
         "BOLA_ID_LEAKAGE": "API1",
         "BOLA_PREDICTABLE_IDENTIFIER": "API1",
-
         # Spec-driven Unauthorized_Endpoint_Assertion categories (Req 55, 56.2):
         # each resolves within its own module's in-scope OWASP category.
         "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS": "API1",
         "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS": "API2",
         "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS": "API3",
-
         # API2 - Broken Authentication / JWT subsystem
         "AUTH_ANONYMOUS_ACCESS": "API2",
         "JWT_NONE_ALGORITHM": "API2",
@@ -315,7 +303,6 @@ class FindingsCollector:
         "JWT_USER_IMPERSONATION": "API2",
         "JWT_EXPIRATION_BYPASS": "API2",
         "JWT_SCAN_COMPLETED_NO_FINDINGS": "API2",
-
         # API2 - Advanced Broken-Authentication / JWT categories
         # (Reqs 37-45; Req 47.2 mandates OWASP_Category API2 for all twelve).
         "AUTH_NO_RATE_LIMITING": "API2",
@@ -330,13 +317,11 @@ class FindingsCollector:
         "JWT_SENSITIVE_DATA_IN_PAYLOAD": "API2",
         # NOTE: "JWT_KID_INJECTION" -> API2 is defined above.
         "JWT_JKU_SSRF": "API2",
-
         # API2 - New JWT attack categories (Reqs 58-64; all map to API2).
         "JWT_BLANK_SECRET_ACCEPTED": "API2",
         "JWT_PSYCHIC_SIGNATURE": "API2",
         "JWT_CLAIM_FUZZING_ACCEPTED": "API2",
         "JWT_TIMESTAMP_TAMPERING_ACCEPTED": "API2",
-
         # API2 - New JWT lifetime / missing-claim categories (Req 68; all map
         # to API2).
         "JWT_EXCESSIVE_TOKEN_LIFETIME": "API2",
@@ -344,12 +329,10 @@ class FindingsCollector:
         "JWT_MISSING_AUD_CLAIM": "API2",
         "JWT_MISSING_ISS_CLAIM": "API2",
         "JWT_MISSING_JTI_CLAIM": "API2",
-
         # API3 - Property-Level (SENSITIVE_DATA_EXPOSURE / MASS_ASSIGNMENT /
         # UNDOCUMENTED_FIELD mapped above)
         "MASS_ASSIGNMENT_PRIVILEGE": "API3",
         "READONLY_PROPERTY_MODIFICATION": "API3",
-
         # API5 - Broken Function Level Authorization (all four levels)
         "BFLA_ADMIN_ENDPOINT_EXPOSED": "API5",
         "BFLA_LOW_PRIV_ACCESS": "API5",
@@ -371,83 +354,85 @@ class FindingsCollector:
     # resolve to a defined Severity (in SEVERITY_RULES) and an in-scope
     # OWASP_Category (in CATEGORY_TO_OWASP). This list is the single source of
     # truth used by the classification-completeness property test (Req 24.6).
-    EMITTED_CATEGORIES = frozenset({
-        # API1 - BOLA
-        "BOLA_ANONYMOUS_ACCESS",
-        "BOLA_HORIZONTAL_ESCALATION",
-        "BOLA_OBJECT_ACCESS",
-        "BOLA_ID_ENUMERATION",
-        "BOLA_GUID_ENUMERATION",
-        # API1 - Advanced BOLA (Reqs 27-32)
-        "BOLA_ACCOUNT_TAKEOVER",
-        "BOLA_WRITE_ESCALATION",
-        "BOLA_CROSS_TENANT",
-        "BOLA_BROKEN_OBJECT_RELATIONSHIP",
-        "BOLA_STATE_MANIPULATION",
-        "BOLA_ID_LEAKAGE",
-        "BOLA_PREDICTABLE_IDENTIFIER",
-        # API1 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
-        "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS",
-        # API2 - Auth / JWT
-        "AUTH_ANONYMOUS_ACCESS",
-        "JWT_NONE_ALGORITHM",
-        "JWT_NONE_ALGORITHM_ACCEPTED",
-        "JWT_NULL_SIGNATURE",
-        "JWT_WEAK_SECRET",
-        "JWT_ALGORITHM_CONFUSION",
-        "JWT_EXPIRED_TOKEN_ACCEPTED",
-        "JWT_NO_EXPIRATION",
-        "JWT_WEAK_EXPIRATION_VALIDATION",
-        "JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT",
-        "JWT_KID_INJECTION",
-        "JWT_JWKS_SPOOF",
-        "JWT_INLINE_JWKS",
-        "JWT_PRIVILEGE_ESCALATION",
-        "JWT_USER_IMPERSONATION",
-        "JWT_EXPIRATION_BYPASS",
-        "JWT_SCAN_COMPLETED_NO_FINDINGS",
-        # API2 - Advanced Broken-Authentication / JWT (Reqs 37-45)
-        "AUTH_NO_RATE_LIMITING",
-        "AUTH_CREDENTIAL_STUFFING_EXPOSURE",
-        "AUTH_SECRET_IN_URL",
-        "AUTH_MFA_BYPASS",
-        "AUTH_PREDICTABLE_RESET_TOKEN",
-        "AUTH_OAUTH_REDIRECT_URI",
-        "AUTH_TOKEN_AUDIENCE_CONFUSION",
-        "AUTH_OAUTH_MISSING_STATE",
-        "AUTH_TOKEN_REVOCATION_RACE",
-        "JWT_SENSITIVE_DATA_IN_PAYLOAD",
-        "JWT_JKU_SSRF",
-        # API2 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
-        "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS",
-        # API2 - New JWT attack categories (Reqs 58-64)
-        "JWT_BLANK_SECRET_ACCEPTED",
-        "JWT_PSYCHIC_SIGNATURE",
-        "JWT_CLAIM_FUZZING_ACCEPTED",
-        "JWT_TIMESTAMP_TAMPERING_ACCEPTED",
-        # API2 - New JWT lifetime / missing-claim categories (Req 68)
-        "JWT_EXCESSIVE_TOKEN_LIFETIME",
-        "JWT_MISSING_EXP_CLAIM",
-        "JWT_MISSING_AUD_CLAIM",
-        "JWT_MISSING_ISS_CLAIM",
-        "JWT_MISSING_JTI_CLAIM",
-        # API3 - Property-Level
-        "SENSITIVE_DATA_EXPOSURE",
-        "MASS_ASSIGNMENT",
-        "MASS_ASSIGNMENT_PRIVILEGE",
-        "READONLY_PROPERTY_MODIFICATION",
-        # API3 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
-        "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS",
-        "UNDOCUMENTED_FIELD",
-        # API5 - Broken Function Level Authorization (all four attack levels)
-        "BFLA_ADMIN_ENDPOINT_EXPOSED",
-        "BFLA_LOW_PRIV_ACCESS",
-        "BFLA_ANONYMOUS_ADMIN_ACCESS",
-        "BFLA_VERB_TAMPERING",
-        "BFLA_METHOD_OVERRIDE",
-        "BFLA_MASS_ASSIGNMENT_ROLE",
-        "BFLA_VERSION_DOWNGRADE",
-    })
+    EMITTED_CATEGORIES = frozenset(
+        {
+            # API1 - BOLA
+            "BOLA_ANONYMOUS_ACCESS",
+            "BOLA_HORIZONTAL_ESCALATION",
+            "BOLA_OBJECT_ACCESS",
+            "BOLA_ID_ENUMERATION",
+            "BOLA_GUID_ENUMERATION",
+            # API1 - Advanced BOLA (Reqs 27-32)
+            "BOLA_ACCOUNT_TAKEOVER",
+            "BOLA_WRITE_ESCALATION",
+            "BOLA_CROSS_TENANT",
+            "BOLA_BROKEN_OBJECT_RELATIONSHIP",
+            "BOLA_STATE_MANIPULATION",
+            "BOLA_ID_LEAKAGE",
+            "BOLA_PREDICTABLE_IDENTIFIER",
+            # API1 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
+            "BOLA_UNAUTHORIZED_ENDPOINT_ACCESS",
+            # API2 - Auth / JWT
+            "AUTH_ANONYMOUS_ACCESS",
+            "JWT_NONE_ALGORITHM",
+            "JWT_NONE_ALGORITHM_ACCEPTED",
+            "JWT_NULL_SIGNATURE",
+            "JWT_WEAK_SECRET",
+            "JWT_ALGORITHM_CONFUSION",
+            "JWT_EXPIRED_TOKEN_ACCEPTED",
+            "JWT_NO_EXPIRATION",
+            "JWT_WEAK_EXPIRATION_VALIDATION",
+            "JWT_TOKEN_NOT_INVALIDATED_AFTER_LOGOUT",
+            "JWT_KID_INJECTION",
+            "JWT_JWKS_SPOOF",
+            "JWT_INLINE_JWKS",
+            "JWT_PRIVILEGE_ESCALATION",
+            "JWT_USER_IMPERSONATION",
+            "JWT_EXPIRATION_BYPASS",
+            "JWT_SCAN_COMPLETED_NO_FINDINGS",
+            # API2 - Advanced Broken-Authentication / JWT (Reqs 37-45)
+            "AUTH_NO_RATE_LIMITING",
+            "AUTH_CREDENTIAL_STUFFING_EXPOSURE",
+            "AUTH_SECRET_IN_URL",
+            "AUTH_MFA_BYPASS",
+            "AUTH_PREDICTABLE_RESET_TOKEN",
+            "AUTH_OAUTH_REDIRECT_URI",
+            "AUTH_TOKEN_AUDIENCE_CONFUSION",
+            "AUTH_OAUTH_MISSING_STATE",
+            "AUTH_TOKEN_REVOCATION_RACE",
+            "JWT_SENSITIVE_DATA_IN_PAYLOAD",
+            "JWT_JKU_SSRF",
+            # API2 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
+            "AUTH_UNAUTHORIZED_ENDPOINT_ACCESS",
+            # API2 - New JWT attack categories (Reqs 58-64)
+            "JWT_BLANK_SECRET_ACCEPTED",
+            "JWT_PSYCHIC_SIGNATURE",
+            "JWT_CLAIM_FUZZING_ACCEPTED",
+            "JWT_TIMESTAMP_TAMPERING_ACCEPTED",
+            # API2 - New JWT lifetime / missing-claim categories (Req 68)
+            "JWT_EXCESSIVE_TOKEN_LIFETIME",
+            "JWT_MISSING_EXP_CLAIM",
+            "JWT_MISSING_AUD_CLAIM",
+            "JWT_MISSING_ISS_CLAIM",
+            "JWT_MISSING_JTI_CLAIM",
+            # API3 - Property-Level
+            "SENSITIVE_DATA_EXPOSURE",
+            "MASS_ASSIGNMENT",
+            "MASS_ASSIGNMENT_PRIVILEGE",
+            "READONLY_PROPERTY_MODIFICATION",
+            # API3 - Spec-driven Unauthorized_Endpoint_Assertion (Req 55, 56.1)
+            "PROPERTY_UNAUTHORIZED_ENDPOINT_ACCESS",
+            "UNDOCUMENTED_FIELD",
+            # API5 - Broken Function Level Authorization (all four attack levels)
+            "BFLA_ADMIN_ENDPOINT_EXPOSED",
+            "BFLA_LOW_PRIV_ACCESS",
+            "BFLA_ANONYMOUS_ADMIN_ACCESS",
+            "BFLA_VERB_TAMPERING",
+            "BFLA_METHOD_OVERRIDE",
+            "BFLA_MASS_ASSIGNMENT_ROLE",
+            "BFLA_VERSION_DOWNGRADE",
+        }
+    )
 
     def __init__(self, scan_id: str):
         """
@@ -463,14 +448,16 @@ class FindingsCollector:
 
         self.logger.info("Findings Collector initialized with enhanced classification")
 
-    def add_finding(self,
-                   category: str,
-                   severity: Severity | None,
-                   endpoint: str,
-                   method: str,
-                   evidence: str,
-                   recommendation: str,
-                   **kwargs) -> Finding:
+    def add_finding(
+        self,
+        category: str,
+        severity: Severity | None,
+        endpoint: str,
+        method: str,
+        evidence: str,
+        recommendation: str,
+        **kwargs,
+    ) -> Finding:
         """
         Add a new finding with automatic classification
 
@@ -502,13 +489,13 @@ class FindingsCollector:
             method=method,
             evidence=evidence,
             recommendation=recommendation,
-            owasp_category=owasp_category or kwargs.get('owasp_category'),
-            status_code=kwargs.get('status_code', 0),
-            response_size=kwargs.get('response_size', 0),
-            response_time=kwargs.get('response_time', 0.0),
-            payload=kwargs.get('payload'),
-            response_snippet=kwargs.get('response_snippet'),
-            headers=kwargs.get('headers', {})
+            owasp_category=owasp_category or kwargs.get("owasp_category"),
+            status_code=kwargs.get("status_code", 0),
+            response_size=kwargs.get("response_size", 0),
+            response_time=kwargs.get("response_time", 0.0),
+            payload=kwargs.get("payload"),
+            response_snippet=kwargs.get("response_snippet"),
+            headers=kwargs.get("headers", {}),
         )
 
         # Check for duplicates before adding
@@ -516,15 +503,15 @@ class FindingsCollector:
             self.findings.append(finding)
             self._add_to_deduplication_cache(finding)
 
-            self.logger.info("Finding added",
-                            category=category,
-                            severity=severity.value,
-                            endpoint=endpoint,
-                            owasp_category=owasp_category)
+            self.logger.info(
+                "Finding added",
+                category=category,
+                severity=severity.value,
+                endpoint=endpoint,
+                owasp_category=owasp_category,
+            )
         else:
-            self.logger.debug("Duplicate finding ignored",
-                             category=category,
-                             endpoint=endpoint)
+            self.logger.debug("Duplicate finding ignored", category=category, endpoint=endpoint)
 
         return finding
 
@@ -556,10 +543,12 @@ class FindingsCollector:
                 self._add_to_deduplication_cache(finding)
                 added_count += 1
 
-        self.logger.info("Multiple findings processed",
-                        total_submitted=len(findings),
-                        unique_added=added_count,
-                        duplicates_ignored=len(findings) - added_count)
+        self.logger.info(
+            "Multiple findings processed",
+            total_submitted=len(findings),
+            unique_added=added_count,
+            duplicates_ignored=len(findings) - added_count,
+        )
 
         return added_count
 
@@ -644,7 +633,9 @@ class FindingsCollector:
         # Create deduplication key based on endpoint, method, category, and evidence hash.
         # usedforsecurity=False: this hash is used only for deduplication, not for any
         # cryptographic or security purpose, so a non-collision-resistant hash is acceptable.
-        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
+        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[
+            :8
+        ]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
 
         return dedup_key in self._deduplication_cache
@@ -656,14 +647,18 @@ class FindingsCollector:
         Args:
             finding: Finding to add to cache
         """
-        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[:8]
+        evidence_hash = hashlib.md5(finding.evidence.encode(), usedforsecurity=False).hexdigest()[
+            :8
+        ]
         dedup_key = f"{finding.endpoint}:{finding.method}:{finding.category}:{evidence_hash}"
         self._deduplication_cache.add(dedup_key)
 
-    def get_findings(self,
-                    severity: Severity | None = None,
-                    category: str | None = None,
-                    owasp_category: str | None = None) -> list[Finding]:
+    def get_findings(
+        self,
+        severity: Severity | None = None,
+        category: str | None = None,
+        owasp_category: str | None = None,
+    ) -> list[Finding]:
         """
         Get findings with optional filtering
 
@@ -700,7 +695,7 @@ class FindingsCollector:
             Severity.HIGH.value: [],
             Severity.MEDIUM.value: [],
             Severity.LOW.value: [],
-            Severity.INFO.value: []
+            Severity.INFO.value: [],
         }
 
         for finding in self.findings:
@@ -770,7 +765,7 @@ class FindingsCollector:
             Severity.HIGH: 2,
             Severity.MEDIUM: 3,
             Severity.LOW: 4,
-            Severity.INFO: 5
+            Severity.INFO: 5,
         }
 
         # Sort findings by severity priority, then OWASP priority
@@ -778,8 +773,8 @@ class FindingsCollector:
             self.findings,
             key=lambda f: (
                 severity_priority.get(f.severity, 99),
-                self._get_owasp_priority(f.owasp_category)
-            )
+                self._get_owasp_priority(f.owasp_category),
+            ),
         )
 
         if limit:
@@ -811,10 +806,12 @@ class FindingsCollector:
         coverage = {}
         for category, description in self.OWASP_CATEGORIES.items():
             findings_count = len(findings_by_owasp.get(category, []))
-            critical_count = len([f for f in findings_by_owasp.get(category, [])
-                                if f.severity == Severity.CRITICAL])
-            high_count = len([f for f in findings_by_owasp.get(category, [])
-                            if f.severity == Severity.HIGH])
+            critical_count = len(
+                [f for f in findings_by_owasp.get(category, []) if f.severity == Severity.CRITICAL]
+            )
+            high_count = len(
+                [f for f in findings_by_owasp.get(category, []) if f.severity == Severity.HIGH]
+            )
 
             coverage[category] = {
                 "description": description,
@@ -822,7 +819,9 @@ class FindingsCollector:
                 "critical_findings": critical_count,
                 "high_findings": high_count,
                 "tested": findings_count > 0,
-                "risk_level": self._calculate_risk_level(critical_count, high_count, findings_count)
+                "risk_level": self._calculate_risk_level(
+                    critical_count, high_count, findings_count
+                ),
             }
 
         # Calculate overall coverage
@@ -834,7 +833,7 @@ class FindingsCollector:
             "total_categories": len(self.OWASP_CATEGORIES),
             "tested_categories": tested_categories,
             "coverage_percentage": coverage_percentage,
-            "untested_categories": [cat for cat, data in coverage.items() if not data["tested"]]
+            "untested_categories": [cat for cat, data in coverage.items() if not data["tested"]],
         }
 
     def _calculate_risk_level(self, critical: int, high: int, total: int) -> str:
@@ -880,7 +879,7 @@ class FindingsCollector:
             "owasp_categories_tested": owasp_coverage["tested_categories"],
             "owasp_coverage_percentage": owasp_coverage["coverage_percentage"],
             "most_critical_category": self._get_most_critical_category(),
-            "deduplication_cache_size": len(self._deduplication_cache)
+            "deduplication_cache_size": len(self._deduplication_cache),
         }
 
     def _get_most_critical_category(self) -> str | None:
@@ -924,13 +923,13 @@ class FindingsCollector:
                     "high": statistics["high_findings"],
                     "medium": statistics["medium_findings"],
                     "low": statistics["low_findings"],
-                    "info": statistics["info_findings"]
+                    "info": statistics["info_findings"],
                 },
                 "owasp_coverage": {
                     "tested_categories": owasp_coverage["tested_categories"],
                     "total_categories": owasp_coverage["total_categories"],
-                    "coverage_percentage": owasp_coverage["coverage_percentage"]
-                }
+                    "coverage_percentage": owasp_coverage["coverage_percentage"],
+                },
             },
             "top_findings": [
                 {
@@ -940,9 +939,9 @@ class FindingsCollector:
                     "severity": f.severity.value,
                     "endpoint": f.endpoint,
                     "method": f.method,
-                    "evidence": f.evidence[:200] + "..." if len(f.evidence) > 200 else f.evidence
+                    "evidence": f.evidence[:200] + "..." if len(f.evidence) > 200 else f.evidence,
                 }
                 for f in prioritized_findings
             ],
-            "owasp_breakdown": owasp_coverage["categories"]
+            "owasp_breakdown": owasp_coverage["categories"],
         }

@@ -21,8 +21,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
-from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
+from typing import Any
+from urllib.parse import urlparse
 
 from core.logging import get_logger
 
@@ -33,7 +33,8 @@ logger = get_logger(__name__)
 # Report loading
 # ---------------------------------------------------------------------------
 
-def load_report(report_path: str) -> Dict[str, Any]:
+
+def load_report(report_path: str) -> dict[str, Any]:
     """Load and parse a JSON report file produced by apileaks.
 
     Raises:
@@ -44,7 +45,7 @@ def load_report(report_path: str) -> Dict[str, Any]:
         logger.error("Report file not found", path=report_path)
         sys.exit(f"Error: report file not found: {report_path}")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except json.JSONDecodeError as exc:
         sys.exit(f"Error: report file is not valid JSON: {report_path} ({exc})")
@@ -54,7 +55,8 @@ def load_report(report_path: str) -> Dict[str, Any]:
 # Request extraction
 # ---------------------------------------------------------------------------
 
-def _extract_requests_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+def _extract_requests_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten all replayable requests from a report into a uniform list.
 
     Each entry is a dict with at minimum:
@@ -66,7 +68,7 @@ def _extract_requests_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]
         source    ("endpoint" | "finding")
         label     (human-readable one-line description)
     """
-    requests: List[Dict[str, Any]] = []
+    requests: list[dict[str, Any]] = []
 
     # Discovered endpoints (from ``dir``)
     for ep in report.get("discovered_endpoints") or []:
@@ -74,15 +76,17 @@ def _extract_requests_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]
         method = (ep.get("method") or "GET").upper()
         if not url:
             continue
-        requests.append({
-            "url": url,
-            "method": method,
-            "headers": {},
-            "params": {},
-            "json_body": None,
-            "source": "endpoint",
-            "label": f"[endpoint] {method} {url}  [{ep.get('status_code', '?')}]",
-        })
+        requests.append(
+            {
+                "url": url,
+                "method": method,
+                "headers": {},
+                "params": {},
+                "json_body": None,
+                "source": "endpoint",
+                "label": f"[endpoint] {method} {url}  [{ep.get('status_code', '?')}]",
+            }
+        )
 
     # Security findings (from ``scan``, ``owasp``, ``par``)
     for finding in report.get("findings") or []:
@@ -102,28 +106,27 @@ def _extract_requests_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        extra_headers: Dict[str, str] = {}
+        extra_headers: dict[str, str] = {}
         if isinstance(meta.get("headers"), dict):
-            extra_headers = {k: str(v) for k, v in meta["headers"].items()
-                             if k and v is not None}
+            extra_headers = {k: str(v) for k, v in meta["headers"].items() if k and v is not None}
 
         severity = finding.get("severity", "")
         category = finding.get("category", "")
         status = finding.get("status_code", "?")
-        label = (
-            f"[finding|{severity}] {method} {url}  [{status}]  {category}"
+        label = f"[finding|{severity}] {method} {url}  [{status}]  {category}"
+        requests.append(
+            {
+                "url": url,
+                "method": method,
+                "headers": extra_headers,
+                "params": {},
+                "json_body": json_body,
+                "source": "finding",
+                "label": label,
+                "finding_id": finding.get("id"),
+                "evidence": finding.get("evidence", ""),
+            }
         )
-        requests.append({
-            "url": url,
-            "method": method,
-            "headers": extra_headers,
-            "params": {},
-            "json_body": json_body,
-            "source": "finding",
-            "label": label,
-            "finding_id": finding.get("id"),
-            "evidence": finding.get("evidence", ""),
-        })
 
     return requests
 
@@ -132,14 +135,15 @@ def _extract_requests_from_report(report: Dict[str, Any]) -> List[Dict[str, Any]
 # Filtering / selection
 # ---------------------------------------------------------------------------
 
+
 def filter_requests(
-    requests: List[Dict[str, Any]],
+    requests: list[dict[str, Any]],
     *,
-    url_filter: Optional[str] = None,
-    method_filter: Optional[str] = None,
-    source_filter: Optional[str] = None,
-    index: Optional[int] = None,
-) -> List[Dict[str, Any]]:
+    url_filter: str | None = None,
+    method_filter: str | None = None,
+    source_filter: str | None = None,
+    index: int | None = None,
+) -> list[dict[str, Any]]:
     """Apply optional filters to the flat request list.
 
     Args:
@@ -174,16 +178,17 @@ def filter_requests(
 # HTTP replay
 # ---------------------------------------------------------------------------
 
+
 async def replay_request(
-    entry: Dict[str, Any],
+    entry: dict[str, Any],
     *,
-    extra_headers: Optional[Dict[str, str]] = None,
-    jwt_token: Optional[str] = None,
-    proxy: Optional[str] = None,
+    extra_headers: dict[str, str] | None = None,
+    jwt_token: str | None = None,
+    proxy: str | None = None,
     verify_ssl: bool = True,
     timeout: float = 30.0,
     verbose: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Re-issue a single request described by ``entry`` and return a result dict.
 
     Uses the apileaks ``HTTPRequestEngine`` so the same proxy / TLS / UA logic
@@ -203,12 +208,10 @@ async def replay_request(
         Dict with keys: method, url, request_headers, request_body,
         status_code, response_headers, response_body, elapsed.
     """
-    import asyncio
     from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
-    from core.config import AuthContext, AuthType
 
     # Build merged headers: entry headers < extra_headers < JWT
-    merged_headers: Dict[str, str] = {}
+    merged_headers: dict[str, str] = {}
     merged_headers.update(entry.get("headers") or {})
     if extra_headers:
         merged_headers.update(extra_headers)
@@ -232,7 +235,7 @@ async def replay_request(
     json_body = entry.get("json_body")
     params = entry.get("params") or {}
 
-    req_kwargs: Dict[str, Any] = {}
+    req_kwargs: dict[str, Any] = {}
     if params:
         req_kwargs["params"] = params
     if json_body:
@@ -276,12 +279,12 @@ async def replay_request(
 # ---------------------------------------------------------------------------
 
 _RESET = "\033[0m"
-_BOLD  = "\033[1m"
-_CYAN  = "\033[96m"
+_BOLD = "\033[1m"
+_CYAN = "\033[96m"
 _GREEN = "\033[92m"
 _YELLOW = "\033[93m"
-_RED   = "\033[91m"
-_GRAY  = "\033[90m"
+_RED = "\033[91m"
+_GRAY = "\033[90m"
 _MAGENTA = "\033[95m"
 
 
@@ -301,10 +304,10 @@ def _print_replay_dump(
     *,
     method: str,
     url: str,
-    req_headers: Dict[str, str],
-    req_body: Optional[Any],
+    req_headers: dict[str, str],
+    req_body: Any | None,
     status: int,
-    resp_headers: Dict[str, str],
+    resp_headers: dict[str, str],
     resp_body: str,
     elapsed: float,
 ) -> None:
@@ -313,7 +316,7 @@ def _print_replay_dump(
 
     # ---- REQUEST -----------------------------------------------------------
     print(f"\n{_BOLD}{_CYAN}{'═' * 60}")
-    print(f"  REPLAY REQUEST")
+    print("  REPLAY REQUEST")
     print(f"{'═' * 60}{_RESET}")
 
     parsed = urlparse(url)
@@ -325,7 +328,11 @@ def _print_replay_dump(
         # Redact auth values in output
         if name.lower() == "authorization":
             parts = value.split(" ", 1)
-            token_preview = parts[1][:12] + "…" if len(parts) > 1 and len(parts[1]) > 12 else (parts[1] if len(parts) > 1 else "")
+            token_preview = (
+                parts[1][:12] + "…"
+                if len(parts) > 1 and len(parts[1]) > 12
+                else (parts[1] if len(parts) > 1 else "")
+            )
             print(f"{_GRAY}{name}: {parts[0]} {token_preview}{_RESET}")
         else:
             print(f"{_GRAY}{name}: {value}{_RESET}")
@@ -337,7 +344,7 @@ def _print_replay_dump(
     # ---- RESPONSE ----------------------------------------------------------
     col = _status_color(status)
     print(f"\n{_BOLD}{_CYAN}{sep}")
-    print(f"  RESPONSE")
+    print("  RESPONSE")
     print(f"{sep}{_RESET}")
     print(f"{col}{_BOLD}HTTP/1.1 {status}{_RESET}  {_GRAY}({elapsed:.3f}s){_RESET}")
 
@@ -365,7 +372,7 @@ def _print_replay_dump(
     print(f"{_BOLD}{_CYAN}{'═' * 60}{_RESET}\n")
 
 
-def print_request_list(requests: List[Dict[str, Any]]) -> None:
+def print_request_list(requests: list[dict[str, Any]]) -> None:
     """Print an indexed list of replayable requests to stdout."""
     if not requests:
         print("No replayable requests found in report.")
@@ -376,8 +383,7 @@ def print_request_list(requests: List[Dict[str, Any]]) -> None:
         src = req["source"]
         method = req["method"]
         status = req.get("status_code") or (
-            req["label"].split("[")[-1].rstrip("]").strip()
-            if "[" in req["label"] else "?"
+            req["label"].split("[")[-1].rstrip("]").strip() if "[" in req["label"] else "?"
         )
         url = req["url"]
         # Truncate long URLs

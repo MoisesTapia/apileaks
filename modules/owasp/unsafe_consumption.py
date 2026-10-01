@@ -16,15 +16,15 @@ Detectors implemented
    channel (OWASP API10 vector 3).
 """
 
-from typing import List, Dict, Any, Optional, Tuple
-from urllib.parse import urlparse, urlencode, urlunparse, parse_qs
+from typing import Any
+from urllib.parse import urlparse
+
+from core.config import AuthContext, Severity, UnsafeConsumptionConfig
+from core.logging import get_logger
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine, Response
 
 from .registry import OWASPModule
-from utils.findings import Finding
-from utils.http_client import HTTPRequestEngine, Request, Response
-from core.config import UnsafeConsumptionConfig, AuthContext, Severity
-from core.logging import get_logger
-
 
 # HTTP methods that change server state. In safe mode these are skipped so the
 # module only issues non-state-changing probes (GET/HEAD/OPTIONS).
@@ -39,9 +39,24 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 INJECTION_QUERY_PARAMS = ["q", "data", "input", "query", "search", "value", "url"]
 
 # Query parameter names that carry URL values — used for redirect-probe injection.
-URL_QUERY_PARAMS = ["url", "redirect", "callback", "next", "location",
-                    "target", "dest", "destination", "return", "returnUrl",
-                    "redirectUrl", "forward", "link", "src", "source", "fetch"]
+URL_QUERY_PARAMS = [
+    "url",
+    "redirect",
+    "callback",
+    "next",
+    "location",
+    "target",
+    "dest",
+    "destination",
+    "return",
+    "returnUrl",
+    "redirectUrl",
+    "forward",
+    "link",
+    "src",
+    "source",
+    "fetch",
+]
 
 # HTTP redirect status codes that indicate a server-side redirect.
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
@@ -95,8 +110,12 @@ class UnsafeConsumptionModule(OWASPModule):
     malformed input is only submitted via query parameters.
     """
 
-    def __init__(self, config: UnsafeConsumptionConfig, http_client: HTTPRequestEngine,
-                 auth_contexts: List[AuthContext]):
+    def __init__(
+        self,
+        config: UnsafeConsumptionConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -106,23 +125,20 @@ class UnsafeConsumptionModule(OWASPModule):
         self.auth_context_map = {ctx.name: ctx for ctx in auth_contexts}
 
         # Safe mode flag (optional attribute on config)
-        self.safe_mode = getattr(self.config, 'safe_mode', False)
+        self.safe_mode = getattr(self.config, "safe_mode", False)
 
         # Feature flags read from config with safe fallbacks so older config
         # objects that lack the new fields still work without crashing.
-        self.check_redirects = getattr(self.config, 'check_redirects', True)
+        self.check_redirects = getattr(self.config, "check_redirects", True)
         self.redirect_test_url = getattr(
-            self.config, 'redirect_test_url',
-            "http://169.254.169.254/latest/meta-data/"
+            self.config, "redirect_test_url", "http://169.254.169.254/latest/meta-data/"
         )
-        self.check_cleartext_upstream = getattr(
-            self.config, 'check_cleartext_upstream', True
-        )
+        self.check_cleartext_upstream = getattr(self.config, "check_cleartext_upstream", True)
 
         self.logger.info(
             "Unsafe Consumption Testing Module initialized",
-            upstream_indicators=len(getattr(config, 'upstream_indicators', [])),
-            malformed_payloads=len(getattr(config, 'malformed_payloads', [])),
+            upstream_indicators=len(getattr(config, "upstream_indicators", [])),
+            malformed_payloads=len(getattr(config, "malformed_payloads", [])),
             check_redirects=self.check_redirects,
             check_cleartext_upstream=self.check_cleartext_upstream,
             safe_mode=self.safe_mode,
@@ -136,7 +152,7 @@ class UnsafeConsumptionModule(OWASPModule):
     # Public entry point
     # ------------------------------------------------------------------
 
-    async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
         """
         Execute unsafe-consumption tests on discovered endpoints.
 
@@ -157,17 +173,17 @@ class UnsafeConsumptionModule(OWASPModule):
             safe_mode=self.safe_mode,
         )
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         if self.auth_contexts:
             self.http_client.set_auth_context(self.auth_contexts[0])
 
-        upstream_indicators = list(getattr(self.config, 'upstream_indicators', []) or [])
-        malformed_payloads = list(getattr(self.config, 'malformed_payloads', []) or [])
+        upstream_indicators = list(getattr(self.config, "upstream_indicators", []) or [])
+        malformed_payloads = list(getattr(self.config, "malformed_payloads", []) or [])
 
         for endpoint in endpoints:
-            endpoint_url = endpoint.url if hasattr(endpoint, 'url') else str(endpoint)
-            method = endpoint.method if hasattr(endpoint, 'method') else 'GET'
+            endpoint_url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
+            method = endpoint.method if hasattr(endpoint, "method") else "GET"
 
             # ── Detector 3: cleartext upstream channel ─────────────────
             # Checked regardless of upstream-sourced status or safe mode —
@@ -183,7 +199,8 @@ class UnsafeConsumptionModule(OWASPModule):
                 if method.upper() in STATE_CHANGING_METHODS:
                     self.logger.debug(
                         "Skipping state-changing endpoint in safe mode",
-                        endpoint=endpoint_url, method=method,
+                        endpoint=endpoint_url,
+                        method=method,
                     )
                     continue
                 if method.upper() not in SAFE_METHODS:
@@ -217,9 +234,9 @@ class UnsafeConsumptionModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-        upstream_indicators: List[str],
-        malformed_payloads: List[str],
-    ) -> List[Finding]:
+        upstream_indicators: list[str],
+        malformed_payloads: list[str],
+    ) -> list[Finding]:
         """
         Test a single endpoint:
           1. Confirm it returns upstream-sourced data (baseline probe).
@@ -228,7 +245,7 @@ class UnsafeConsumptionModule(OWASPModule):
           3. Inject a synthetic redirect URL and detect blind following
              (Detector 2).
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         # ── Step 1: baseline to establish upstream-sourced status ──────
         baseline = await self._probe(endpoint_url, method)
@@ -245,7 +262,8 @@ class UnsafeConsumptionModule(OWASPModule):
 
         self.logger.debug(
             "Endpoint identified as upstream-sourced",
-            endpoint=endpoint_url, indicator=indicator,
+            endpoint=endpoint_url,
+            indicator=indicator,
         )
 
         state_changing = method.upper() in STATE_CHANGING_METHODS
@@ -253,8 +271,9 @@ class UnsafeConsumptionModule(OWASPModule):
         # ── Step 2: Detector 1 — unvalidated reflection ────────────────
         for payload in malformed_payloads:
             response = await self._probe(
-                endpoint_url, method,
-                params={p: payload for p in INJECTION_QUERY_PARAMS},
+                endpoint_url,
+                method,
+                params=dict.fromkeys(INJECTION_QUERY_PARAMS, payload),
             )
             finding = self._analyze_reflection(
                 endpoint_url, method, payload, response, indicator, "query"
@@ -265,7 +284,8 @@ class UnsafeConsumptionModule(OWASPModule):
 
             if state_changing and not self.safe_mode:
                 response = await self._probe(
-                    endpoint_url, method,
+                    endpoint_url,
+                    method,
                     json={"data": payload},
                 )
                 finding = self._analyze_reflection(
@@ -276,9 +296,7 @@ class UnsafeConsumptionModule(OWASPModule):
 
         # ── Step 3: Detector 2 — blind redirect following ──────────────
         if self.check_redirects:
-            redirect_finding = await self._test_blind_redirect(
-                endpoint_url, method, indicator
-            )
+            redirect_finding = await self._test_blind_redirect(endpoint_url, method, indicator)
             if redirect_finding:
                 findings.append(redirect_finding)
 
@@ -291,9 +309,9 @@ class UnsafeConsumptionModule(OWASPModule):
     def _is_upstream_sourced(
         self,
         endpoint_url: str,
-        response: Optional[Response],
-        upstream_indicators: List[str],
-    ) -> Tuple[bool, Optional[str]]:
+        response: Response | None,
+        upstream_indicators: list[str],
+    ) -> tuple[bool, str | None]:
         """
         Determine whether an endpoint returns data sourced from an upstream API.
 
@@ -317,7 +335,7 @@ class UnsafeConsumptionModule(OWASPModule):
             if indicator.lower() in body:
                 return True, indicator
 
-        headers = getattr(response, 'headers', None) or {}
+        headers = getattr(response, "headers", None) or {}
         header_blob = " ".join(f"{k} {v}" for k, v in headers.items()).lower()
         for indicator in upstream_indicators:
             if indicator.lower() in header_blob:
@@ -330,10 +348,10 @@ class UnsafeConsumptionModule(OWASPModule):
         endpoint_url: str,
         method: str,
         payload: str,
-        response: Optional[Response],
-        indicator: Optional[str],
+        response: Response | None,
+        indicator: str | None,
         injection_point: str,
-    ) -> Optional[Finding]:
+    ) -> Finding | None:
         """
         Emit an UNSAFE_UPSTREAM_DATA finding when a malformed payload is
         reflected verbatim (unvalidated/unsanitized) in the response body.
@@ -390,8 +408,8 @@ class UnsafeConsumptionModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-        indicator: Optional[str],
-    ) -> Optional[Finding]:
+        indicator: str | None,
+    ) -> Finding | None:
         """
         Detect whether the endpoint blindly follows a synthetic redirect
         injected into URL-carrying query parameters.
@@ -410,15 +428,14 @@ class UnsafeConsumptionModule(OWASPModule):
 
         for param in URL_QUERY_PARAMS:
             response = await self._probe(
-                endpoint_url, method,
+                endpoint_url,
+                method,
                 params={param: self.redirect_test_url},
             )
             if response is None:
                 continue
 
-            finding = self._analyze_blind_redirect(
-                endpoint_url, method, param, response, indicator
-            )
+            finding = self._analyze_blind_redirect(endpoint_url, method, param, response, indicator)
             if finding:
                 return finding
 
@@ -430,8 +447,8 @@ class UnsafeConsumptionModule(OWASPModule):
         method: str,
         param: str,
         response: Response,
-        indicator: Optional[str],
-    ) -> Optional[Finding]:
+        indicator: str | None,
+    ) -> Finding | None:
         """
         Analyse a single redirect-probe response and emit
         ``UNSAFE_BLIND_REDIRECT`` when evidence of blind following is found.
@@ -441,12 +458,12 @@ class UnsafeConsumptionModule(OWASPModule):
         2. Response body contains a known IMDS/cloud-metadata content signature
            (the server fetched the injected resource and returned its body).
         """
-        evidence_signal: Optional[str] = None
+        evidence_signal: str | None = None
 
         # Signal 1: server issued a redirect whose Location echoes our payload.
         if response.status_code in REDIRECT_STATUS_CODES:
-            headers = getattr(response, 'headers', None) or {}
-            location = headers.get('location') or headers.get('Location') or ""
+            headers = getattr(response, "headers", None) or {}
+            location = headers.get("location") or headers.get("Location") or ""
             if self.redirect_test_url in location:
                 evidence_signal = (
                     f"Server responded with HTTP {response.status_code} and "
@@ -507,9 +524,7 @@ class UnsafeConsumptionModule(OWASPModule):
     # Detector 3 — cleartext upstream channel (no TLS)
     # ------------------------------------------------------------------
 
-    def _check_cleartext_channel(
-        self, endpoint_url: str, method: str
-    ) -> Optional[Finding]:
+    def _check_cleartext_channel(self, endpoint_url: str, method: str) -> Finding | None:
         """
         Flag the endpoint as ``UNSAFE_CLEARTEXT_UPSTREAM`` when its URL uses
         the plain ``http://`` scheme, meaning all traffic with the upstream
@@ -563,23 +578,23 @@ class UnsafeConsumptionModule(OWASPModule):
         self,
         endpoint_url: str,
         method: str,
-        params: Optional[Dict[str, str]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        json: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Response]:
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Response | None:
         """
         Issue a single probe request. Returns the Response or None on failure.
         Per-probe exceptions are logged at debug level and swallowed so they do
         not abort the whole module.
         """
         try:
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             if params:
-                kwargs['params'] = params
+                kwargs["params"] = params
             if headers:
-                kwargs['headers'] = headers
+                kwargs["headers"] = headers
             if json is not None:
-                kwargs['json'] = json
+                kwargs["json"] = json
             return await self.http_client.request(method, endpoint_url, **kwargs)
         except Exception as e:
             self.logger.debug(
@@ -597,12 +612,12 @@ class UnsafeConsumptionModule(OWASPModule):
     @staticmethod
     def _response_text(response: Response) -> str:
         """Safely extract text content from a response for matching."""
-        if getattr(response, 'text', None):
+        if getattr(response, "text", None):
             return response.text
-        content = getattr(response, 'content', None)
+        content = getattr(response, "content", None)
         if content:
             try:
-                return content.decode('utf-8', errors='ignore')
+                return content.decode("utf-8", errors="ignore")
             except Exception:
                 return ""
         return ""

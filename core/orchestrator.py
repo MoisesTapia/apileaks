@@ -5,7 +5,7 @@ Intelligent orchestration system that combines fuzzing, OWASP testing, and advan
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, List, Type
+from typing import Any
 
 from utils.findings import FindingsCollector
 
@@ -16,6 +16,7 @@ from .logging import get_logger
 @dataclass
 class OrchestrationPhase:
     """Represents a phase in the orchestration process"""
+
     name: str
     description: str
     enabled: bool = True
@@ -26,6 +27,7 @@ class OrchestrationPhase:
 @dataclass
 class OrchestrationResults:
     """Results from orchestration execution"""
+
     phases_executed: list[str] = field(default_factory=list)
     total_findings: int = 0
     critical_findings: int = 0
@@ -69,8 +71,7 @@ class EnhancedOrchestrator:
 
         self._initialize_phases()
 
-        self.logger.info("Enhanced Orchestrator initialized",
-                        phases_count=len(self.phases))
+        self.logger.info("Enhanced Orchestrator initialized", phases_count=len(self.phases))
 
     def _initialize_phases(self) -> None:
         """Initialize orchestration phases based on configuration"""
@@ -81,43 +82,43 @@ class EnhancedOrchestrator:
             description="Endpoint discovery and initial reconnaissance",
             enabled=self.config.fuzzing.endpoints.enabled,
             dependencies=[],
-            priority=1
+            priority=1,
         )
 
         # Phase 2: Advanced Discovery (Framework Detection, Version Fuzzing)
-        advanced_enabled = (
-            getattr(self.config.advanced_discovery, 'framework_detection', {}).get('enabled', False) or
-            getattr(self.config.advanced_discovery, 'version_fuzzing', {}).get('enabled', False)
-        )
+        advanced_enabled = getattr(self.config.advanced_discovery, "framework_detection", {}).get(
+            "enabled", False
+        ) or getattr(self.config.advanced_discovery, "version_fuzzing", {}).get("enabled", False)
         self.phases["advanced_discovery"] = OrchestrationPhase(
             name="advanced_discovery",
             description="Framework detection and version fuzzing",
             enabled=advanced_enabled,
             dependencies=["discovery"],
-            priority=2
+            priority=2,
         )
 
         # Phase 3: WAF Detection and Evasion Setup
-        waf_enabled = getattr(self.config.advanced_discovery, 'waf_detection', {}).get('enabled', False)
+        waf_enabled = getattr(self.config.advanced_discovery, "waf_detection", {}).get(
+            "enabled", False
+        )
         self.phases["waf_detection"] = OrchestrationPhase(
             name="waf_detection",
             description="WAF detection and evasion setup",
             enabled=waf_enabled,
             dependencies=["discovery"],
-            priority=3
+            priority=3,
         )
 
         # Phase 4: Traditional Fuzzing (Parameters, Headers)
         fuzzing_enabled = (
-            self.config.fuzzing.parameters.enabled or
-            self.config.fuzzing.headers.enabled
+            self.config.fuzzing.parameters.enabled or self.config.fuzzing.headers.enabled
         )
         self.phases["traditional_fuzzing"] = OrchestrationPhase(
             name="traditional_fuzzing",
             description="Parameter and header fuzzing",
             enabled=fuzzing_enabled,
             dependencies=["discovery"],
-            priority=4
+            priority=4,
         )
 
         # Phase 5: OWASP Specialized Testing
@@ -126,21 +127,21 @@ class EnhancedOrchestrator:
             description="OWASP API Security Top 10 testing",
             enabled=len(self.config.owasp_testing.enabled_modules) > 0,
             dependencies=["discovery"],
-            priority=5
+            priority=5,
         )
 
         # Phase 6: Advanced Security Analysis (CORS, Security Headers, Subdomain Discovery)
         security_analysis_enabled = (
-            self.config.advanced_discovery.cors_analysis or
-            self.config.advanced_discovery.security_headers or
-            self.config.advanced_discovery.subdomain_discovery
+            self.config.advanced_discovery.cors_analysis
+            or self.config.advanced_discovery.security_headers
+            or self.config.advanced_discovery.subdomain_discovery
         )
         self.phases["security_analysis"] = OrchestrationPhase(
             name="security_analysis",
             description="CORS analysis, security headers, and subdomain discovery",
             enabled=security_analysis_enabled,
             dependencies=["discovery"],
-            priority=6
+            priority=6,
         )
 
         # Phase 7: Results Aggregation and Enhanced Reporting
@@ -149,7 +150,7 @@ class EnhancedOrchestrator:
             description="Results aggregation and enhanced reporting",
             enabled=True,
             dependencies=["traditional_fuzzing", "owasp_testing"],
-            priority=7
+            priority=7,
         )
 
     async def execute_orchestration(self, target: str, core_engine: Any) -> OrchestrationResults:
@@ -199,6 +200,7 @@ class EnhancedOrchestrator:
                     # instead of swallowing them. Imported lazily to avoid a
                     # module-level import cycle with core.engine.
                     from .engine import ParameterFuzzingError
+
                     if isinstance(e, ParameterFuzzingError):
                         raise
 
@@ -220,11 +222,13 @@ class EnhancedOrchestrator:
             if self.api_versions_found:
                 results.advanced_features_used.append("version_fuzzing")
 
-            self.logger.info("Enhanced orchestration completed successfully",
-                           phases_executed=len(results.phases_executed),
-                           total_findings=results.total_findings,
-                           execution_time=execution_time,
-                           advanced_features=len(results.advanced_features_used))
+            self.logger.info(
+                "Enhanced orchestration completed successfully",
+                phases_executed=len(results.phases_executed),
+                total_findings=results.total_findings,
+                execution_time=execution_time,
+                advanced_features=len(results.advanced_features_used),
+            )
 
             return results
 
@@ -258,10 +262,14 @@ class EnhancedOrchestrator:
                     break
             else:
                 # No more phases can be executed - check for circular dependencies
-                remaining = [p for p, phase in self.phases.items() if phase.enabled and p not in executed]
+                remaining = [
+                    p for p, phase in self.phases.items() if phase.enabled and p not in executed
+                ]
                 if remaining:
-                    self.logger.warning("Circular dependency detected or missing dependencies",
-                                      remaining_phases=remaining)
+                    self.logger.warning(
+                        "Circular dependency detected or missing dependencies",
+                        remaining_phases=remaining,
+                    )
                     # Add remaining phases anyway
                     order.extend(remaining)
                 break
@@ -307,8 +315,9 @@ class EnhancedOrchestrator:
         if core_engine.scan_results.fuzzing_results is None:
             core_engine.scan_results.fuzzing_results = core_engine._build_fuzzing_results()
 
-        self.logger.info("Discovery phase completed",
-                        endpoints_found=len(self.discovered_endpoints))
+        self.logger.info(
+            "Discovery phase completed", endpoints_found=len(self.discovered_endpoints)
+        )
 
     async def _execute_advanced_discovery_phase(self, target: str, core_engine: Any) -> None:
         """Execute advanced discovery phase (framework detection, version fuzzing)"""
@@ -316,11 +325,13 @@ class EnhancedOrchestrator:
 
         try:
             # Framework Detection
-            if getattr(self.config.advanced_discovery, 'framework_detection', {}).get('enabled', False):
+            if getattr(self.config.advanced_discovery, "framework_detection", {}).get(
+                "enabled", False
+            ):
                 await self._execute_framework_detection(target, core_engine)
 
             # Version Fuzzing
-            if getattr(self.config.advanced_discovery, 'version_fuzzing', {}).get('enabled', False):
+            if getattr(self.config.advanced_discovery, "version_fuzzing", {}).get("enabled", False):
                 await self._execute_version_fuzzing(target, core_engine)
 
         except Exception as e:
@@ -330,7 +341,10 @@ class EnhancedOrchestrator:
     async def _execute_framework_detection(self, target: str, core_engine: Any) -> None:
         """Execute framework detection"""
         try:
-            from modules.advanced.framework_detector import FrameworkDetector, FrameworkDetectionConfig
+            from modules.advanced.framework_detector import (
+                FrameworkDetectionConfig,
+                FrameworkDetector,
+            )
             from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
 
             # Create HTTP client for framework detection
@@ -339,14 +353,14 @@ class EnhancedOrchestrator:
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
 
             # Build FrameworkDetectionConfig from the advanced_discovery config dict
-            fd_cfg_dict = getattr(self.config.advanced_discovery, 'framework_detection', {}) or {}
+            fd_cfg_dict = getattr(self.config.advanced_discovery, "framework_detection", {}) or {}
             fd_config = FrameworkDetectionConfig(
-                enabled=fd_cfg_dict.get('enabled', True),
-                adapt_payloads=fd_cfg_dict.get('adapt_payloads', True),
-                test_framework_endpoints=fd_cfg_dict.get('test_framework_endpoints', True),
-                max_error_requests=fd_cfg_dict.get('max_error_requests', 5),
-                timeout=fd_cfg_dict.get('timeout', 10.0),
-                confidence_threshold=fd_cfg_dict.get('confidence_threshold', 0.6),
+                enabled=fd_cfg_dict.get("enabled", True),
+                adapt_payloads=fd_cfg_dict.get("adapt_payloads", True),
+                test_framework_endpoints=fd_cfg_dict.get("test_framework_endpoints", True),
+                max_error_requests=fd_cfg_dict.get("max_error_requests", 5),
+                timeout=fd_cfg_dict.get("timeout", 10.0),
+                confidence_threshold=fd_cfg_dict.get("confidence_threshold", 0.6),
             )
 
             # Initialize framework detector
@@ -366,12 +380,14 @@ class EnhancedOrchestrator:
                     endpoint=target,
                     method="GET",
                     evidence=f"Framework detected: {framework_info.name} (confidence: {framework_info.confidence:.2f})",
-                    recommendation="Consider framework-specific security testing"
+                    recommendation="Consider framework-specific security testing",
                 )
 
-                self.logger.info("Framework detected",
-                               framework=framework_info.name,
-                               confidence=framework_info.confidence)
+                self.logger.info(
+                    "Framework detected",
+                    framework=framework_info.name,
+                    confidence=framework_info.confidence,
+                )
 
         except ImportError:
             self.logger.warning("Framework detector module not available")
@@ -390,16 +406,16 @@ class EnhancedOrchestrator:
             http_client = HTTPRequestEngine(rate_limiter, retry_config)
 
             # Build VersionFuzzingConfig from the advanced_discovery config dict
-            vf_cfg_dict = getattr(self.config.advanced_discovery, 'version_fuzzing', {}) or {}
+            vf_cfg_dict = getattr(self.config.advanced_discovery, "version_fuzzing", {}) or {}
             vf_config = VersionFuzzingConfig(
-                version_patterns=vf_cfg_dict.get('version_patterns', [
-                    '/v1', '/v2', '/v3', '/api/v1', '/api/v2'
-                ]),
-                test_endpoints=vf_cfg_dict.get('test_endpoints', ['/', '/health', '/status']),
-                max_concurrent_requests=vf_cfg_dict.get('max_concurrent_requests', 5),
-                timeout=vf_cfg_dict.get('timeout', 10.0),
-                compare_endpoints=vf_cfg_dict.get('compare_endpoints', True),
-                detect_deprecated=vf_cfg_dict.get('detect_deprecated', True),
+                version_patterns=vf_cfg_dict.get(
+                    "version_patterns", ["/v1", "/v2", "/v3", "/api/v1", "/api/v2"]
+                ),
+                test_endpoints=vf_cfg_dict.get("test_endpoints", ["/", "/health", "/status"]),
+                max_concurrent_requests=vf_cfg_dict.get("max_concurrent_requests", 5),
+                timeout=vf_cfg_dict.get("timeout", 10.0),
+                compare_endpoints=vf_cfg_dict.get("compare_endpoints", True),
+                detect_deprecated=vf_cfg_dict.get("detect_deprecated", True),
             )
 
             # Initialize version fuzzer (correct arg order: config first, then http_client)
@@ -420,7 +436,7 @@ class EnhancedOrchestrator:
                         endpoint=f"{target}{version}",
                         method="GET",
                         evidence=f"API version endpoint found: {version}",
-                        recommendation="Test all discovered API versions for vulnerabilities"
+                        recommendation="Test all discovered API versions for vulnerabilities",
                     )
 
                 self.logger.info("API versions found", versions=versions_found)
@@ -461,12 +477,10 @@ class EnhancedOrchestrator:
                     endpoint=target,
                     method="GET",
                     evidence=f"WAF detected: {waf_info.name} (confidence: {waf_info.confidence:.2f})",
-                    recommendation="Use WAF evasion techniques for testing"
+                    recommendation="Use WAF evasion techniques for testing",
                 )
 
-                self.logger.info("WAF detected",
-                               waf=waf_info.name,
-                               confidence=waf_info.confidence)
+                self.logger.info("WAF detected", waf=waf_info.name, confidence=waf_info.confidence)
 
         except ImportError:
             self.logger.warning("WAF detector module not available")
@@ -485,8 +499,9 @@ class EnhancedOrchestrator:
         self.execution_context["fuzzing_results"] = fuzzing_results
         core_engine.scan_results.fuzzing_results = fuzzing_results
 
-        self.logger.info("Traditional fuzzing phase completed",
-                        findings=len(fuzzing_results.get("findings", [])))
+        self.logger.info(
+            "Traditional fuzzing phase completed", findings=len(fuzzing_results.get("findings", []))
+        )
 
     async def _execute_owasp_testing_phase(self, core_engine: Any) -> None:
         """Execute OWASP testing phase"""
@@ -500,9 +515,11 @@ class EnhancedOrchestrator:
         self.execution_context["owasp_results"] = owasp_results
         core_engine.scan_results.owasp_results = owasp_results
 
-        self.logger.info("OWASP testing phase completed",
-                        modules_executed=len(owasp_results.get("modules_executed", [])),
-                        findings=len(owasp_results.get("findings", [])))
+        self.logger.info(
+            "OWASP testing phase completed",
+            modules_executed=len(owasp_results.get("modules_executed", [])),
+            findings=len(owasp_results.get("findings", [])),
+        )
 
     async def _execute_security_analysis_phase(self, target: str, core_engine: Any) -> None:
         """Execute security analysis phase (CORS, security headers, subdomain discovery)"""
@@ -547,7 +564,11 @@ class EnhancedOrchestrator:
                 # security risk, is a reportable CORS misconfiguration.
                 risk = (analysis.security_risk or "LOW").upper()
                 if analysis.wildcard_origin or risk in ("HIGH", "CRITICAL"):
-                    severity = Severity.HIGH if analysis.credentials_allowed or risk == "CRITICAL" else Severity.MEDIUM
+                    severity = (
+                        Severity.HIGH
+                        if analysis.credentials_allowed or risk == "CRITICAL"
+                        else Severity.MEDIUM
+                    )
                     self.findings_collector.add_finding(
                         category="CORS_MISCONFIGURATION",
                         severity=severity,
@@ -639,7 +660,9 @@ class EnhancedOrchestrator:
             # Discover subdomains (expects the target domain string)
             subdomain_results = await subdomain_discovery.discover_subdomains(target)
 
-            accessible = [r for r in (subdomain_results or []) if getattr(r, "is_accessible", False)]
+            accessible = [
+                r for r in (subdomain_results or []) if getattr(r, "is_accessible", False)
+            ]
             for result in accessible:
                 self.findings_collector.add_finding(
                     category="SUBDOMAIN_DISCOVERED",
@@ -668,7 +691,7 @@ class EnhancedOrchestrator:
         await core_engine._aggregate_results()
 
         # Add orchestration-specific context to results
-        if hasattr(core_engine.scan_results, 'orchestration_context'):
+        if hasattr(core_engine.scan_results, "orchestration_context"):
             core_engine.scan_results.orchestration_context = self.execution_context
         else:
             core_engine.scan_results.orchestration_context = self.execution_context
@@ -685,5 +708,5 @@ class EnhancedOrchestrator:
             "framework_detected": self.framework_detected,
             "waf_detected": self.waf_detected,
             "api_versions_found": self.api_versions_found,
-            "execution_context": self.execution_context
+            "execution_context": self.execution_context,
         }

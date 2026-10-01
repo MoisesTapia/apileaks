@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Set
+from typing import Any
 
 import httpx
 
@@ -38,16 +38,12 @@ def parse_resolve(value: str) -> tuple[str, str]:
         ValueError: If ``value`` is not a well-formed ``host:ip`` pair.
     """
     if value is None or value.count(":") != 1:
-        raise ValueError(
-            f"--resolve must be of the form host:ip (got {value!r})"
-        )
+        raise ValueError(f"--resolve must be of the form host:ip (got {value!r})")
     host, ip = value.split(":", 1)
     host = host.strip()
     ip = ip.strip()
     if not host or not ip:
-        raise ValueError(
-            f"--resolve must be of the form host:ip (got {value!r})"
-        )
+        raise ValueError(f"--resolve must be of the form host:ip (got {value!r})")
     return host, ip
 
 
@@ -88,18 +84,23 @@ class UserAgentRotator:
 
     # Built-in user agents for random selection
     RANDOM_USER_AGENTS = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-        'Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        'curl/8.4.0',
-        'Postman/10.20.0'
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "curl/8.4.0",
+        "Postman/10.20.0",
     ]
 
-    def __init__(self, mode: str = "default", custom_user_agent: str = None, user_agent_list: list[str] = None):
+    def __init__(
+        self,
+        mode: str = "default",
+        custom_user_agent: str = None,
+        user_agent_list: list[str] = None,
+    ):
         """
         Initialize User Agent Rotator
 
@@ -119,9 +120,11 @@ class UserAgentRotator:
         if mode == "rotate" and not user_agent_list:
             raise ValueError("user_agent_list is required for rotate mode")
 
-        self.logger.debug("User Agent Rotator initialized",
-                         mode=mode,
-                         list_size=len(self.user_agent_list) if user_agent_list else 0)
+        self.logger.debug(
+            "User Agent Rotator initialized",
+            mode=mode,
+            list_size=len(self.user_agent_list) if user_agent_list else 0,
+        )
 
     def get_user_agent(self) -> str:
         """Get the next user agent based on the configured mode"""
@@ -141,6 +144,7 @@ class UserAgentRotator:
 
 class RequestMethod(str, Enum):
     """HTTP request methods"""
+
     GET = "GET"
     POST = "POST"
     PUT = "PUT"
@@ -153,6 +157,7 @@ class RequestMethod(str, Enum):
 @dataclass
 class Request:
     """HTTP request representation"""
+
     method: str
     url: str
     headers: dict[str, str] = field(default_factory=dict)
@@ -166,6 +171,7 @@ class Request:
 @dataclass
 class Response:
     """HTTP response representation"""
+
     status_code: int
     headers: dict[str, str]
     content: bytes
@@ -199,6 +205,7 @@ class Response:
 @dataclass
 class RetryConfig:
     """Retry configuration"""
+
     max_attempts: int = 3
     backoff_factor: float = 2.0
     max_backoff: float = 60.0
@@ -209,11 +216,12 @@ class RetryConfig:
 @dataclass
 class PerformanceMetrics:
     """HTTP client performance metrics"""
+
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
     total_response_time: float = 0.0
-    min_response_time: float = float('inf')
+    min_response_time: float = float("inf")
     max_response_time: float = 0.0
     rate_limited_requests: int = 0
     retried_requests: int = 0
@@ -263,10 +271,12 @@ class RateLimiter:
         # Backoff state
         self.backoff_until = 0.0
 
-        self.logger.info("Rate limiter initialized",
-                        rps=config.requests_per_second,
-                        burst_size=config.burst_size,
-                        adaptive=config.adaptive)
+        self.logger.info(
+            "Rate limiter initialized",
+            rps=config.requests_per_second,
+            burst_size=config.burst_size,
+            adaptive=config.adaptive,
+        )
 
     async def acquire(self) -> None:
         """
@@ -297,9 +307,11 @@ class RateLimiter:
         self.tokens -= 1.0
         self.requests_this_second += 1
 
-        self.logger.debug("Request permission acquired",
-                         tokens_remaining=self.tokens,
-                         current_rps=self.current_rps)
+        self.logger.debug(
+            "Request permission acquired",
+            tokens_remaining=self.tokens,
+            current_rps=self.current_rps,
+        )
 
     async def _update_tokens(self, current_time: float) -> None:
         """Update token bucket based on elapsed time"""
@@ -326,14 +338,18 @@ class RateLimiter:
         self.consecutive_rate_limits += 1
         self.last_rate_limit_time = time.time()
 
-        self.logger.warning("Rate limit detected",
-                           status_code=response.status_code,
-                           consecutive_limits=self.consecutive_rate_limits)
+        self.logger.warning(
+            "Rate limit detected",
+            status_code=response.status_code,
+            consecutive_limits=self.consecutive_rate_limits,
+        )
 
         # Check for Retry-After header
         retry_after = None
         if self.config.respect_retry_after:
-            retry_after_header = response.headers.get('Retry-After') or response.headers.get('retry-after')
+            retry_after_header = response.headers.get("Retry-After") or response.headers.get(
+                "retry-after"
+            )
             if retry_after_header:
                 try:
                     retry_after = float(retry_after_header)
@@ -349,7 +365,7 @@ class RateLimiter:
             # Exponential backoff
             backoff_time = min(
                 self.config.backoff_factor ** (self.consecutive_rate_limits - 1),
-                60.0  # Max 60 seconds backoff
+                60.0,  # Max 60 seconds backoff
             )
 
         self.backoff_until = time.time() + backoff_time
@@ -358,9 +374,9 @@ class RateLimiter:
         if self.config.adaptive and self.consecutive_rate_limits >= 2:
             old_rps = self.current_rps
             self.current_rps = max(1.0, self.current_rps * 0.5)  # Halve the rate
-            self.logger.info("Adaptive throttling activated",
-                           old_rps=old_rps,
-                           new_rps=self.current_rps)
+            self.logger.info(
+                "Adaptive throttling activated", old_rps=old_rps, new_rps=self.current_rps
+            )
 
     def reset_rate_limit_state(self) -> None:
         """Reset rate limiting state after successful requests"""
@@ -371,10 +387,11 @@ class RateLimiter:
             if self.config.adaptive and self.current_rps < self.config.requests_per_second:
                 self.current_rps = min(
                     self.config.requests_per_second,
-                    self.current_rps * 1.2  # Increase by 20%
+                    self.current_rps * 1.2,  # Increase by 20%
                 )
-                self.logger.debug("Restoring RPS after successful requests",
-                                current_rps=self.current_rps)
+                self.logger.debug(
+                    "Restoring RPS after successful requests", current_rps=self.current_rps
+                )
 
 
 class HTTPRequestEngine:
@@ -391,13 +408,20 @@ class HTTPRequestEngine:
     - Health check capabilities
     """
 
-    def __init__(self, rate_limiter: RateLimiter, retry_config: RetryConfig,
-                 timeout: float = 30.0, verify_ssl: bool = True, user_agent_rotator: UserAgentRotator = None,
-                 status_code_filter: list[int] = None, proxy: str | None = None,
-                 default_headers: dict[str, str] = None,
-                 cert: str | tuple[str, str] | None = None,
-                 ca_bundle: str | None = None,
-                 resolve: tuple[str, str] | None = None):
+    def __init__(
+        self,
+        rate_limiter: RateLimiter,
+        retry_config: RetryConfig,
+        timeout: float = 30.0,
+        verify_ssl: bool = True,
+        user_agent_rotator: UserAgentRotator = None,
+        status_code_filter: list[int] = None,
+        proxy: str | None = None,
+        default_headers: dict[str, str] = None,
+        cert: str | tuple[str, str] | None = None,
+        ca_bundle: str | None = None,
+        resolve: tuple[str, str] | None = None,
+    ):
         self.rate_limiter = rate_limiter
         self.retry_config = retry_config
         self.timeout = timeout
@@ -436,42 +460,38 @@ class HTTPRequestEngine:
         self.client: httpx.AsyncClient | None = None
         self._client_initialized = False
 
-        self.logger.info("HTTP Request Engine initialized",
-                        timeout=timeout,
-                        verify_ssl=verify_ssl,
-                        proxy=proxy or "none",
-                        max_retries=retry_config.max_attempts,
-                        user_agent_mode=self.user_agent_rotator.mode,
-                        status_code_filter=status_code_filter)
+        self.logger.info(
+            "HTTP Request Engine initialized",
+            timeout=timeout,
+            verify_ssl=verify_ssl,
+            proxy=proxy or "none",
+            max_retries=retry_config.max_attempts,
+            user_agent_mode=self.user_agent_rotator.mode,
+            status_code_filter=status_code_filter,
+        )
 
     async def _ensure_client(self) -> None:
         """Ensure HTTP client is initialized"""
         if not self._client_initialized:
             # Disable httpx logging to avoid duplicate request logs
             import logging
+
             logging.getLogger("httpx").setLevel(logging.WARNING)
 
             # Connection limits for performance
             limits = httpx.Limits(
-                max_keepalive_connections=20,
-                max_connections=100,
-                keepalive_expiry=30.0
+                max_keepalive_connections=20, max_connections=100, keepalive_expiry=30.0
             )
 
             # Timeout configuration
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=self.timeout,
-                write=10.0,
-                pool=5.0
-            )
+            timeout = httpx.Timeout(connect=10.0, read=self.timeout, write=10.0, pool=5.0)
 
             client_kwargs = {
                 "limits": limits,
                 "timeout": timeout,
                 "verify": self.verify_ssl,
                 "follow_redirects": False,  # We'll handle redirects manually
-                "http2": False  # Disable HTTP/2 to avoid h2 dependency
+                "http2": False,  # Disable HTTP/2 to avoid h2 dependency
             }
 
             # Custom CA bundle (Requirement 29.2): when a CA path is supplied it
@@ -495,8 +515,11 @@ class HTTPRequestEngine:
             # httpx[socks] extra.
             if self.proxy:
                 client_kwargs["proxy"] = self.proxy
-                self.logger.info("Routing HTTP traffic through proxy",
-                                 proxy=self.proxy, verify_ssl=self.verify_ssl)
+                self.logger.info(
+                    "Routing HTTP traffic through proxy",
+                    proxy=self.proxy,
+                    verify_ssl=self.verify_ssl,
+                )
 
             # DNS override (Requirement 29.4): override resolution for the named
             # host to the supplied IP for every Discovery_Request by mounting a
@@ -515,8 +538,7 @@ class HTTPRequestEngine:
                         resolve_host, resolve_ip, **transport_kwargs
                     )
                 }
-                self.logger.info("Overriding DNS resolution",
-                                 host=resolve_host, ip=resolve_ip)
+                self.logger.info("Overriding DNS resolution", host=resolve_host, ip=resolve_ip)
 
             self.client = httpx.AsyncClient(**client_kwargs)
 
@@ -544,12 +566,12 @@ class HTTPRequestEngine:
         request = Request(
             method=method.upper(),
             url=url,
-            headers=kwargs.get('headers', {}),
-            params=kwargs.get('params', {}),
-            data=kwargs.get('data'),
-            json=kwargs.get('json'),
-            timeout=kwargs.get('timeout'),
-            auth_context=kwargs.get('auth_context')
+            headers=kwargs.get("headers", {}),
+            params=kwargs.get("params", {}),
+            data=kwargs.get("data"),
+            json=kwargs.get("json"),
+            timeout=kwargs.get("timeout"),
+            auth_context=kwargs.get("auth_context"),
         )
 
         # Apply engine-level default headers (operator-supplied discovery headers
@@ -558,8 +580,8 @@ class HTTPRequestEngine:
             request.headers.setdefault(_name, _value)
 
         # Apply user agent rotation if not already set
-        if 'User-Agent' not in request.headers:
-            request.headers['User-Agent'] = self.user_agent_rotator.get_user_agent()
+        if "User-Agent" not in request.headers:
+            request.headers["User-Agent"] = self.user_agent_rotator.get_user_agent()
 
         # Apply authentication if specified
         if request.auth_context and request.auth_context in self.auth_contexts:
@@ -599,18 +621,16 @@ class HTTPRequestEngine:
         result = []
         for i, response in enumerate(responses):
             if isinstance(response, Exception):
-                self.logger.error("Batch request failed",
-                                request_index=i,
-                                error=str(response))
+                self.logger.error("Batch request failed", request_index=i, error=str(response))
                 # Create error response
                 error_response = Response(
                     status_code=0,
                     headers={},
-                    content=b'',
+                    content=b"",
                     text=str(response),
                     url=requests[i].url,
                     elapsed=0.0,
-                    request_method=requests[i].method
+                    request_method=requests[i].method,
                 )
                 result.append(error_response)
             else:
@@ -632,26 +652,24 @@ class HTTPRequestEngine:
 
                 # Prepare httpx request parameters
                 request_kwargs = {
-                    'headers': request.headers,
-                    'timeout': request.timeout or self.timeout
+                    "headers": request.headers,
+                    "timeout": request.timeout or self.timeout,
                 }
 
                 # Only include params when non-empty to avoid httpx
                 # re-encoding the URL query string (which can corrupt
                 # query parameters already embedded in the URL).
                 if request.params:
-                    request_kwargs['params'] = request.params
+                    request_kwargs["params"] = request.params
 
                 if request.data is not None:
-                    request_kwargs['content'] = request.data
+                    request_kwargs["content"] = request.data
                 if request.json is not None:
-                    request_kwargs['json'] = request.json
+                    request_kwargs["json"] = request.json
 
                 # Make the request
                 httpx_response = await self.client.request(
-                    method=request.method,
-                    url=request.url,
-                    **request_kwargs
+                    method=request.method, url=request.url, **request_kwargs
                 )
 
                 elapsed = time.time() - start_time
@@ -664,11 +682,13 @@ class HTTPRequestEngine:
                     text=httpx_response.text,
                     url=str(httpx_response.url),
                     elapsed=elapsed,
-                    request_method=request.method
+                    request_method=request.method,
                 )
 
                 # Log colored HTTP request (always shown, regardless of log level)
-                self._log_colored_request(request.method, request.url, response.status_code, self.status_code_filter)
+                self._log_colored_request(
+                    request.method, request.url, response.status_code, self.status_code_filter
+                )
 
                 # Update metrics
                 self._update_metrics(response, elapsed)
@@ -687,16 +707,19 @@ class HTTPRequestEngine:
                     self.rate_limiter.reset_rate_limit_state()
 
                 # Check if we should retry based on status code
-                if (response.status_code in self.retry_config.retry_on_status and
-                    attempt < self.retry_config.max_attempts - 1):
-
-                    backoff_time = self.retry_config.backoff_factor ** attempt
+                if (
+                    response.status_code in self.retry_config.retry_on_status
+                    and attempt < self.retry_config.max_attempts - 1
+                ):
+                    backoff_time = self.retry_config.backoff_factor**attempt
                     backoff_time = min(backoff_time, self.retry_config.max_backoff)
 
-                    self.logger.debug("Retrying request due to status code",
-                                    status_code=response.status_code,
-                                    attempt=attempt + 1,
-                                    backoff_time=backoff_time)
+                    self.logger.debug(
+                        "Retrying request due to status code",
+                        status_code=response.status_code,
+                        attempt=attempt + 1,
+                        backoff_time=backoff_time,
+                    )
 
                     self.metrics.retried_requests += 1
                     await asyncio.sleep(backoff_time)
@@ -706,16 +729,16 @@ class HTTPRequestEngine:
 
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
                 last_exception = e
-                self.logger.warning("Request failed",
-                                  url=request.url,
-                                  attempt=attempt + 1,
-                                  error=str(e))
+                self.logger.warning(
+                    "Request failed", url=request.url, attempt=attempt + 1, error=str(e)
+                )
 
                 # Retry on timeout if configured
-                if (self.retry_config.retry_on_timeout and
-                    attempt < self.retry_config.max_attempts - 1):
-
-                    backoff_time = self.retry_config.backoff_factor ** attempt
+                if (
+                    self.retry_config.retry_on_timeout
+                    and attempt < self.retry_config.max_attempts - 1
+                ):
+                    backoff_time = self.retry_config.backoff_factor**attempt
                     backoff_time = min(backoff_time, self.retry_config.max_backoff)
 
                     self.metrics.retried_requests += 1
@@ -731,15 +754,17 @@ class HTTPRequestEngine:
                     error_response = Response(
                         status_code=0,
                         headers={},
-                        content=b'',
+                        content=b"",
                         text=str(e),
                         url=request.url,
                         elapsed=0.0,
-                        request_method=request.method
+                        request_method=request.method,
                     )
 
                     # Log failed request (always shown, regardless of log level)
-                    self._log_colored_request(request.method, request.url, 0, self.status_code_filter)
+                    self._log_colored_request(
+                        request.method, request.url, 0, self.status_code_filter
+                    )
 
                     return error_response
 
@@ -751,30 +776,31 @@ class HTTPRequestEngine:
         if auth_context.type == AuthType.BEARER:
             # Skip header when token is empty — avoids "Illegal header value b'Bearer '"
             if auth_context.token:
-                request.headers['Authorization'] = f'Bearer {auth_context.token}'
+                request.headers["Authorization"] = f"Bearer {auth_context.token}"
 
         elif auth_context.type == AuthType.BASIC:
             if auth_context.username and auth_context.password:
                 import base64
+
                 credentials = f"{auth_context.username}:{auth_context.password}"
                 encoded = base64.b64encode(credentials.encode()).decode()
-                request.headers['Authorization'] = f'Basic {encoded}'
+                request.headers["Authorization"] = f"Basic {encoded}"
 
         elif auth_context.type == AuthType.API_KEY:
             # API key can be in header or query param
-            if 'X-API-Key' not in request.headers:
-                request.headers['X-API-Key'] = auth_context.token
+            if "X-API-Key" not in request.headers:
+                request.headers["X-API-Key"] = auth_context.token
 
         elif auth_context.type == AuthType.JWT:
             if auth_context.token:
-                request.headers['Authorization'] = f'Bearer {auth_context.token}'
+                request.headers["Authorization"] = f"Bearer {auth_context.token}"
 
         # Add any additional headers from auth context
         request.headers.update(auth_context.headers)
 
-        self.logger.debug("Authentication applied",
-                         auth_type=auth_context.type.value,
-                         auth_name=auth_context.name)
+        self.logger.debug(
+            "Authentication applied", auth_type=auth_context.type.value, auth_name=auth_context.name
+        )
 
     def _update_metrics(self, response: Response, elapsed: float) -> None:
         """Update performance metrics"""
@@ -790,18 +816,20 @@ class HTTPRequestEngine:
         self.metrics.min_response_time = min(self.metrics.min_response_time, elapsed)
         self.metrics.max_response_time = max(self.metrics.max_response_time, elapsed)
 
-    def _log_colored_request(self, method: str, url: str, status_code: int, status_code_filter: list[int] = None) -> None:
+    def _log_colored_request(
+        self, method: str, url: str, status_code: int, status_code_filter: list[int] = None
+    ) -> None:
         """Log HTTP request with colored status indicators"""
         # Check if we should filter by status code
         if status_code_filter and status_code not in status_code_filter:
             return  # Skip this request if it doesn't match the filter
 
         # ANSI color codes
-        GREEN = '\033[92m'
-        YELLOW = '\033[93m'
-        GRAY = '\033[90m'
-        RED = '\033[91m'
-        RESET = '\033[0m'
+        GREEN = "\033[92m"
+        YELLOW = "\033[93m"
+        GRAY = "\033[90m"
+        RED = "\033[91m"
+        RESET = "\033[0m"
 
         # Determine color and symbol based on status code
         if status_code == 0:
@@ -842,7 +870,7 @@ class HTTPRequestEngine:
                 500: "500 INTERNAL SERVER ERROR",
                 502: "502 BAD GATEWAY",
                 503: "503 SERVICE UNAVAILABLE",
-                504: "504 GATEWAY TIMEOUT"
+                504: "504 GATEWAY TIMEOUT",
             }
 
             status_message = status_messages.get(status_code, f"{status_code}")
@@ -850,12 +878,15 @@ class HTTPRequestEngine:
         # Print colored request log directly to stdout (bypassing structlog)
         # This ensures it always shows regardless of log level
         if status_code == 0:
-            print(f"{color}{symbol} HTTP Request: {method} {url} \"{status_message}\"{RESET}", flush=True)
+            print(
+                f'{color}{symbol} HTTP Request: {method} {url} "{status_message}"{RESET}',
+                flush=True,
+            )
         else:
-            print(f"{color}{symbol} HTTP Request: {method} {url} \"HTTP/1.1 {status_message}\"{RESET}", flush=True)
-
-
-
+            print(
+                f'{color}{symbol} HTTP Request: {method} {url} "HTTP/1.1 {status_message}"{RESET}',
+                flush=True,
+            )
 
     def set_auth_context(self, auth: AuthContext) -> None:
         """
@@ -865,10 +896,12 @@ class HTTPRequestEngine:
             auth: Authentication context to use for requests
         """
         self.current_auth_context = auth
-        self.logger.info("Authentication context set",
-                        auth_name=auth.name,
-                        auth_type=auth.type.value,
-                        privilege_level=auth.privilege_level)
+        self.logger.info(
+            "Authentication context set",
+            auth_name=auth.name,
+            auth_type=auth.type.value,
+            privilege_level=auth.privilege_level,
+        )
 
     def add_auth_context(self, name: str, auth: AuthContext) -> None:
         """
@@ -896,7 +929,7 @@ class HTTPRequestEngine:
             await self._ensure_client()
 
             # Make a simple HEAD request to a reliable endpoint
-            response = await self.request('HEAD', 'https://httpbin.org/status/200')
+            response = await self.request("HEAD", "https://httpbin.org/status/200")
             return response.status_code == 200
 
         except Exception as e:
