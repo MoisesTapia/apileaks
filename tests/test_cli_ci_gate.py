@@ -161,7 +161,7 @@ def _run_ci_gate(findings, extra_args):
     results = _make_results(findings)
     runner = CliRunner()
     with runner.isolated_filesystem():
-        with patch.object(apileaks, "APILeakCore", _fake_core_class(results)), patch.object(
+        with patch("cli.runner.APILeakCore", _fake_core_class(results)), patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
         ), patch("utils.report_generator.ReportGenerator") as report_gen:
             report_gen.return_value.save_reports.return_value = []
@@ -284,7 +284,7 @@ def test_sarif_zero_findings_writes_valid_empty_report():
     results = _make_results([])
     runner = CliRunner()
     with runner.isolated_filesystem():
-        with patch.object(apileaks, "APILeakCore", _fake_core_class(results)), patch.object(
+        with patch("cli.runner.APILeakCore", _fake_core_class(results)), patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
         ):
             result = runner.invoke(
@@ -392,7 +392,7 @@ def test_valid_empty_baseline_runs_the_scan():
         with open("good_baseline.json", "w", encoding="utf-8") as handle:
             handle.write('{"findings": []}')
 
-        with patch.object(apileaks, "APILeakCore", _fake_core_class(results)), patch.object(
+        with patch("cli.runner.APILeakCore", _fake_core_class(results)), patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
         ), patch("utils.report_generator.ReportGenerator") as report_gen:
             report_gen.return_value.save_reports.return_value = []
