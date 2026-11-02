@@ -36,6 +36,8 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[Security Misconfiguration (API8)](owasp/security-misconfiguration.md)** - CORS misconfiguration, missing security headers
 - **[Inventory Management (API9)](owasp/inventory-management.md)** - Deprecated and shadow API version detection
 - **[Unsafe Consumption (API10)](owasp/unsafe-consumption.md)** - Upstream data reflection, blind redirects, cleartext channels
+- **[HTTP Parameter Pollution](owasp/parameter-pollution.md)** - Discovered-endpoint and Burp/Caido capture-replay duplicate-parameter testing (beyond the Top 10)
+- **[Spec-Driven Testing](owasp/spec-driven-testing.md)** - OpenAPI/Swagger contract-enforcement audit (beyond the Top 10)
 
 ### Advanced Topics
 - **[Advanced Discovery](advanced-discovery.md)** - Advanced endpoint discovery techniques

@@ -193,7 +193,8 @@ apileaks/
 │   ├── fuzzing/             # Traditional fuzzing (orchestrator.py, markers.py)
 │   ├── owasp/               # OWASP modules (bola/auth/property/function/resource/
 │   │                        #   ssrf/business_flows/inventory/security_misconfig/
-│   │                        #   unsafe_consumption + registry.py)
+│   │                        #   unsafe_consumption/parameter_pollution/
+│   │                        #   spec_driven_testing + registry.py)
 │   └── advanced/            # WAF detection, framework detection, version fuzzing,
 │                            #   subdomain discovery, CORS/headers analyzers, throttling
 ├── utils/                   # Utilities: http_client, response_analyzer, findings,

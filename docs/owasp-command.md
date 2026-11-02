@@ -18,6 +18,8 @@ The `owasp` command group lets you run **exactly one OWASP module in isolation**
 - [Security Misconfiguration Module Options (API8)](#security-misconfiguration-module-options-api8)
 - [Inventory Management Module Options (API9)](#inventory-management-module-options-api9)
 - [Unsafe Consumption Module Options (API10)](#unsafe-consumption-module-options-api10)
+- [Parameter Pollution Module Options](#parameter-pollution-module-options)
+- [Spec-Driven Testing Module Options](#spec-driven-testing-module-options)
 - [Module Reference](#module-reference)
 - [Examples](#examples)
 
@@ -53,6 +55,8 @@ ssrf	API7	Server-Side Request Forgery (SSRF) detection
 security_misconfig	API8	Security Misconfiguration detection
 inventory	API9	Improper Inventory Management detection
 unsafe_consumption	API10	Unsafe Consumption of APIs detection
+parameter_pollution	API8	HTTP Parameter Pollution detection (discovered endpoints + Burp Suite/Caido capture replay)
+spec_driven_testing	API8	OpenAPI/Swagger contract-enforcement audit (enum/type/required constraints)
 ```
 
 ## Running a Module
@@ -210,6 +214,47 @@ The `unsafe_consumption` subcommand accepts the transversal options above plus t
 
 When none of the `--unsafe-upstream-indicators` values are supplied, the module uses its built-in list (`proxy`, `upstream`, `external`, `aggregate`). When at least one value is supplied, the built-in list is replaced entirely — include every keyword you need. The same replacement behavior applies to `--unsafe-payloads`.
 
+## Parameter Pollution Module Options
+
+Not a strict OWASP Top 10 category — filed under API8 as the closest fit. The `parameter_pollution` subcommand accepts the transversal options above plus these module-specific options. For the full guide, see [HTTP Parameter Pollution Testing](owasp/parameter-pollution.md).
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--burp-xml` | Path to a Burp Suite XML Proxy-History export. Every query parameter and JSON/form body field of each captured request is a pollution candidate. | — | `--burp-xml export.xml` |
+| `--har` | Path to a HAR (HTTP Archive) JSON export — from Caido, Burp Logger, Hetty, Chrome DevTools, or Firefox. | — | `--har caido-export.har` |
+| `--pp-max-candidates` | Maximum number of parameters probed across discovered endpoints and any imported capture combined. Each candidate costs 3 requests. | `40` | `--pp-max-candidates 100` |
+
+```bash
+# Discovered endpoints only
+python apileaks.py owasp parameter_pollution --target https://api.example.com
+
+# Replay a Burp Suite capture — every query/body field is a candidate
+python apileaks.py owasp parameter_pollution --target https://api.example.com --burp-xml export.xml
+
+# Replay a Caido (or any tool's) HAR export
+python apileaks.py owasp parameter_pollution --target https://api.example.com --har caido-export.har
+```
+
+## Spec-Driven Testing Module Options
+
+Not a strict OWASP Top 10 category — filed under API8 as the closest fit. The `spec_driven_testing` subcommand accepts the transversal options above plus these module-specific options. For the full guide, see [Spec-Driven Testing](owasp/spec-driven-testing.md).
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--openapi` | OpenAPI/Swagger document (JSON or YAML) to audit. Repeatable; merged with `--postman`. **Required** for this module to have anything to test in isolation. | — | `--openapi openapi.yaml` |
+| `--postman` | Postman collection (JSON) to audit. Carries no enum/type/required metadata, so only the required-parameter check is meaningful. | — | `--postman collection.json` |
+| `--sdt-max-operations` | Maximum number of declared operations audited. | `30` | `--sdt-max-operations 100` |
+
+```bash
+# Audit every declared operation in an OpenAPI/Swagger document
+python apileaks.py owasp spec_driven_testing --target https://api.example.com --openapi openapi.yaml
+
+# Also works via a Postman collection (required-parameter checks only)
+python apileaks.py owasp spec_driven_testing --target https://api.example.com --postman collection.json
+```
+
+> Unlike every other module, `spec_driven_testing` drives its attack surface from the spec itself, not from discovered endpoints — it audits every declared operation whether or not discovery ever found it. A discovered endpoint is still needed to derive the target's `scheme://host`.
+
 ## Property Level Auth Module Options (API3)
 
 The `property` subcommand accepts the transversal options above plus these module-specific options. For the full guide, see [Property Level Authorization Testing (API3)](owasp/property-level-auth.md).
@@ -350,6 +395,27 @@ python apileaks.py owasp unsafe_consumption --target https://api.example.com
 ```
 
 For the full `unsafe_consumption` guide, see [Unsafe Consumption Testing (API10)](owasp/unsafe-consumption.md).
+
+### `parameter_pollution` (HTTP Parameter Pollution — not a strict Top 10 mapping, filed under API8)
+
+Detects inconsistent or unsafe duplicate-parameter handling across discovered endpoints (query strings) and captured traffic (Burp Suite XML / HAR, which covers Caido, Burp Logger, Hetty, DevTools, and Firefox). Not restricted to SSRF's "URL-like" field subset — every query parameter and every JSON/form body field of a captured request is a candidate.
+
+```bash
+python apileaks.py owasp parameter_pollution --target https://api.example.com
+python apileaks.py owasp parameter_pollution --target https://api.example.com --burp-xml export.xml
+```
+
+For the full guide, see [HTTP Parameter Pollution Testing](owasp/parameter-pollution.md).
+
+### `spec_driven_testing` (Spec-Driven Testing — not a strict Top 10 mapping, filed under API8)
+
+Audits whether the live API enforces its own declared OpenAPI/Swagger contract (enum values, parameter types, required fields), driving its attack surface directly from the spec rather than from discovery.
+
+```bash
+python apileaks.py owasp spec_driven_testing --target https://api.example.com --openapi openapi.yaml
+```
+
+For the full guide, see [Spec-Driven Testing](owasp/spec-driven-testing.md).
 
 ## Examples
 

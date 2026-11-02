@@ -41,12 +41,16 @@ APILeak implements specialized modules for each category of the **OWASP API Secu
 | `security_misconfig` | **API8** - Security Misconfiguration | Security Misconfiguration detection | **P1** |
 | `inventory` | **API9** - Improper Inventory Management | Improper Inventory Management detection | **P2** |
 | `unsafe_consumption` | **API10** - Unsafe Consumption of APIs | Unsafe Consumption of APIs detection | **P2** |
+| `parameter_pollution` | **API8*** - HTTP Parameter Pollution | Duplicate-parameter handling across discovered endpoints + Burp/Caido capture replay | — |
+| `spec_driven_testing` | **API8*** - Spec-Driven Testing | OpenAPI/Swagger contract-enforcement audit (enum/type/required) | — |
 
-Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). All ten modules own module-specific CLI options — see the [OWASP Command Reference](owasp-command.md) for the full option tables.
+\* Not a strict Top 10 mapping — these two extend coverage beyond the Top 10 and are filed under API8 as the closest fit. See [Parameter Pollution](owasp/parameter-pollution.md) and [Spec-Driven Testing](owasp/spec-driven-testing.md).
+
+Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). All twelve modules own module-specific CLI options — see the [OWASP Command Reference](owasp-command.md) for the full option tables.
 
 ### Implementation Status
 
-✅ **Fully Implemented & Registered**: all ten modules (`bola`, `auth`, `property`, `resource`, `function_auth`, `business_flow`, `ssrf`, `security_misconfig`, `inventory`, `unsafe_consumption`)
+✅ **Fully Implemented & Registered**: all ten Top 10 modules (`bola`, `auth`, `property`, `resource`, `function_auth`, `business_flow`, `ssrf`, `security_misconfig`, `inventory`, `unsafe_consumption`) plus two additional modules (`parameter_pollution`, `spec_driven_testing`)
 
 ---
 
@@ -91,6 +95,8 @@ By default, `scan` runs discovery plus all registered OWASP modules. To restrict
 - `security_misconfig` - Security Misconfiguration detection (API8)
 - `inventory` - Improper Inventory Management detection (API9)
 - `unsafe_consumption` - Unsafe Consumption of APIs detection (API10)
+- `parameter_pollution` - HTTP Parameter Pollution detection (discovered endpoints + capture replay)
+- `spec_driven_testing` - OpenAPI/Swagger contract-enforcement audit
 
 ---
 
@@ -590,7 +596,7 @@ python apileaks.py scan \
 
 ## 🚀 All Modules Available
 
-All ten OWASP API Security Top 10 2023 modules are fully implemented and registered. See the [OWASP Coverage](owasp/README.md) for a detailed breakdown of what each module detects.
+All ten OWASP API Security Top 10 2023 modules are fully implemented and registered, plus two additional modules (`parameter_pollution`, `spec_driven_testing`). See the [OWASP Coverage](owasp/README.md) for a detailed breakdown of what each module detects.
 
 ### Future Features
 - **Machine Learning**: Intelligent pattern detection
