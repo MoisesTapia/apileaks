@@ -14,12 +14,13 @@ authors = [
 keywords = ["api", "security", "fuzzing", "owasp", "pentest", "apileaks"]
 classifiers = [
     # Beta, not Alpha: all 10 OWASP API Security Top 10 2023 modules are
-    # implemented, the entrypoint monolith was decomposed, and the ruff/mypy
-    # quality gates are green (see technical-debt/code-quality-audit.md).
-    # Not yet "5 - Production/Stable": the test suite (2300+ tests) is not
-    # gated in CI (no pytest job in .github/workflows/), and PyPI/.deb
-    # publishing is currently disabled for this release. Bump to Stable once
-    # both of those are resolved.
+    # implemented (plus 2 additional modules beyond the Top 10), the
+    # entrypoint monolith was decomposed, the ruff/mypy quality gates are
+    # green, and the test suite (2300+ tests) is now gated in CI via the
+    # pytest job in .github/workflows/code-quality.yml (see
+    # technical-debt/code-quality-audit.md).
+    # Not yet "5 - Production/Stable": PyPI/.deb publishing is currently
+    # disabled for this release. Bump to Stable once that is resolved.
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",

@@ -2,7 +2,7 @@ name: Code Quality — Ruff
 
 on:
   push:
-    branches: [main, develop, v0.2.0]
+    branches: [main, develop, v0.2.0, v0.3.0]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -59,3 +59,24 @@ jobs:
         run: |
           python -m mypy --config-file pyproject.toml \
             apileaks.py cli core modules utils
+
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
