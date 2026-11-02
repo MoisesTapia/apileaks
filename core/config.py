@@ -429,6 +429,10 @@ class ResourceTestingConfig:
     burst_size: int = 100
     large_payload_sizes: list[int] = field(default_factory=lambda: [1024 * 1024, 10 * 1024 * 1024])
     json_depth_limit: int = 1000
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
 
 
 @dataclass
@@ -632,6 +636,10 @@ class BusinessFlowConfig:
     # Delay (ms) between repetitions — 0 means no delay (full automation).
     # Used to surface timing-based controls (e.g. "max 1 request per second").
     inter_request_delay_ms: int = 0
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
 
 
 @dataclass
@@ -647,6 +655,10 @@ class SecurityMisconfigConfig:
             "Content-Security-Policy",
         ]
     )
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
 
 
 @dataclass
@@ -655,6 +667,10 @@ class InventoryConfig:
 
     enabled: bool = True
     detect_deprecated: bool = True
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
 
 
 @dataclass
@@ -679,6 +695,36 @@ class UnsafeConsumptionConfig:
     # URL starts with ``http://`` — the API is integrating with an upstream
     # service over an unencrypted channel.
     check_cleartext_upstream: bool = True
+    # Per-module Safe_Mode flag (Requirement 21.1). Populated by the engine from
+    # the global safe_mode setting (subtask 4.2). Defaults to False so existing
+    # configs and behavior are unchanged.
+    safe_mode: bool = False
+
+
+@dataclass
+class ParameterPollutionConfig:
+    """HTTP Parameter Pollution testing configuration.
+
+    ``burp_xml_path``/``har_path`` reuse the exact same importers as
+    ``SSRFConfig`` (``utils/import_sources.py``'s ``BurpXmlImporter``/
+    ``HarImporter``) so a Burp Suite or Caido (via HAR) capture can drive this
+    module's probes too, not just SSRF's.
+    """
+
+    enabled: bool = True
+    safe_mode: bool = False
+    burp_xml_path: str | None = None
+    har_path: str | None = None
+    max_candidates: int = 40
+
+
+@dataclass
+class SpecDrivenTestingConfig:
+    """Spec-driven (OpenAPI/Swagger) contract-enforcement testing configuration."""
+
+    enabled: bool = True
+    safe_mode: bool = False
+    max_operations: int = 30
 
 
 @dataclass
@@ -697,6 +743,8 @@ class OWASPConfig:
             "security_misconfig",
             "inventory",
             "unsafe_consumption",
+            "parameter_pollution",
+            "spec_driven_testing",
         ]
     )
     bola_testing: BOLAConfig = field(default_factory=BOLAConfig)
@@ -712,6 +760,12 @@ class OWASPConfig:
     inventory_testing: InventoryConfig = field(default_factory=InventoryConfig)
     unsafe_consumption_testing: UnsafeConsumptionConfig = field(
         default_factory=UnsafeConsumptionConfig
+    )
+    parameter_pollution_testing: ParameterPollutionConfig = field(
+        default_factory=ParameterPollutionConfig
+    )
+    spec_driven_testing: SpecDrivenTestingConfig = field(
+        default_factory=SpecDrivenTestingConfig
     )
     # Optional Spec_Schema merged from the repeatable ``--openapi`` / ``--postman``
     # sources supplied to the ``full`` command (Requirement 49.2). Defaults to
@@ -1446,6 +1500,8 @@ class ConfigurationManager:
                     "security_misconfig",
                     "inventory",
                     "unsafe_consumption",
+                    "parameter_pollution",
+                    "spec_driven_testing",
                 ],
             ),
             bola_testing=BOLAConfig(**data.get("bola_testing", {})),
@@ -1461,6 +1517,12 @@ class ConfigurationManager:
             inventory_testing=InventoryConfig(**data.get("inventory_testing", {})),
             unsafe_consumption_testing=UnsafeConsumptionConfig(
                 **data.get("unsafe_consumption_testing", {})
+            ),
+            parameter_pollution_testing=ParameterPollutionConfig(
+                **data.get("parameter_pollution_testing", {})
+            ),
+            spec_driven_testing=SpecDrivenTestingConfig(
+                **data.get("spec_driven_testing", {})
             ),
         )
 

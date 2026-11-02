@@ -227,8 +227,8 @@ def test_owasp_no_subcommand_lists_all_modules_with_category_and_summary():
     assert result.exit_code == 0, result.output
     output = result.output
 
-    # All ten modules are listed.
-    assert len(OWASP_MODULE_DESCRIPTORS) == 10
+    # All twelve modules are listed.
+    assert len(OWASP_MODULE_DESCRIPTORS) == 12
     lines = output.splitlines()
 
     for desc in OWASP_MODULE_DESCRIPTORS:

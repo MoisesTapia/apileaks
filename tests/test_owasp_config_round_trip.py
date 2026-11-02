@@ -305,7 +305,7 @@ class TestOWASPConfigDefaults:
         expected = {
             "bola", "auth", "property", "resource", "function_auth",
             "ssrf", "business_flow", "security_misconfig", "inventory",
-            "unsafe_consumption",
+            "unsafe_consumption", "parameter_pollution", "spec_driven_testing",
         }
         assert modules == expected
 

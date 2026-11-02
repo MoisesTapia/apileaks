@@ -150,6 +150,8 @@ class ScanStatistics:
     medium_findings: int = 0
     low_findings: int = 0
     info_findings: int = 0
+    parameters_tested: int = 0
+    endpoints_tested: int = 0
 
 
 @dataclass
@@ -178,6 +180,9 @@ class ScanResults:
     findings: list[Finding] = field(default_factory=list)  # Deprecated - use findings_collector
     fuzzing_results: Any | None = None  # Will be FuzzingResults
     owasp_results: Any | None = None  # Will be OWASPResults
+    orchestration_results: Any | None = None  # Will be OrchestrationResults
+    advanced_results: Any | None = None  # Will be AttackSurface
+    discovered_endpoints: list[Any] = field(default_factory=list)
 
 
 class APILeakCore:
@@ -652,7 +657,7 @@ class APILeakCore:
             stats = self.fuzzing_orchestrator.get_fuzzing_statistics()
 
             # Get parameter details if parameter fuzzing was enabled
-            parameter_details = []
+            parameter_details: list[Any] = []
             if self.config.fuzzing.parameters.enabled and hasattr(
                 self.fuzzing_orchestrator, "parameter_fuzzer"
             ):
@@ -660,7 +665,7 @@ class APILeakCore:
                     self.fuzzing_orchestrator.parameter_fuzzer, "parameter_test_details", []
                 )
 
-            fuzzing_results = {
+            fuzzing_results: dict[str, Any] = {
                 "endpoints_tested": stats.endpoints_tested,
                 "endpoints_discovered": stats.endpoints_discovered,
                 "parameters_tested": stats.parameters_tested,
@@ -804,7 +809,11 @@ class APILeakCore:
         """Execute OWASP specialized testing phase"""
         self.logger.debug("Executing OWASP testing phase")
 
-        owasp_results = {"modules_executed": [], "coverage_by_category": {}, "findings": []}
+        owasp_results: dict[str, Any] = {
+            "modules_executed": [],
+            "coverage_by_category": {},
+            "findings": [],
+        }
 
         # Initialize OWASP modules if not already done
         if not self.owasp_modules:
@@ -896,9 +905,11 @@ class APILeakCore:
                 BusinessFlowsTestingModule,
                 FunctionLevelAuthModule,
                 InventoryManagementModule,
+                ParameterPollutionModule,
                 PropertyLevelAuthModule,
                 ResourceConsumptionModule,
                 SecurityMisconfigModule,
+                SpecDrivenTestingModule,
                 SSRFTestingModule,
                 UnsafeConsumptionModule,
             )
@@ -1054,6 +1065,21 @@ class APILeakCore:
                 )
                 self.register_owasp_module("unsafe_consumption", unsafe_consumption_module)
 
+            if "parameter_pollution" not in self.owasp_modules:
+                parameter_pollution_module = ParameterPollutionModule(
+                    self.config.owasp_testing.parameter_pollution_testing, http_client, auth_contexts
+                )
+                self.register_owasp_module("parameter_pollution", parameter_pollution_module)
+
+            if "spec_driven_testing" not in self.owasp_modules:
+                spec_driven_module = SpecDrivenTestingModule(
+                    self.config.owasp_testing.spec_driven_testing,
+                    http_client,
+                    auth_contexts,
+                    spec_schema=spec_schema,
+                )
+                self.register_owasp_module("spec_driven_testing", spec_driven_module)
+
             # Initialize Advanced Discovery Engine if enabled
             if self.config.advanced_discovery.enabled and not hasattr(
                 self, "advanced_discovery_engine"
@@ -1183,11 +1209,7 @@ class APILeakCore:
                 self.findings_collector.add_findings(advanced_findings)
 
             # Store attack surface in scan results
-            if hasattr(self.scan_results, "advanced_results"):
-                self.scan_results.advanced_results = attack_surface
-            else:
-                # Add advanced_results attribute dynamically
-                self.scan_results.advanced_results = attack_surface
+            self.scan_results.advanced_results = attack_surface
 
             self.logger.info(
                 "Advanced Discovery phase completed",
@@ -1234,27 +1256,12 @@ class APILeakCore:
         if self.scan_results.fuzzing_results:
             fuzzing_stats = self.scan_results.fuzzing_results
             self.scan_results.statistics.total_requests = fuzzing_stats.get("total_requests", 0)
-            # Add parameters_tested to statistics if not already there
-            if hasattr(self.scan_results.statistics, "parameters_tested"):
-                self.scan_results.statistics.parameters_tested = fuzzing_stats.get(
-                    "parameters_tested", 0
-                )
-            else:
-                # Add the attribute dynamically
-                self.scan_results.statistics.parameters_tested = fuzzing_stats.get(
-                    "parameters_tested", 0
-                )
-
-            # Add endpoints_tested to statistics
-            if hasattr(self.scan_results.statistics, "endpoints_tested"):
-                self.scan_results.statistics.endpoints_tested = fuzzing_stats.get(
-                    "endpoints_tested", 0
-                )
-            else:
-                # Add the attribute dynamically
-                self.scan_results.statistics.endpoints_tested = fuzzing_stats.get(
-                    "endpoints_tested", 0
-                )
+            self.scan_results.statistics.parameters_tested = fuzzing_stats.get(
+                "parameters_tested", 0
+            )
+            self.scan_results.statistics.endpoints_tested = fuzzing_stats.get(
+                "endpoints_tested", 0
+            )
 
         # Log OWASP coverage information
         owasp_coverage = self.findings_collector.get_owasp_coverage()

@@ -1284,3 +1284,124 @@ def apply_ssrf_options(ssrf_cfg, opts: dict) -> None:
             "Warning: --ssrf-scan-ports has no effect without --allow-aggressive-ssrf.",
             err=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Parameter Pollution Module_Specific_Options. Reuses the same --burp-xml/--har
+# dest names as SSRF_OPTIONS so both modules can independently load a capture
+# (they are mutually exclusive Click commands — ``owasp ssrf`` vs
+# ``owasp parameter_pollution`` — so there is no option-name collision).
+# ---------------------------------------------------------------------------
+
+PARAMETER_POLLUTION_OPTIONS = [
+    click.option(
+        "--burp-xml",
+        "burp_xml",
+        metavar="PATH",
+        default=None,
+        help="Path to a Burp Suite XML Proxy-History export file. Every query "
+        "parameter and JSON body field of each captured request is a "
+        "pollution candidate (not just URL-like fields — this module is not "
+        "SSRF-specific).",
+    ),
+    click.option(
+        "--har",
+        "har",
+        metavar="PATH",
+        default=None,
+        help="Path to a HAR (HTTP Archive) JSON file exported from Burp Suite "
+        "Logger, Caido, Hetty, Chrome DevTools, or Firefox.",
+    ),
+    click.option(
+        "--pp-max-candidates",
+        "pp_max_candidates",
+        type=int,
+        default=None,
+        help="Maximum number of parameters to probe across discovered endpoints "
+        "and any imported capture combined (default: 40). Each candidate costs "
+        "3 requests (two single-value baselines plus one polluted request).",
+    ),
+]
+
+
+def parameter_pollution_options(func):
+    """Attach the Parameter Pollution Module_Specific_Options to ``func``."""
+    for option in reversed(PARAMETER_POLLUTION_OPTIONS):
+        func = option(func)
+    return func
+
+
+def apply_parameter_pollution_options(pp_cfg, opts: dict) -> None:
+    """Mutate a ``ParameterPollutionConfig`` from collected option values.
+
+    ``ParameterPollutionConfig`` is NOT imported here to avoid circular
+    imports, matching the convention used by ``apply_ssrf_options``.
+    """
+    if opts.get("burp_xml"):
+        pp_cfg.burp_xml_path = opts["burp_xml"]
+    if opts.get("har"):
+        pp_cfg.har_path = opts["har"]
+    if opts.get("pp_max_candidates") is not None:
+        pp_cfg.max_candidates = opts["pp_max_candidates"]
+
+
+# ---------------------------------------------------------------------------
+# Spec-Driven Testing Module_Specific_Options. Reuses the same --openapi/
+# --postman dest names the orchestrator's _ORCHESTRATOR_EXTRA_OPTIONS and
+# SSRF_OPTIONS already use, so ``_build_and_run``'s existing generic
+# Spec_Schema-loading logic (reads ``opts.get("openapi")``/``opts.get("postman")``
+# and attaches the merged schema to ``cfg.owasp_testing.spec_schema`` before any
+# per-module apply_options runs) picks these up with no extra wiring — hence
+# ``apply_spec_driven_options`` below is a documented no-op, not a stub.
+# ---------------------------------------------------------------------------
+
+SPEC_DRIVEN_OPTIONS = [
+    click.option(
+        "--openapi",
+        "openapi",
+        multiple=True,
+        type=click.Path(),
+        help="OpenAPI/Swagger document (JSON or YAML) to audit for contract "
+        "enforcement (declared enum/type/required constraints). Repeatable; "
+        "merged with --postman when both are supplied. Required for this "
+        "module to have anything to test when run in isolation "
+        "(``apileaks owasp spec_driven_testing``) rather than via ``scan``.",
+    ),
+    click.option(
+        "--postman",
+        "postman",
+        multiple=True,
+        type=click.Path(),
+        help="Postman collection (JSON) to audit. Carries no enum/type/required "
+        "metadata (Postman doesn't declare it), so only the required-parameter "
+        "omission check is meaningful against a Postman-sourced schema.",
+    ),
+    click.option(
+        "--sdt-max-operations",
+        "sdt_max_operations",
+        type=int,
+        default=None,
+        help="Maximum number of declared operations to audit (default: 30), "
+        "so a large spec cannot explode into an unbounded request count.",
+    ),
+]
+
+
+def spec_driven_options(func):
+    """Attach the Spec-Driven Testing Module_Specific_Options to ``func``."""
+    for option in reversed(SPEC_DRIVEN_OPTIONS):
+        func = option(func)
+    return func
+
+
+def apply_spec_driven_options(sdt_cfg, opts: dict) -> None:
+    """Mutate a ``SpecDrivenTestingConfig`` from collected option values.
+
+    ``--openapi``/``--postman`` themselves are intentionally NOT handled
+    here: ``_build_and_run`` already parses them into a merged ``SpecSchema``
+    and attaches it to ``cfg.owasp_testing.spec_schema`` generically, before
+    any per-module ``apply_options`` runs (see the module docstring above).
+    Only this module's own numeric knob is applied here.
+    """
+    if opts.get("sdt_max_operations") is not None:
+        sdt_cfg.max_operations = opts["sdt_max_operations"]

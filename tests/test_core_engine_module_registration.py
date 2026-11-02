@@ -38,6 +38,8 @@ EXPECTED_OWASP_MODULES = [
     "security_misconfig",
     "inventory",
     "unsafe_consumption",
+    "parameter_pollution",
+    "spec_driven_testing",
 ]
 
 # One representative finding category per OWASP API category (API1-API10).
@@ -83,7 +85,7 @@ async def test_all_ten_owasp_modules_register():
 
     # No unexpected modules and no missing ones.
     assert set(core.owasp_modules.keys()) == set(EXPECTED_OWASP_MODULES)
-    assert len(core.owasp_modules) == 10
+    assert len(core.owasp_modules) == 12
 
 
 @pytest.mark.asyncio

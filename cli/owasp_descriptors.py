@@ -24,9 +24,11 @@ from cli.module_options import (
     apply_business_flow_options,
     apply_function_auth_options,
     apply_inventory_options,
+    apply_parameter_pollution_options,
     apply_property_options,
     apply_resource_options,
     apply_security_misconfig_options,
+    apply_spec_driven_options,
     apply_ssrf_options,
     apply_unsafe_consumption_options,
     auth_options,
@@ -34,9 +36,11 @@ from cli.module_options import (
     business_flow_options,
     function_auth_options,
     inventory_options,
+    parameter_pollution_options,
     property_options,
     resource_options,
     security_misconfig_options,
+    spec_driven_options,
     ssrf_options,
     unsafe_consumption_options,
 )
@@ -157,6 +161,30 @@ OWASP_MODULE_DESCRIPTORS: list[OwaspModuleDescriptor] = [
         config_field="unsafe_consumption_testing",
         specific_options=unsafe_consumption_options,
         apply_options=apply_unsafe_consumption_options,
+    ),
+    # Not a strict 1:1 OWASP Top 10 mapping — HTTP Parameter Pollution is
+    # filed under API8 (Security Misconfiguration) as the closest fit
+    # (inconsistent/unenforced parameter-resolution handling is a validation
+    # misconfiguration), consistent with the finding category's own choice in
+    # modules/owasp/parameter_pollution.py.
+    OwaspModuleDescriptor(
+        key="parameter_pollution",
+        owasp_category="API8",
+        summary="HTTP Parameter Pollution detection (discovered endpoints + capture replay)",
+        config_field="parameter_pollution_testing",
+        specific_options=parameter_pollution_options,
+        apply_options=apply_parameter_pollution_options,
+    ),
+    # Same category-mapping caveat as parameter_pollution above: spec-vs-
+    # implementation contract drift is filed under API8 as the closest fit.
+    OwaspModuleDescriptor(
+        key="spec_driven_testing",
+        owasp_category="API8",
+        summary="OpenAPI/Swagger contract-enforcement audit (enum/type/"
+        "required constraints)",
+        config_field="spec_driven_testing",
+        specific_options=spec_driven_options,
+        apply_options=apply_spec_driven_options,
     ),
 ]
 
