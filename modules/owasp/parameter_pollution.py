@@ -306,7 +306,7 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
         headers: dict[str, str] | None = None,
     ) -> Finding | None:
         value = body.get(field_name)
-        if not isinstance(value, (str, int, float, bool)) or isinstance(value, dict):
+        if not isinstance(value, str | int | float | bool) or isinstance(value, dict):
             return None  # only scalar fields make sense to pollute this way
 
         value_str = str(value)

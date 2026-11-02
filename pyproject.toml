@@ -50,6 +50,7 @@ dependencies = [
     "colorama>=0.4.6",
     "rich>=13.4.0",
     "defusedxml>=0.7.1",
+    "pyotp==2.9.0",
 ]
 
 [project.optional-dependencies]
