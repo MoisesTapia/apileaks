@@ -297,7 +297,11 @@ def _parse_one_selector(expr: str) -> ResponseSelector:
 
     if attribute in NUMERIC_ATTRIBUTES:
         bound = _parse_bound(raw, attribute)
-        return ResponseSelector(**{attribute: bound})
+        # `attribute` is always one of NUMERIC_ATTRIBUTES ("size", "words",
+        # "lines", "time"), which are exactly the four ResponseSelector fields
+        # typed `Bound | None` — this dynamic **dict unpack is safe at runtime,
+        # mypy just can't verify it against a dataclass's per-field types.
+        return ResponseSelector(**{attribute: bound})  # type: ignore[arg-type]
 
     raise SelectorError(
         f"invalid selector '{expr}': unknown attribute '{attribute}' "

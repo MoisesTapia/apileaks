@@ -27,7 +27,7 @@ def parse_response_codes(response_filter: str) -> list:
     if not response_filter:
         return []
 
-    codes = []
+    codes: list[int] = []
     parts = response_filter.split(",")
 
     for part in parts:
@@ -54,7 +54,7 @@ def parse_status_codes(status_filter: str) -> list:
     if not status_filter:
         return []
 
-    codes = []
+    codes: list[int] = []
     parts = status_filter.split(",")
 
     for part in parts:

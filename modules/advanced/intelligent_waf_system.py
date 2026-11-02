@@ -83,8 +83,12 @@ class IntelligentWAFSystem:
 
         # System state
         self.state = WAFSystemState()
-        self.target_url = None
-        self.http_client = None
+        # Both set for real in initialize_for_target() before any other method
+        # on this class is called; annotated Optional here to match that
+        # two-phase init pattern instead of the plain `None` mypy would
+        # otherwise infer (see technical-debt/code-quality-audit.md #16).
+        self.target_url: str | None = None
+        self.http_client: Any = None
 
         self.logger = get_logger("intelligent_waf_system")
 

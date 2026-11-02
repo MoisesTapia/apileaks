@@ -223,6 +223,17 @@ class NegativeControlMixin:
     modules so accessibility decisions share one implementation.
     """
 
+    # Declared, not assigned: BOLATestingModule, PropertyLevelAuthModule, and
+    # AuthenticationTestingModule each set these in their own __init__ before
+    # any mixin method runs — verified by inspection (see
+    # technical-debt/code-quality-audit.md #16). http_client access below is
+    # unguarded (unlike logger, which already uses getattr defensively), so
+    # this annotation documents a real precondition, not just type-checker
+    # noise: a future consuming class that forgets to set self.http_client
+    # would still fail at runtime with AttributeError, exactly as it does today.
+    http_client: Any
+    logger: Any
+
     async def build_negative_control(
         self,
         endpoint: str,

@@ -536,7 +536,7 @@ class JWTAttackResponseAnalyzer:
 
     def _find_pattern_matches(self, text: str, patterns: list[str]) -> list[str]:
         """Find pattern matches in text"""
-        matches = []
+        matches: list[str] = []
         if not text:
             return matches
 

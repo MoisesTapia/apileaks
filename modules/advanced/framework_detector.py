@@ -241,7 +241,9 @@ class FrameworkDetector:
 
         # Initialize detection results
         detection_scores = dict.fromkeys(FrameworkType, 0.0)
-        detection_evidence = {framework_type: [] for framework_type in FrameworkType}
+        detection_evidence: dict[FrameworkType, list[str]] = {
+            framework_type: [] for framework_type in FrameworkType
+        }
 
         # Phase 1: Header-based detection
         await self._detect_from_headers(target_url, detection_scores, detection_evidence)

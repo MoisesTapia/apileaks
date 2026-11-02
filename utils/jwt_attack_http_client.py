@@ -238,7 +238,11 @@ class JWTAttackHTTPClient:
         Returns:
             ResponseDetails object
         """
-        last_exception = None
+        # Annotated explicitly: each except clause below assigns a different
+        # exception subtype to this name (TimeoutException, ConnectError,
+        # ReadError, Exception) — all are only ever read via str(last_exception)
+        # at the end, so BaseException is the correct common type.
+        last_exception: BaseException | None = None
 
         for attempt in range(self.max_retries):
             try:

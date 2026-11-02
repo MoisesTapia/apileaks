@@ -690,7 +690,7 @@ class FindingsCollector:
         Returns:
             Dictionary mapping severity to findings (ordered by priority)
         """
-        findings_by_severity = {
+        findings_by_severity: dict[str, list[Finding]] = {
             Severity.CRITICAL.value: [],
             Severity.HIGH.value: [],
             Severity.MEDIUM.value: [],
@@ -716,7 +716,7 @@ class FindingsCollector:
         Returns:
             Dictionary mapping OWASP category to findings
         """
-        findings_by_owasp = {}
+        findings_by_owasp: dict[str, list[Finding]] = {}
 
         for finding in self.findings:
             if finding.owasp_category:

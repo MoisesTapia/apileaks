@@ -20,7 +20,7 @@ Discovery_Requests issued and **omits** the consumed/remaining budget figures
 rather than reporting a remaining count (Requirement 32.5).
 """
 
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
 from core.logging import get_logger
 
@@ -48,7 +48,7 @@ class DiscoveryProgress:
         self.enabled = bool(enabled)
         self.total = total
         self._progress: Progress | None = None
-        self._task_id = None
+        self._task_id: TaskID | None = None
         self._started = False
 
         if self.enabled:
@@ -142,6 +142,10 @@ class DiscoveryProgress:
     def __enter__(self) -> "DiscoveryProgress":
         return self
 
-    def __exit__(self, *exc_info) -> bool:
+    def __exit__(self, *exc_info) -> None:
+        # Returning None (falsy) never suppresses an in-flight exception,
+        # same effective behavior as the previous `return False` — `bool` as
+        # a declared __exit__ return type is a context-manager-protocol smell
+        # mypy flags even when the body always returns False (see
+        # technical-debt/code-quality-audit.md #16).
         self.stop()
-        return False

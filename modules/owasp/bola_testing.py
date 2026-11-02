@@ -279,7 +279,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 module="bola_testing",
             )
 
-        findings = []
+        findings: list[Finding] = []
 
         try:
             # Step 1: Discover object identifiers in endpoints
@@ -605,7 +605,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for anonymous access vulnerabilities
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing anonymous access to objects", count=len(identifiers))
 
         # Set anonymous context (no authentication)
@@ -713,7 +713,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for horizontal privilege escalation
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing horizontal privilege escalation", count=len(identifiers))
 
         # Get user-level auth contexts (privilege level 1)
@@ -838,7 +838,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for object access validation issues
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing object access validation", count=len(identifiers))
 
         # Test each object with all available auth contexts
@@ -945,7 +945,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for ID enumeration vulnerabilities
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing ID enumeration", count=len(identifiers))
 
         # Group identifiers by type for efficient testing
@@ -976,7 +976,7 @@ class BOLATestingModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         NOT belong to the requesting context (Requirement 4.1). Non-sequential
         identifiers are skipped with a log entry (Requirement 4.3).
         """
-        findings = []
+        findings: list[Finding] = []
 
         # Use the first available auth context as the requesting context.
         auth_context = self.auth_contexts[0] if self.auth_contexts else None

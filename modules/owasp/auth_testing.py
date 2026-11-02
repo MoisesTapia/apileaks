@@ -295,7 +295,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         """
         self.logger.info("Starting authentication testing", endpoints_count=len(endpoints))
 
-        findings = []
+        findings: list[Finding] = []
 
         try:
             # Step 1: Test endpoints accessible without authentication
@@ -446,7 +446,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Returns:
             List of findings for anonymous access vulnerabilities
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing anonymous access to endpoints", count=len(endpoints))
 
         # A valid Auth_Context used to obtain an authenticated baseline response
@@ -779,7 +779,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Returns:
             List of findings for JWT vulnerabilities
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing JWT vulnerabilities")
 
         # Collect JWT tokens from auth contexts
@@ -882,7 +882,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
     ) -> list[Finding]:
         """Test JWT algorithm vulnerabilities"""
-        findings = []
+        findings: list[Finding] = []
 
         # Test 1: 'none' algorithm vulnerability
         if jwt_token.algorithm.lower() == "none":
@@ -922,7 +922,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
     ) -> list[Finding]:
         """Test if endpoints accept JWT tokens with 'none' algorithm"""
-        findings = []
+        findings: list[Finding] = []
 
         try:
             # Create a modified token with 'none' algorithm
@@ -1008,7 +1008,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
     ) -> list[Finding]:
         """Test JWT tokens for weak secrets (Requirement 2.4)"""
-        findings = []
+        findings: list[Finding] = []
 
         if not jwt_token.algorithm.startswith("HS"):
             return findings  # Only test HMAC algorithms
@@ -1281,7 +1281,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         ``JWT_ALGORITHM_CONFUSION`` finding (OWASP ``API2``) is reported whose
         evidence names the accepted key representation (Requirement 60.3).
         """
-        findings = []
+        findings: list[Finding] = []
 
         if jwt_token.algorithm != "RS256":
             return findings  # Only test RS256 tokens
@@ -1431,7 +1431,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Returns:
             List of findings for token expiration issues
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing token expiration validation")
 
         # Test each auth context for expiration issues
@@ -1476,7 +1476,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
     ) -> list[Finding]:
         """Test JWT token expiration validation"""
-        findings = []
+        findings: list[Finding] = []
 
         try:
             exp_timestamp = jwt_token.payload.get("exp")
@@ -1508,7 +1508,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self, auth_context: AuthContext, jwt_token: JWTToken, endpoints: list[Any]
     ) -> list[Finding]:
         """Test if expired tokens are still accepted"""
-        findings = []
+        findings: list[Finding] = []
 
         # Test with a few endpoints
         test_endpoints = endpoints[:3] if len(endpoints) > 3 else endpoints
@@ -1593,7 +1593,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         swallowing ``except`` so a reporting failure aborts the test rather than
         silently losing a finding (Requirement 8.3).
         """
-        findings = []
+        findings: list[Finding] = []
 
         secret = self._get_signing_secret()
         if not secret:
@@ -1688,7 +1688,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         Returns:
             List of findings for logout invalidation issues
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing logout token invalidation")
 
         # Preserve the configured short-circuit as an additional skip condition
@@ -1747,7 +1747,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         self, auth_context: AuthContext, logout_endpoints: list[Any], all_endpoints: list[Any]
     ) -> list[Finding]:
         """Test if tokens remain valid after logout"""
-        findings = []
+        findings: list[Finding] = []
 
         # Set auth context
         self.http_client.set_auth_context(auth_context)
@@ -2380,7 +2380,12 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                     endpoint,
                     auth_context=None,
                     invalid_id=invalid_secret,
-                    substitute=lambda inv, param_name=param_name: self._build_secret_in_url(
+                    # `param_name=param_name` is the standard idiom to bind the
+                    # loop variable at lambda-creation time (avoids a late-binding
+                    # closure bug across iterations). mypy cannot infer a lambda
+                    # parameter that has a default value; this is a known
+                    # checker limitation, not a type error in the code.
+                    substitute=lambda inv, param_name=param_name: self._build_secret_in_url(  # type: ignore[misc]
                         endpoint, param_name, inv
                     ),
                 )

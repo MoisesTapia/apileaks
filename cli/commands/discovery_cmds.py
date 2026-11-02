@@ -16,6 +16,7 @@ import os
 import re
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
 import click
 
@@ -1196,11 +1197,17 @@ async def _brute_spec_async(
     user_agent_custom: str = None,
     output_file: str = None,
     quiet: bool = False,
-) -> list:
+) -> tuple[list[Any], list[Any]]:
     """Async core: probe *entries* paths under *target* and return spec hits.
 
-    Returns a list of dicts with keys: url, status, content_type, size, spec.
-    ``spec`` is True when _looks_like_spec() matched.
+    Returns a ``(hits, spec_hits)`` tuple: ``hits`` is every non-404 probe
+    result (dicts with keys url, status, content_type, size, spec); ``spec_hits``
+    is the subset of ``hits`` where ``spec`` is True (``_looks_like_spec()``
+    matched). The signature previously claimed a single ``list`` return while
+    always returning this 2-tuple (see technical-debt/code-quality-audit.md #16)
+    — the sole caller already unpacks it correctly as
+    ``hits, spec_hits = await _brute_spec_async(...)``, so only the annotation
+    and docstring were wrong, not the behavior.
     """
     import asyncio as _asyncio
 

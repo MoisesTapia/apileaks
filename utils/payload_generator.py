@@ -18,6 +18,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -618,7 +619,11 @@ class PayloadGenerator:
         """Get list of available vulnerability types"""
         return list(self.templates.keys())
 
-    def get_template_info(self, vuln_type: VulnerabilityType) -> list[dict[str, str]]:
+    def get_template_info(self, vuln_type: VulnerabilityType) -> list[dict[str, Any]]:
+        # Declared dict[str, Any], not dict[str, str]: "payload_count" is an
+        # int and "encodings"/"obfuscations" are list[str] below, so the
+        # previous dict[str, str] signature didn't match the actual return
+        # shape (see technical-debt/code-quality-audit.md #16).
         """Get information about templates for a vulnerability type"""
         if vuln_type not in self.templates:
             return []

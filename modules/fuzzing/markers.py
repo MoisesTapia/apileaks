@@ -19,6 +19,7 @@ import itertools
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 from urllib.parse import urlparse
 
 # One of the informational region labels below. Classification never affects
@@ -396,6 +397,11 @@ def generate_marker_candidates(
     Each combination tuple is applied via :func:`substitute_markers`, so every
     non-marked byte of the target URL is preserved (Requirement 40.1).
     """
+    # Annotated explicitly: zip() and itertools.product() return distinct
+    # (incompatible-looking) iterator types; both branches feed the same
+    # `for combo in combinations:` consumer below, so the mismatch is a
+    # type-checker artifact, not a runtime concern.
+    combinations: Iterator[tuple[Any, ...]]
     if mode == FuzzMode.PITCHFORK:
         combinations = zip(*wordlists, strict=False)
     else:

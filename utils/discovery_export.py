@@ -17,6 +17,7 @@ Any requested export format other than ``.md`` or ``.txt`` raises a descriptive
 """
 
 import os
+from collections import OrderedDict
 
 from core.logging import get_logger
 from utils.discovery_session import (
@@ -48,7 +49,7 @@ def _format_extension(path: str) -> str:
 
 
 def _render_markdown(
-    grouped: "OrderedDict[str, list[DiscoveryResult]]",  # noqa: F821
+    grouped: OrderedDict[str, list[DiscoveryResult]],
 ) -> str:
     """Render grouped records as a Markdown document.
 
@@ -83,7 +84,7 @@ def _render_markdown(
 
 
 def _render_text(
-    grouped: "OrderedDict[str, list[DiscoveryResult]]",  # noqa: F821
+    grouped: OrderedDict[str, list[DiscoveryResult]],
 ) -> str:
     """Render grouped records as a plain-text document.
 

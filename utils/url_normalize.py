@@ -112,7 +112,7 @@ def _remove_dot_segments(path: str) -> str:
     (``//``) are intentionally preserved, matching the RFC. The transformation
     is idempotent: a path with no ``.``/``..`` segments is returned unchanged.
     """
-    output = []
+    output: list[str] = []
     buf = path
     while buf:
         if buf.startswith("../"):

@@ -264,7 +264,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
                 module="property_level_auth",
             )
 
-        findings = []
+        findings: list[Finding] = []
 
         try:
             # Step 1: Detect sensitive fields in responses
@@ -329,7 +329,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for sensitive data exposure
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing sensitive data exposure", endpoints_count=len(endpoints))
 
         # Test with different auth contexts to see what data is exposed
@@ -782,7 +782,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for mass assignment vulnerabilities
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing mass assignment vulnerabilities", endpoints_count=len(endpoints))
 
         # Test with different auth contexts
@@ -820,7 +820,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         self, endpoint_url: str, method: str, auth_context: AuthContext
     ) -> list[Finding]:
         """Test mass assignment for a specific endpoint"""
-        findings = []
+        findings: list[Finding] = []
 
         # First, make a baseline request to understand the endpoint
         try:
@@ -1135,7 +1135,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for read-only property modification vulnerabilities
         """
-        findings = []
+        findings: list[Finding] = []
         self.logger.info("Testing read-only property modification", endpoints_count=len(endpoints))
 
         # Test with different auth contexts
@@ -1173,7 +1173,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         self, endpoint_url: str, method: str, auth_context: AuthContext
     ) -> list[Finding]:
         """Test read-only property modification for a specific endpoint"""
-        findings = []
+        findings: list[Finding] = []
 
         # Get baseline response to identify existing fields
         try:
@@ -1316,7 +1316,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         Returns:
             List of findings for undocumented fields
         """
-        findings = []
+        findings: list[Finding] = []
 
         # Requirement 13 counts the operator-SUPPLIED Auth_Contexts, not the
         # internal ``auth_context_map`` (which always contains an injected
@@ -1336,7 +1336,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         self.logger.info("Testing for undocumented fields", endpoints_count=len(endpoints))
 
         # Collect all fields from all endpoints and auth contexts
-        all_fields = {}  # endpoint -> set of fields
+        all_fields: dict[str, dict[str, set[str]]] = {}  # endpoint -> {auth_context_name -> fields}
 
         # Test with different auth contexts to see field variations
         for auth_context in self.auth_contexts:
@@ -1417,7 +1417,7 @@ class PropertyLevelAuthModule(OWASPModule, NegativeControlMixin, SafeModeGuard):
         self, endpoint_url: str, context_fields: dict[str, set[str]]
     ) -> list[Finding]:
         """Analyze field variations between auth contexts to detect undocumented fields"""
-        findings = []
+        findings: list[Finding] = []
 
         if len(context_fields) < 2:
             return findings  # Need at least 2 contexts to compare

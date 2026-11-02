@@ -468,8 +468,8 @@ class SSRFTestingModule(OWASPModule):
                     findings.append(deduped)
 
         # 2. Scheme-probe injection (query params + headers)
-        for probe in scheme_probes:
-            payload = probe.payload
+        for scheme_probe in scheme_probes:
+            payload = scheme_probe.payload
 
             for injection_type, probe_kwargs in (
                 ("query", {"params": dict.fromkeys(SSRF_QUERY_PARAMS, payload)}),
@@ -484,7 +484,7 @@ class SSRFTestingModule(OWASPModule):
 
                 if file_finding is not None:
                     # FILE_PROTOCOL_ACCESS (CRITICAL) — file-system content matched.
-                    deduped = self._dedup_finding(file_finding, probe.scheme)
+                    deduped = self._dedup_finding(file_finding, scheme_probe.scheme)
                     if deduped is not None:
                         findings.append(deduped)
                 elif result is not None and result.status_code < 500:
@@ -494,7 +494,7 @@ class SSRFTestingModule(OWASPModule):
                     self.logger.warning(
                         "Potential scheme-bypass SSRF detected",
                         endpoint=endpoint_url,
-                        scheme=probe.scheme,
+                        scheme=scheme_probe.scheme,
                         injection_point=injection_type,
                         status_code=result.status_code,
                     )
@@ -510,7 +510,7 @@ class SSRFTestingModule(OWASPModule):
                         response_size=(len(result.content) if result.content is not None else 0),
                         response_time=result.elapsed,
                         evidence=(
-                            f"Dangerous URL scheme '{probe.scheme}://' returned a "
+                            f"Dangerous URL scheme '{scheme_probe.scheme}://' returned a "
                             f"non-error response ({result.status_code}) via "
                             f"{injection_type} injection, indicating the server may "
                             f"have processed the scheme-based payload."
@@ -522,7 +522,7 @@ class SSRFTestingModule(OWASPModule):
                         ),
                         payload=f"{injection_type}={payload}",
                     )
-                    deduped = self._dedup_finding(bypass_finding, probe.scheme)
+                    deduped = self._dedup_finding(bypass_finding, scheme_probe.scheme)
                     if deduped is not None:
                         findings.append(deduped)
 
@@ -716,8 +716,8 @@ class SSRFTestingModule(OWASPModule):
 
             # --- SchemeProbe body injection ---
             for field_name in body_fields:
-                for probe in scheme_probes:
-                    body = {field_name: probe.payload}
+                for scheme_probe in scheme_probes:
+                    body = {field_name: scheme_probe.payload}
                     result = await self._probe(
                         endpoint_url,
                         probe_method,
@@ -729,7 +729,7 @@ class SSRFTestingModule(OWASPModule):
                     file_finding = self._analyze_file_response(
                         endpoint_url,
                         probe_method,
-                        probe.payload,
+                        scheme_probe.payload,
                         result,
                         injection_point="body",
                     )
@@ -737,8 +737,8 @@ class SSRFTestingModule(OWASPModule):
                     if file_finding is not None:
                         # Enrich evidence and payload with body-injection context.
                         file_finding.evidence = f"[body:{field_name}] {file_finding.evidence}"
-                        file_finding.payload = f"body[{field_name}]={probe.payload}"
-                        deduped = self._dedup_finding(file_finding, probe.scheme)
+                        file_finding.payload = f"body[{field_name}]={scheme_probe.payload}"
+                        deduped = self._dedup_finding(file_finding, scheme_probe.scheme)
                         if deduped is not None:
                             findings.append(deduped)
 
@@ -747,7 +747,7 @@ class SSRFTestingModule(OWASPModule):
                         self.logger.warning(
                             "Potential scheme-bypass SSRF via body injection detected",
                             endpoint=endpoint_url,
-                            scheme=probe.scheme,
+                            scheme=scheme_probe.scheme,
                             field_name=field_name,
                             status_code=result.status_code,
                         )
@@ -766,7 +766,7 @@ class SSRFTestingModule(OWASPModule):
                             response_time=result.elapsed,
                             evidence=(
                                 f"[body:{field_name}] Dangerous URL scheme "
-                                f"'{probe.scheme}://' injected into JSON body field "
+                                f"'{scheme_probe.scheme}://' injected into JSON body field "
                                 f"'{field_name}' via {probe_method} returned a non-error "
                                 f"response ({result.status_code}), indicating the server "
                                 f"may have processed the scheme-based payload."
@@ -777,9 +777,9 @@ class SSRFTestingModule(OWASPModule):
                                 "Allow-list only http:// and https:// for outbound requests, and "
                                 "validate JSON body fields that accept URLs."
                             ),
-                            payload=f"body[{field_name}]={probe.payload}",
+                            payload=f"body[{field_name}]={scheme_probe.payload}",
                         )
-                        deduped = self._dedup_finding(bypass_finding, probe.scheme)
+                        deduped = self._dedup_finding(bypass_finding, scheme_probe.scheme)
                         if deduped is not None:
                             findings.append(deduped)
 
@@ -1347,8 +1347,8 @@ class SSRFTestingModule(OWASPModule):
                 "Loading Burp XML import source",
                 path=self.config.burp_xml_path,
             )
-            parser = BurpXmlImporter(self.config.burp_xml_path)
-            reqs = parser.parse()
+            burp_parser = BurpXmlImporter(self.config.burp_xml_path)
+            reqs = burp_parser.parse()
             self.logger.info(
                 "Burp XML loaded",
                 path=self.config.burp_xml_path,
@@ -1361,8 +1361,8 @@ class SSRFTestingModule(OWASPModule):
                 "Loading HAR import source",
                 path=self.config.har_path,
             )
-            parser = HarImporter(self.config.har_path)
-            reqs = parser.parse()
+            har_parser = HarImporter(self.config.har_path)
+            reqs = har_parser.parse()
             self.logger.info(
                 "HAR loaded",
                 path=self.config.har_path,
@@ -1503,9 +1503,9 @@ class SSRFTestingModule(OWASPModule):
                 # `for field_name in body_fields` — not at the same level.
                 # Previously this loop was outside field_name's scope and only
                 # used the last value of field_name from the internal_probes pass.
-                for probe in scheme_probes:
+                for scheme_probe in scheme_probes:
                     body = dict(imported_req.body)
-                    body[field_name] = probe.payload
+                    body[field_name] = scheme_probe.payload
 
                     result = await self._probe(
                         probe_url,
@@ -1515,14 +1515,14 @@ class SSRFTestingModule(OWASPModule):
                     )
 
                     file_finding = self._analyze_file_response(
-                        probe_url, method, probe.payload, result, "body"
+                        probe_url, method, scheme_probe.payload, result, "body"
                     )
                     if file_finding is not None:
                         file_finding.evidence = (
                             f"[replay:body:{field_name}] {file_finding.evidence}"
                         )
-                        file_finding.payload = f"body[{field_name}]={probe.payload}"
-                        deduped = self._dedup_finding(file_finding, probe.scheme)
+                        file_finding.payload = f"body[{field_name}]={scheme_probe.payload}"
+                        deduped = self._dedup_finding(file_finding, scheme_probe.scheme)
                         if deduped is not None:
                             findings.append(deduped)
                     elif result is not None and result.status_code < 500:
@@ -1540,16 +1540,16 @@ class SSRFTestingModule(OWASPModule):
                             ),
                             response_time=result.elapsed,
                             evidence=(
-                                f"[replay:body:{field_name}] Scheme '{probe.scheme}://' "
+                                f"[replay:body:{field_name}] Scheme '{scheme_probe.scheme}://' "
                                 f"via Full_Replay_Mode returned {result.status_code}."
                             ),
                             recommendation=(
                                 "Disable dangerous URL schemes in server-side fetchers. "
                                 "Allow-list only http:// and https://."
                             ),
-                            payload=f"body[{field_name}]={probe.payload}",
+                            payload=f"body[{field_name}]={scheme_probe.payload}",
                         )
-                        deduped = self._dedup_finding(bypass_finding, probe.scheme)
+                        deduped = self._dedup_finding(bypass_finding, scheme_probe.scheme)
                         if deduped is not None:
                             findings.append(deduped)
 
