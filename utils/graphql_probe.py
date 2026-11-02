@@ -19,7 +19,7 @@ so issuing it is ``Safe_Mode`` compatible (Requirement 27.5).
 """
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from core.logging import get_logger
 
@@ -45,7 +45,7 @@ COMMON_GRAPHQL_PATHS = (
 INTROSPECTION_QUERY = '{"query":"{ __schema { queryType { name } } }"}'
 
 
-def _response_body(resp: Any) -> Optional[str]:
+def _response_body(resp: Any) -> str | None:
     """Best-effort extraction of a response body as text.
 
     Prefers the ``text`` attribute used by the project's
@@ -63,7 +63,7 @@ def _response_body(resp: Any) -> Optional[str]:
         return text
 
     content = getattr(resp, "content", None)
-    if isinstance(content, (bytes, bytearray)):
+    if isinstance(content, bytes | bytearray):
         try:
             return content.decode("utf-8", errors="replace")
         except Exception:  # pragma: no cover - decode is already error-tolerant
@@ -72,7 +72,7 @@ def _response_body(resp: Any) -> Optional[str]:
     return None
 
 
-def _parse_json_body(resp: Any) -> Optional[dict]:
+def _parse_json_body(resp: Any) -> dict | None:
     """Parse a response body into a JSON object, defensively.
 
     Args:

@@ -16,10 +16,12 @@ import sys
 import tempfile
 import time
 import uuid
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # stdlib: used only to BUILD XML (Element/SubElement/tostring)
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+
+import defusedxml.ElementTree as _safe_ET  # safe, XXE-protected parsing of XML files
 
 # ---------------------------------------------------------------------------
 # PDF library availability (try/except at import time)
@@ -186,7 +188,7 @@ class GitLabSASTGenerator:
         try:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -274,7 +276,7 @@ class JUnitXMLGenerator:
         try:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -293,7 +295,7 @@ class JUnitXMLGenerator:
         root = ET.Element("testsuites")
         for path in per_module_paths:
             try:
-                tree = ET.parse(path)
+                tree = _safe_ET.parse(path)
                 suite_el = tree.getroot()
                 root.append(suite_el)
             except Exception as exc:
@@ -307,7 +309,7 @@ class JUnitXMLGenerator:
         try:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -385,7 +387,7 @@ class CSVGenerator:
                         str(f.get("timestamp", "")),
                     ]
                     writer.writerow(row)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -429,7 +431,7 @@ class PDFGenerator:
                 self._generate_with_reportlab(tmp_path)
             else:
                 self._generate_with_weasyprint(tmp_path)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             size_kb = os.path.getsize(final_path) / 1024
             logging.info(
                 "PDF report written: %s (%.1f KB)",

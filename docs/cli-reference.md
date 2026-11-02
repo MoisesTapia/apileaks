@@ -1,6 +1,6 @@
 # 📖 APILeak CLI Reference
 
-Complete command-line interface reference for APILeak v0.2.0 - Enterprise API security testing tool.
+Complete command-line interface reference for APILeak v0.3.0 - Enterprise API security testing tool.
 
 ## Table of Contents
 
@@ -1183,6 +1183,8 @@ Available modules:
 - `security_misconfig` - Security Misconfiguration (CORS, missing headers) — API8
 - `inventory` - Improper Inventory Management (deprecated/undocumented versions) — API9
 - `unsafe_consumption` - Unsafe Consumption of APIs — API10
+- `parameter_pollution` - HTTP Parameter Pollution (discovered endpoints + Burp/Caido capture replay) — filed under API8
+- `spec_driven_testing` - OpenAPI/Swagger contract-enforcement audit (enum/type/required) — filed under API8
 
 ### User Agent Options (Mutually Exclusive)
 
@@ -1260,7 +1262,7 @@ Available severity levels: `critical`, `high`, `medium`, `low`
 
 ### Examples
 
-The `scan` command's usage examples are organized into three levels: **basic uses**, **intermediate uses**, and **advanced uses**. Each example includes a title, a short description of what it does and what it's for, and a ready-to-copy command. Remember that a plain `scan` already runs discovery plus all ten OWASP API Security Top 10 modules; the more flags you combine, the closer the example gets to the advanced level.
+The `scan` command's usage examples are organized into three levels: **basic uses**, **intermediate uses**, and **advanced uses**. Each example includes a title, a short description of what it does and what it's for, and a ready-to-copy command. Remember that a plain `scan` already runs discovery plus all twelve registered OWASP modules (the ten Top 10 categories plus `parameter_pollution` and `spec_driven_testing`); the more flags you combine, the closer the example gets to the advanced level.
 
 ---
 
@@ -1270,7 +1272,7 @@ Minimal examples to run an orchestrated assessment. They cover the target, authe
 
 **1. Basic scan**
 
-Runs endpoint discovery followed by all ten OWASP modules by default, aggregating every finding into one report. It's the starting point for a full-coverage assessment.
+Runs endpoint discovery followed by all twelve registered OWASP modules by default (the ten OWASP API Security Top 10 2023 categories plus `parameter_pollution` and `spec_driven_testing`), aggregating every finding into one report. It's the starting point for a full-coverage assessment.
 
 ```bash
 python apileaks.py scan --target https://api.example.com
@@ -1288,7 +1290,7 @@ python apileaks.py scan \
 
 **3. Restrict to specific OWASP modules**
 
-Limits the run to a subset of modules instead of all ten, aggregating their findings into a single report.
+Limits the run to a subset of modules instead of all twelve, aggregating their findings into a single report.
 
 ```bash
 python apileaks.py scan \
@@ -1567,6 +1569,10 @@ Each module subcommand accepts the shared transversal options; `bola` and `auth`
 | `security_misconfig` | API8 | Security Misconfiguration detection |
 | `inventory` | API9 | Improper Inventory Management detection |
 | `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+| `parameter_pollution` | API8* | HTTP Parameter Pollution (discovered endpoints + Burp/Caido capture replay) |
+| `spec_driven_testing` | API8* | OpenAPI/Swagger contract-enforcement audit (enum/type/required) |
+
+\* Not a strict Top 10 mapping; see [OWASP Command Reference](owasp-command.md) for details.
 
 ### Syntax
 

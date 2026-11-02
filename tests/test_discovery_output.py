@@ -211,7 +211,7 @@ def test_cli_output_file_csv_written_from_loaded_session(tmp_path):
     out_path = str(tmp_path / "out.csv")
     _seed_session(session_path)
 
-    with patch("apileaks._discover_endpoints_for_triage") as never_discover:
+    with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage") as never_discover:
         result = runner.invoke(
             cli,
             [
@@ -246,7 +246,7 @@ def test_cli_output_format_jsonl_defaults_to_reports_dir(tmp_path):
         session_path = "session.json"
         _seed_session(session_path)
 
-        with patch("apileaks._discover_endpoints_for_triage") as never_discover:
+        with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage") as never_discover:
             result = runner.invoke(
                 cli,
                 [
@@ -280,7 +280,7 @@ def test_cli_unsupported_output_format_errors_and_writes_nothing(tmp_path):
     out_path = str(tmp_path / "out.xml")
     _seed_session(session_path)
 
-    with patch("apileaks._discover_endpoints_for_triage") as never_discover:
+    with patch("cli.commands.discovery_cmds._discover_endpoints_for_triage") as never_discover:
         result = runner.invoke(
             cli,
             [

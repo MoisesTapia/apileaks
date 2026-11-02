@@ -1,5 +1,5 @@
 """
-Test suite for categorization of new OWASP finding categories (v0.2.0)
+Test suite for categorization of new OWASP finding categories (v0.3.0)
 
 Covers the new Finding_Category values introduced for the API6-API10 modules:
 - FILE_PROTOCOL_ACCESS   -> CRITICAL / API7

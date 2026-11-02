@@ -96,7 +96,8 @@ class _SpyEngine:
 
     def __init__(self, target_url, original_token, http_engine=None,
                  signing_secret=None, public_key_material=None, safe_mode=False,
-                 custom_headers=None, post_data=None, weak_secrets=None,
+                 custom_headers=None, post_data=None, method=None,
+                 weak_secrets=None,
                  fuzz_target=None, fuzz_values=None, canary_value=None):
         self.target_url = target_url
         self.original_token = original_token
@@ -151,7 +152,7 @@ def _reset_doubles():
 @pytest.fixture
 def spy_engine(monkeypatch):
     """Patch the engine + shared HTTP engine used by ``jwt attack-test``."""
-    monkeypatch.setattr(apileaks, "JWTAttackEngine", _SpyEngine)
+    monkeypatch.setattr("cli.commands.jwt_cmds.JWTAttackEngine", _SpyEngine)
     import utils.http_client as http_client_mod
     monkeypatch.setattr(http_client_mod, "HTTPRequestEngine", _FakeHTTPEngine)
     return _SpyEngine

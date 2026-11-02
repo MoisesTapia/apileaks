@@ -13,6 +13,8 @@ probes to Safe_Methods (GET/HEAD/OPTIONS). Each skipped state-changing probe is
 logged so the operator can see what was suppressed.
 """
 
+from typing import Any
+
 # HTTP methods that change server state. In safe mode these are skipped so the
 # module only issues non-state-changing probes (GET/HEAD/OPTIONS).
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -28,6 +30,14 @@ class SafeModeGuard:
     (created via :func:`core.logging.get_logger`). The mixin is initialized in
     the module ``__init__`` via :meth:`_init_safe_mode`.
     """
+
+    # Declared, not assigned: every consuming class (BOLATestingModule,
+    # AuthenticationTestingModule, PropertyLevelAuthModule, FunctionLevelAuthModule)
+    # sets these in its own __init__ before any mixin method runs — verified by
+    # inspection (see technical-debt/code-quality-audit.md #16). These bare
+    # annotations only document that contract for mypy; they have no runtime effect.
+    logger: Any
+    safe_mode: bool
 
     def _init_safe_mode(self, config) -> None:
         """Read the Safe_Mode flag from the module configuration.
@@ -54,8 +64,9 @@ class SafeModeGuard:
         the request when it is ``True`` (Requirements 21.2, 21.3).
         """
         if self.safe_mode and self.is_state_changing(method):
-            self.logger.info("Skipping state-changing probe in safe mode",
-                             test=test_name, method=method.upper())
+            self.logger.info(
+                "Skipping state-changing probe in safe mode", test=test_name, method=method.upper()
+            )
             return True
         return False
 
@@ -71,7 +82,10 @@ class SafeModeGuard:
         (Requirement 26).
         """
         if self.safe_mode and self.is_state_changing(method):
-            self.logger.info("Downgrading read probe to GET in safe mode",
-                             test=test_name, original_method=method.upper())
+            self.logger.info(
+                "Downgrading read probe to GET in safe mode",
+                test=test_name,
+                original_method=method.upper(),
+            )
             return "GET"
         return method

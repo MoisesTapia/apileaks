@@ -159,6 +159,8 @@ EXPECTED_OWASP_MODULE_ORDER = [
     "security_misconfig",
     "inventory",
     "unsafe_consumption",
+    "parameter_pollution",
+    "spec_driven_testing",
 ]
 
 # The exact set and order of orchestration phases registered on the enhanced

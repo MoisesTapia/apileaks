@@ -41,12 +41,16 @@ APILeak implements specialized modules for each category of the **OWASP API Secu
 | `security_misconfig` | **API8** - Security Misconfiguration | Security Misconfiguration detection | **P1** |
 | `inventory` | **API9** - Improper Inventory Management | Improper Inventory Management detection | **P2** |
 | `unsafe_consumption` | **API10** - Unsafe Consumption of APIs | Unsafe Consumption of APIs detection | **P2** |
+| `parameter_pollution` | **API8*** - HTTP Parameter Pollution | Duplicate-parameter handling across discovered endpoints + Burp/Caido capture replay | — |
+| `spec_driven_testing` | **API8*** - Spec-Driven Testing | OpenAPI/Swagger contract-enforcement audit (enum/type/required) | — |
 
-Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
+\* Not a strict Top 10 mapping — these two extend coverage beyond the Top 10 and are filed under API8 as the closest fit. See [Parameter Pollution](owasp/parameter-pollution.md) and [Spec-Driven Testing](owasp/spec-driven-testing.md).
+
+Every module can run in isolation with `apileaks owasp <key> --target URL`, or as part of an orchestrated `scan` (all modules by default, or a subset via `--modules`). All twelve modules own module-specific CLI options — see the [OWASP Command Reference](owasp-command.md) for the full option tables.
 
 ### Implementation Status
 
-✅ **Fully Implemented & Registered**: all ten modules (`bola`, `auth`, `property`, `resource`, `function_auth`, `business_flow`, `ssrf`, `security_misconfig`, `inventory`, `unsafe_consumption`)
+✅ **Fully Implemented & Registered**: all ten Top 10 modules (`bola`, `auth`, `property`, `resource`, `function_auth`, `business_flow`, `ssrf`, `security_misconfig`, `inventory`, `unsafe_consumption`) plus two additional modules (`parameter_pollution`, `spec_driven_testing`)
 
 ---
 
@@ -91,6 +95,8 @@ By default, `scan` runs discovery plus all registered OWASP modules. To restrict
 - `security_misconfig` - Security Misconfiguration detection (API8)
 - `inventory` - Improper Inventory Management detection (API9)
 - `unsafe_consumption` - Unsafe Consumption of APIs detection (API10)
+- `parameter_pollution` - HTTP Parameter Pollution detection (discovered endpoints + capture replay)
+- `spec_driven_testing` - OpenAPI/Swagger contract-enforcement audit
 
 ---
 
@@ -415,20 +421,21 @@ fi
 #### Property Module (API3)
 - `SENSITIVE_DATA_EXPOSURE` (CRITICAL)
 - `MASS_ASSIGNMENT` (HIGH)
+- `READONLY_PROPERTY_MODIFICATION` (HIGH)
 - `UNDOCUMENTED_FIELD` (MEDIUM)
-- `READONLY_PROPERTY_MODIFIED` (HIGH)
 
 #### Resource Module (API4)
 - `MISSING_RATE_LIMITING` (MEDIUM)
-- `LARGE_PAYLOAD_ACCEPTED` (MEDIUM/HIGH)
-- `REDOS_VULNERABILITY` (HIGH)
-- `COMPLEX_QUERY_PROCESSED` (MEDIUM/HIGH)
+- `LARGE_PAYLOAD_ACCEPTED` (MEDIUM)
 
 #### Function Auth Module (API5)
-- `ADMIN_ACCESS_ANONYMOUS` (CRITICAL)
-- `FUNCTION_LEVEL_BYPASS` (HIGH)
-- `HTTP_METHOD_BYPASS` (HIGH)
-- `PARAMETER_BYPASS` (MEDIUM)
+- `BFLA_ANONYMOUS_ADMIN_ACCESS` (CRITICAL)
+- `BFLA_LOW_PRIV_ACCESS` (CRITICAL)
+- `BFLA_ADMIN_ENDPOINT_EXPOSED` (MEDIUM)
+- `BFLA_VERB_TAMPERING` (HIGH)
+- `BFLA_METHOD_OVERRIDE` (HIGH)
+- `BFLA_MASS_ASSIGNMENT_ROLE` (CRITICAL)
+- `BFLA_VERSION_DOWNGRADE` (HIGH)
 
 ### Example Report
 
@@ -589,7 +596,7 @@ python apileaks.py scan \
 
 ## 🚀 All Modules Available
 
-All ten OWASP API Security Top 10 2023 modules are fully implemented and registered. See the [OWASP Coverage](owasp/README.md) for a detailed breakdown of what each module detects.
+All ten OWASP API Security Top 10 2023 modules are fully implemented and registered, plus two additional modules (`parameter_pollution`, `spec_driven_testing`). See the [OWASP Coverage](owasp/README.md) for a detailed breakdown of what each module detects.
 
 ### Future Features
 - **Machine Learning**: Intelligent pattern detection
@@ -623,4 +630,4 @@ All ten OWASP API Security Top 10 2023 modules are fully implemented and registe
 
 ---
 
-*This documentation covers APILeak version 0.2.0. For updates, check the [CHANGELOG](../CHANGELOG.md).*
+*This documentation covers APILeak version 0.3.0. For updates, check the [project releases](https://github.com/apileak/owasp-enhancement/releases).*

@@ -8,5 +8,7 @@
   "business_flow",
   "security_misconfig",
   "inventory",
-  "unsafe_consumption"
+  "unsafe_consumption",
+  "parameter_pollution",
+  "spec_driven_testing"
 ]

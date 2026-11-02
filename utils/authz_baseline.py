@@ -31,18 +31,18 @@ Design principle: non-JSON / unparseable bodies degrade gracefully to
 
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from utils.http_client import Response
-
 
 # Field names whose values identify an object or its owner (Requirement 2,
 # Requirement 4.4). Matching is performed case-insensitively against response
 # body keys; both snake_case and camelCase spellings are listed so either is
 # recognized.
-IDENTIFYING_FIELD_NAMES: List[str] = [
+IDENTIFYING_FIELD_NAMES: list[str] = [
     "id",
     "user_id",
     "userId",
@@ -72,13 +72,13 @@ class NegativeControlBaseline:
     """
 
     status_code: int
-    identifying_fields: Dict[str, Any] = field(default_factory=dict)
+    identifying_fields: dict[str, Any] = field(default_factory=dict)
     content_length: int = 0
     is_success: bool = False
     non_discriminating: bool = False
 
 
-def _parse_json_body(response: Optional[Response]) -> Any:
+def _parse_json_body(response: Response | None) -> Any:
     """Best-effort parse of a response body into a Python object.
 
     Returns the decoded JSON value, or ``None`` when the body is absent, not
@@ -110,7 +110,7 @@ def _scalar_equal(a: Any, b: Any) -> bool:
     return a == b
 
 
-def extract_identifying_fields(response: Optional[Response]) -> Dict[str, Any]:
+def extract_identifying_fields(response: Response | None) -> dict[str, Any]:
     """Return the recognized Identifying_Fields exposed by a response body.
 
     The JSON body is parsed and searched at the top level; when the top level is
@@ -125,7 +125,7 @@ def extract_identifying_fields(response: Optional[Response]) -> Dict[str, Any]:
     """
     body = _parse_json_body(response)
 
-    obj: Optional[Dict[str, Any]] = None
+    obj: dict[str, Any] | None = None
     if isinstance(body, dict):
         obj = body
     elif isinstance(body, list):
@@ -138,7 +138,7 @@ def extract_identifying_fields(response: Optional[Response]) -> Dict[str, Any]:
     if not isinstance(obj, dict):
         return {}
 
-    fields: Dict[str, Any] = {}
+    fields: dict[str, Any] = {}
     for key, value in obj.items():
         if not isinstance(key, str):
             continue
@@ -146,7 +146,7 @@ def extract_identifying_fields(response: Optional[Response]) -> Dict[str, Any]:
             continue
         # Only scalar values can serve as identity values; skip nested
         # objects/arrays and nulls.
-        if value is None or isinstance(value, (dict, list)):
+        if value is None or isinstance(value, dict | list):
             continue
         fields[key.lower()] = value
 
@@ -154,8 +154,8 @@ def extract_identifying_fields(response: Optional[Response]) -> Dict[str, Any]:
 
 
 def responses_identify_same_object(
-    r1: Optional[Response], r2: Optional[Response]
-) -> Tuple[bool, Optional[str], Optional[Any]]:
+    r1: Response | None, r2: Response | None
+) -> tuple[bool, str | None, Any | None]:
     """Decide whether two responses describe the same object by identity.
 
     Returns ``(same, field_name, value)``. ``same`` is ``True`` only when both
@@ -179,7 +179,7 @@ def responses_identify_same_object(
     return (False, None, None)
 
 
-def responses_equivalent(candidate: Optional[Response], baseline: NegativeControlBaseline) -> bool:
+def responses_equivalent(candidate: Response | None, baseline: NegativeControlBaseline) -> bool:
     """Compare a candidate response to a ``NegativeControlBaseline``.
 
     The candidate is considered equivalent to the baseline when their status
@@ -223,12 +223,23 @@ class NegativeControlMixin:
     modules so accessibility decisions share one implementation.
     """
 
+    # Declared, not assigned: BOLATestingModule, PropertyLevelAuthModule, and
+    # AuthenticationTestingModule each set these in their own __init__ before
+    # any mixin method runs — verified by inspection (see
+    # technical-debt/code-quality-audit.md #16). http_client access below is
+    # unguarded (unlike logger, which already uses getattr defensively), so
+    # this annotation documents a real precondition, not just type-checker
+    # noise: a future consuming class that forgets to set self.http_client
+    # would still fail at runtime with AttributeError, exactly as it does today.
+    http_client: Any
+    logger: Any
+
     async def build_negative_control(
         self,
         endpoint: str,
         auth_context: Any = None,
         invalid_id: str = "0",
-        substitute: Optional[Callable[[str], str]] = None,
+        substitute: Callable[[str], str] | None = None,
     ) -> NegativeControlBaseline:
         """Capture a ``NegativeControlBaseline`` for ``endpoint``.
 
@@ -322,7 +333,7 @@ class NegativeControlMixin:
 
     async def _evaluate_unauthorized_assertions(
         self, endpoint: str, auth_context: Any
-    ) -> List["Any"]:
+    ) -> list["Any"]:
         """Evaluate operator-declared Unauthorized_Endpoint_Assertions (Req 55).
 
         For each compiled pattern declared for ``auth_context`` that matches
@@ -339,10 +350,10 @@ class NegativeControlMixin:
         """
         # Imported lazily to avoid a module-import cycle (findings.py / core.config
         # both transitively reference the OWASP modules that mix this in).
-        from utils.findings import Finding
         from core.config import Severity
+        from utils.findings import Finding
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         patterns = getattr(auth_context, "unauthorized_patterns", None)
         if not patterns:
@@ -400,7 +411,8 @@ class NegativeControlMixin:
         # denied the same endpoint, strengthening the access decision.
         multi_context = "not applied (<2 contexts)"
         other_contexts = [
-            ctx for ctx in getattr(self, "auth_contexts", [])
+            ctx
+            for ctx in getattr(self, "auth_contexts", [])
             if getattr(ctx, "name", None) != context_name
         ]
         if granted and other_contexts:
@@ -411,8 +423,11 @@ class NegativeControlMixin:
                     other_resp = await self.http_client.request("GET", endpoint)
                 except Exception:
                     continue
-                if other_resp is None or responses_equivalent(other_resp, baseline) \
-                        or not (200 <= other_resp.status_code < 300):
+                if (
+                    other_resp is None
+                    or responses_equivalent(other_resp, baseline)
+                    or not (200 <= other_resp.status_code < 300)
+                ):
                     other_denied = True
                     break
             multi_context = (
@@ -443,7 +458,9 @@ class NegativeControlMixin:
                     endpoint=endpoint,
                     method="GET",
                     status_code=candidate.status_code,
-                    response_size=len(candidate.content) if getattr(candidate, "content", None) else 0,
+                    response_size=len(candidate.content)
+                    if getattr(candidate, "content", None)
+                    else 0,
                     response_time=getattr(candidate, "elapsed", 0.0),
                     evidence=(
                         f"Auth context '{context_name}' was granted access to "
@@ -459,7 +476,9 @@ class NegativeControlMixin:
                         "control policy for the matching endpoint pattern."
                     ),
                     payload=pattern.pattern,
-                    response_snippet=candidate.text[:500] if getattr(candidate, "text", None) else None,
+                    response_snippet=candidate.text[:500]
+                    if getattr(candidate, "text", None)
+                    else None,
                 )
             )
 
@@ -472,7 +491,7 @@ class NegativeControlMixin:
         )
         return findings
 
-    async def _run_unauthorized_assertions(self, endpoints: List[Any]) -> List["Any"]:
+    async def _run_unauthorized_assertions(self, endpoints: list[Any]) -> list["Any"]:
         """Iterate discovered endpoints x auth contexts and evaluate the declared
         Unauthorized_Endpoint_Assertions (Req 55).
 
@@ -480,7 +499,7 @@ class NegativeControlMixin:
         pattern, preserving the existing behavior (Req 55.5). Deduplicates the
         ``(auth_context, endpoint)`` probes so each is evaluated at most once.
         """
-        findings: List[Any] = []
+        findings: list[Any] = []
 
         auth_contexts = getattr(self, "auth_contexts", []) or []
         if not any(getattr(ctx, "unauthorized_patterns", None) for ctx in auth_contexts):

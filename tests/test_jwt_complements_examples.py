@@ -336,7 +336,7 @@ class TestParseRawRequest:
             "\r\n"
         )
         path = tmp_path / "req.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
 
         parsed = parse_raw_request(str(path))
         assert parsed.token == token
@@ -353,7 +353,7 @@ class TestParseRawRequest:
             "\r\n"
         )
         path = tmp_path / "cookie.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
 
         parsed = parse_raw_request(str(path))
         assert parsed.token == token
@@ -370,7 +370,7 @@ class TestParseRawRequest:
             f'{{"jwt":"{token}"}}'
         )
         path = tmp_path / "body.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
 
         parsed = parse_raw_request(str(path))
         assert parsed.token == token
@@ -384,7 +384,7 @@ class TestParseRawRequest:
             "\r\n"
         )
         path = tmp_path / "notoken.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
         with pytest.raises(ValueError, match="notoken.txt"):
             parse_raw_request(str(path))
 
@@ -481,8 +481,8 @@ def _self_signed_cert_pem() -> str:
         .issuer_name(name)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
-        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=1))
+        .not_valid_before(_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1))
+        .not_valid_after(_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=1))
         .sign(key, hashes.SHA256())
     )
     return cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")

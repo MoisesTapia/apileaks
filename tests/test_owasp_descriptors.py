@@ -51,6 +51,8 @@ EXPECTED_KEYS = [
     "security_misconfig",
     "inventory",
     "unsafe_consumption",
+    "parameter_pollution",
+    "spec_driven_testing",
 ]
 
 EXPECTED_CATEGORY_ORDER = [
@@ -64,6 +66,11 @@ EXPECTED_CATEGORY_ORDER = [
     "API8",
     "API9",
     "API10",
+    # parameter_pollution and spec_driven_testing are filed under API8
+    # (Security Misconfiguration) as the closest fit — they don't map 1:1 to
+    # a distinct OWASP Top 10 category (see cli/owasp_descriptors.py).
+    "API8",
+    "API8",
 ]
 
 # Maps each engine key to the source file under ``modules/owasp/`` that owns it,
@@ -80,6 +87,8 @@ KEY_TO_MODULE_FILE = {
     "security_misconfig": "security_misconfiguration.py",
     "inventory": "inventory_management.py",
     "unsafe_consumption": "unsafe_consumption.py",
+    "parameter_pollution": "parameter_pollution.py",
+    "spec_driven_testing": "spec_driven_testing.py",
 }
 
 _OWASP_MODULES_DIR = Path(__file__).resolve().parent.parent / "modules" / "owasp"
@@ -120,7 +129,7 @@ def test_descriptor_keys_match_engine_default_enabled_modules():
 def test_no_duplicate_descriptor_keys():
     """Each engine key appears exactly once (bijection, not multimap)."""
     keys = all_keys()
-    assert len(keys) == len(set(keys)) == 10
+    assert len(keys) == len(set(keys)) == 12
 
 
 # --------------------------------------------------------------------------- #

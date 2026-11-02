@@ -20,12 +20,9 @@ record set yields a table with the header row and zero data rows
 (Requirement 15.7).
 """
 
-from typing import List, Optional
-
 from rich.table import Table
 
 from core.logging import get_logger
-
 from utils.discovery_session import (
     DiscoveryResult,
     StatusFilter,
@@ -40,8 +37,8 @@ COLUMN_HEADERS = ("URL", "Method", "Status", "EndpointStatus")
 
 
 def render_triage_table(
-    records: List[DiscoveryResult],
-    status_filter: Optional[StatusFilter] = None,
+    records: list[DiscoveryResult],
+    status_filter: StatusFilter | None = None,
     console=None,
 ) -> Table:
     """Build a ``rich`` table from in-memory ``DiscoveryResult`` records.
@@ -82,7 +79,7 @@ def render_triage_table(
     grouped = group_by_status_class(filtered)
 
     row_count = 0
-    for status_class, class_records in grouped.items():
+    for _status_class, class_records in grouped.items():
         for record in class_records:
             table.add_row(
                 record.url,

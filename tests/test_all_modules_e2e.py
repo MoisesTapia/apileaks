@@ -65,6 +65,8 @@ EXPECTED_OWASP_MODULES = [
     "security_misconfig",
     "inventory",
     "unsafe_consumption",
+    "parameter_pollution",
+    "spec_driven_testing",
 ]
 
 

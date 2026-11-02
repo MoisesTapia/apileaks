@@ -22,13 +22,32 @@ graph TB
 
 ## Core Components
 
-### 1. CLI Interface (`apileaks.py`)
+### 1. CLI Layer (`apileaks.py` + `cli/`)
 - **Purpose**: Command-line interface and entry point
+- **Structure**: `apileaks.py` is a thin assembly layer (~280 lines) that defines the
+  root Click group, registers each command family, and re-exports the public API.
+  All CLI logic lives under the `cli/` package:
+  - `cli/parsers.py` — command-line input parsing/validation helpers
+  - `cli/output.py` — console rendering (banner, summaries, listings)
+  - `cli/shared_options.py` — reusable Click option groups + validators (TLS, methods, etc.)
+  - `cli/config_builders.py` — assemble the config dict from CLI inputs
+  - `cli/runner.py` — `run_enhanced_apileak` (core scan execution) + CI severity gate
+  - `cli/module_options.py`, `cli/owasp_descriptors.py` — OWASP option/descriptor metadata
+  - `cli/commands/` — one module per command family:
+    - `jwt_cmds.py` — the `jwt` toolkit group (decode/encode/attacks)
+    - `wordlist_cmds.py` — the `wordlist` group (list/fetch/cache)
+    - `discovery_cmds.py` — `dir` / `par` / `brute` + discovery/triage/spec-brute helpers
+    - `scan_cmds.py` — `scan` / `owasp` / `full` / `main`
+    - `replay_cmds.py` — `replay`
 - **Responsibilities**:
-  - Parse command-line arguments
-  - Load and validate configuration
-  - Initialize the core engine
+  - Parse command-line arguments (Click)
+  - Build and validate configuration
+  - Initialize the core engine via the runner
   - Handle user interactions and output
+
+> **Note:** This CLI layer was decomposed from a single 8,300-line `apileaks.py`
+> monolith into the modular `cli/` package. Command behavior is unchanged; command
+> families are registered onto the root group with `cli.add_command(...)`.
 
 ### 2. APILeak Core (`core/engine.py`)
 - **Purpose**: Main orchestrator and coordinator
@@ -175,9 +194,16 @@ Used for creating different types of modules:
 - **Benefits**: Consistent module creation and initialization
 
 ### 4. Command Pattern
-Used for CLI interface:
-- **Commands**: dir, par, full, jwt (with subcommands: decode, encode, test-alg-none, test-null-signature, test-alg-confusion, brute-secret, test-kid-injection, test-jwks-spoof, test-inline-jwks)
-- **Benefits**: Easy to add new commands and maintain consistency
+Used for the CLI interface. Each command family lives in its own module under
+`cli/commands/` and is registered onto the root group:
+- **Discovery/fuzzing**: `dir`, `par`, `brute`
+- **OWASP scanning**: `scan`, `owasp` (with per-module subcommands), `full` (deprecated alias)
+- **JWT toolkit**: `jwt` (subcommands: decode, encode, genkey, verify, jwks-to-key,
+  test-alg-none, test-null-signature, test-alg-confusion, test-kid-injection,
+  test-jwks-spoof, test-inline-jwks, brute-secret, login, attack-test)
+- **Utilities**: `wordlist` (list/fetch/cache), `replay`
+- **Benefits**: Each family is independently maintainable; new commands are added by
+  creating a module in `cli/commands/` and registering it with `cli.add_command(...)`.
 
 ## Data Flow
 

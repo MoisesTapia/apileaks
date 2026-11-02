@@ -10,20 +10,20 @@ Because it issues only read-style requests (GET / OPTIONS), it is inherently
 Safe-Mode compatible and performs no state-changing operations against the target.
 """
 
-from typing import Any, Dict, List, Type
+from typing import Any
 
-from .registry import OWASPModule
-from utils.findings import Finding
-from utils.http_client import HTTPRequestEngine
-from core.config import SecurityMisconfigConfig, AuthContext, Severity
+from core.config import AuthContext, SecurityMisconfigConfig, Severity
 from core.logging import get_logger
-
-from modules.advanced.cors_analyzer import CORSAnalyzer, CORSAnalyzerConfig, CORSAnalysis
+from modules.advanced.cors_analyzer import CORSAnalysis, CORSAnalyzer, CORSAnalyzerConfig
 from modules.advanced.security_headers_analyzer import (
+    SecurityHeadersAnalysis,
     SecurityHeadersAnalyzer,
     SecurityHeadersConfig,
-    SecurityHeadersAnalysis,
 )
+from utils.findings import Finding
+from utils.http_client import HTTPRequestEngine
+
+from .registry import OWASPModule
 
 
 class SecurityMisconfigModule(OWASPModule):
@@ -43,8 +43,12 @@ class SecurityMisconfigModule(OWASPModule):
     inherently Safe-Mode compatible.
     """
 
-    def __init__(self, config: SecurityMisconfigConfig, http_client: HTTPRequestEngine,
-                 auth_contexts: List[AuthContext]):
+    def __init__(
+        self,
+        config: SecurityMisconfigConfig,
+        http_client: HTTPRequestEngine,
+        auth_contexts: list[AuthContext],
+    ):
         super().__init__(config)
         self.http_client = http_client
         self.auth_contexts = auth_contexts
@@ -58,8 +62,10 @@ class SecurityMisconfigModule(OWASPModule):
             self._build_security_headers_config(), self.http_client
         )
 
-        self.logger.info("Security Misconfiguration Testing Module initialized",
-                         required_headers=len(getattr(config, "required_headers", []) or []))
+        self.logger.info(
+            "Security Misconfiguration Testing Module initialized",
+            required_headers=len(getattr(config, "required_headers", []) or []),
+        )
 
     def get_module_name(self) -> str:
         """Get module name"""
@@ -78,7 +84,7 @@ class SecurityMisconfigModule(OWASPModule):
         # Start from the analyzer defaults so we keep its secure-value/pattern checks,
         # then align which headers are treated as required to our module configuration.
         default_config = SecurityHeadersConfig()
-        check_headers: Dict[str, Dict[str, Any]] = {}
+        check_headers: dict[str, dict[str, Any]] = {}
 
         for header_name, header_config in default_config.check_headers.items():
             merged = dict(header_config)
@@ -93,7 +99,7 @@ class SecurityMisconfigModule(OWASPModule):
 
         return SecurityHeadersConfig(check_headers=check_headers)
 
-    async def execute_tests(self, endpoints: List[Any]) -> List[Finding]:
+    async def execute_tests(self, endpoints: list[Any]) -> list[Finding]:
         """
         Execute security misconfiguration tests on discovered endpoints.
 
@@ -108,12 +114,13 @@ class SecurityMisconfigModule(OWASPModule):
             self.logger.info("No endpoints provided, skipping security misconfiguration testing")
             return []
 
-        self.logger.info("Starting security misconfiguration testing",
-                         endpoints_count=len(endpoints))
+        self.logger.info(
+            "Starting security misconfiguration testing", endpoints_count=len(endpoints)
+        )
 
         endpoint_urls = self._extract_endpoint_urls(endpoints)
 
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
         try:
             # Step 1: Analyze CORS policies (Requirement 3.3)
@@ -130,13 +137,14 @@ class SecurityMisconfigModule(OWASPModule):
             self.logger.error("Security misconfiguration testing failed", error=str(e))
             raise
 
-        self.logger.info("Security misconfiguration testing completed",
-                         total_findings=len(findings))
+        self.logger.info(
+            "Security misconfiguration testing completed", total_findings=len(findings)
+        )
 
         return findings
 
     @staticmethod
-    def _extract_endpoint_urls(endpoints: List[Any]) -> List[str]:
+    def _extract_endpoint_urls(endpoints: list[Any]) -> list[str]:
         """
         Extract endpoint URL strings from endpoint objects.
 
@@ -146,7 +154,7 @@ class SecurityMisconfigModule(OWASPModule):
         Returns:
             De-duplicated list of endpoint URLs (order preserved)
         """
-        urls: List[str] = []
+        urls: list[str] = []
         seen = set()
         for endpoint in endpoints:
             url = endpoint.url if hasattr(endpoint, "url") else str(endpoint)
@@ -155,7 +163,7 @@ class SecurityMisconfigModule(OWASPModule):
                 urls.append(url)
         return urls
 
-    async def _test_cors(self, endpoint_urls: List[str]) -> List[Finding]:
+    async def _test_cors(self, endpoint_urls: list[str]) -> list[Finding]:
         """
         Detect permissive CORS policies and emit CORS_MISCONFIGURATION findings.
 
@@ -165,9 +173,9 @@ class SecurityMisconfigModule(OWASPModule):
         Returns:
             List of CORS_MISCONFIGURATION findings
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
-        cors_results: Dict[str, CORSAnalysis] = await self.cors_analyzer.analyze_cors_policy(
+        cors_results: dict[str, CORSAnalysis] = await self.cors_analyzer.analyze_cors_policy(
             endpoint_urls
         )
 
@@ -191,18 +199,20 @@ class SecurityMisconfigModule(OWASPModule):
                 response_time=0.0,
                 evidence=evidence,
                 recommendation="Restrict the CORS policy to explicitly trusted origins. "
-                               "Avoid wildcard origins (*), never combine a wildcard origin with "
-                               "Access-Control-Allow-Credentials: true, and only expose the HTTP "
-                               "methods that the API genuinely requires.",
+                "Avoid wildcard origins (*), never combine a wildcard origin with "
+                "Access-Control-Allow-Credentials: true, and only expose the HTTP "
+                "methods that the API genuinely requires.",
                 payload="Origin probing via OPTIONS preflight",
                 response_snippet=evidence,
             )
             findings.append(finding)
 
-            self.logger.warning("Permissive CORS policy detected",
-                                endpoint=endpoint,
-                                security_risk=analysis.security_risk,
-                                wildcard_origin=analysis.wildcard_origin)
+            self.logger.warning(
+                "Permissive CORS policy detected",
+                endpoint=endpoint,
+                security_risk=analysis.security_risk,
+                wildcard_origin=analysis.wildcard_origin,
+            )
 
         return findings
 
@@ -247,12 +257,14 @@ class SecurityMisconfigModule(OWASPModule):
         if analysis.credentials_allowed:
             parts.append("Credentials are allowed with a wildcard origin.")
         if analysis.dangerous_methods:
-            parts.append(f"Dangerous methods allowed: {', '.join(sorted(analysis.dangerous_methods))}.")
+            parts.append(
+                f"Dangerous methods allowed: {', '.join(sorted(analysis.dangerous_methods))}."
+            )
         if analysis.allowed_origins:
             parts.append(f"Allowed origins: {', '.join(sorted(analysis.allowed_origins))}.")
         return " ".join(parts)
 
-    async def _test_security_headers(self, endpoint_urls: List[str]) -> List[Finding]:
+    async def _test_security_headers(self, endpoint_urls: list[str]) -> list[Finding]:
         """
         Detect missing required security headers and emit MISSING_SECURITY_HEADERS findings.
 
@@ -262,19 +274,21 @@ class SecurityMisconfigModule(OWASPModule):
         Returns:
             List of MISSING_SECURITY_HEADERS findings
         """
-        findings: List[Finding] = []
+        findings: list[Finding] = []
 
-        header_results: Dict[str, SecurityHeadersAnalysis] = (
-            await self.security_headers_analyzer.analyze_security_headers(endpoint_urls)
-        )
+        header_results: dict[
+            str, SecurityHeadersAnalysis
+        ] = await self.security_headers_analyzer.analyze_security_headers(endpoint_urls)
 
         for endpoint, analysis in header_results.items():
             if not analysis.missing_headers:
                 continue
 
             missing = analysis.missing_headers
-            evidence = (f"Missing required security headers: {', '.join(missing)}. "
-                        f"Security headers score: {analysis.security_score}%.")
+            evidence = (
+                f"Missing required security headers: {', '.join(missing)}. "
+                f"Security headers score: {analysis.security_score}%."
+            )
 
             finding = Finding(
                 id="",  # Will be set by findings collector
@@ -289,16 +303,16 @@ class SecurityMisconfigModule(OWASPModule):
                 response_time=analysis.response_time,
                 evidence=evidence,
                 recommendation="Add the missing security response headers to protect against "
-                               "common web vulnerabilities (e.g., Strict-Transport-Security, "
-                               "X-Content-Type-Options, X-Frame-Options, Content-Security-Policy). "
-                               "Refer to the OWASP Secure Headers Project for recommended values.",
+                "common web vulnerabilities (e.g., Strict-Transport-Security, "
+                "X-Content-Type-Options, X-Frame-Options, Content-Security-Policy). "
+                "Refer to the OWASP Secure Headers Project for recommended values.",
                 payload=None,
                 response_snippet=evidence,
             )
             findings.append(finding)
 
-            self.logger.warning("Missing security headers detected",
-                                endpoint=endpoint,
-                                missing_headers=missing)
+            self.logger.warning(
+                "Missing security headers detected", endpoint=endpoint, missing_headers=missing
+            )
 
         return findings

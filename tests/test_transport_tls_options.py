@@ -334,7 +334,7 @@ async def test_socks5_proxy_passed_through_client_kwargs():
 def _invoke_dir(args):
     """Invoke the ``dir`` command patching out the discovery entry point."""
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             ["--no-banner", "dir", "--target", "https://api.example.com", *args],

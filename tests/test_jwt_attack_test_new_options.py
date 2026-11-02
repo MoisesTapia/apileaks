@@ -59,7 +59,8 @@ class _SpyEngine:
 
     def __init__(self, target_url, original_token, http_engine=None,
                  signing_secret=None, public_key_material=None, safe_mode=False,
-                 custom_headers=None, post_data=None, weak_secrets=None,
+                 custom_headers=None, post_data=None, method=None,
+                 weak_secrets=None,
                  fuzz_target=None, fuzz_values=None, canary_value=None):
         self.target_url = target_url
         self.original_token = original_token
@@ -107,7 +108,7 @@ def _reset_spy():
 
 @pytest.fixture
 def spy_engine(monkeypatch):
-    monkeypatch.setattr(apileaks, "JWTAttackEngine", _SpyEngine)
+    monkeypatch.setattr("cli.commands.jwt_cmds.JWTAttackEngine", _SpyEngine)
     import utils.http_client as http_client_mod
     monkeypatch.setattr(http_client_mod, "HTTPRequestEngine", _FakeHTTPEngine)
     return _SpyEngine
@@ -197,7 +198,8 @@ def test_raw_request_supplies_token_and_context(spy_engine, tmp_path):
         f"Authorization: Bearer {BASE_TOKEN}\r\n"
         "X-Trace: abc123\r\n"
         "\r\n"
-        "{\"q\": 1}"
+        "{\"q\": 1}",
+        newline="",
     )
 
     result = _invoke("--raw-request", str(raw))
@@ -220,7 +222,8 @@ def test_raw_request_tokenless_aborts_before_any_request(spy_engine, tmp_path):
     raw.write_text(
         "GET /api/data HTTP/1.1\r\n"
         "Host: api.example.com\r\n"
-        "\r\n"
+        "\r\n",
+        newline="",
     )
 
     result = _invoke("--raw-request", str(raw))
@@ -252,7 +255,8 @@ def test_explicit_header_overrides_raw_request_header(spy_engine, tmp_path):
         "Host: api.example.com\r\n"
         f"Authorization: Bearer {BASE_TOKEN}\r\n"
         "X-Trace: from-file\r\n"
-        "\r\n"
+        "\r\n",
+        newline="",
     )
 
     result = _invoke("--raw-request", str(raw), "-H", "X-Trace: from-cli")

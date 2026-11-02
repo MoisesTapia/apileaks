@@ -187,7 +187,7 @@ def test_two_user_agent_options_rejected_no_discovery():
     **Validates: Requirements 21.3**
     """
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [
@@ -213,7 +213,7 @@ def test_invalid_user_agent_file_errors_before_discovery():
     """
     missing_path = "/nonexistent/path/to/user-agents.txt"
     runner = CliRunner()
-    with patch.object(apileaks, "run_enhanced_apileak") as discovery:
+    with patch("cli.runner.run_enhanced_apileak") as discovery:
         result = runner.invoke(
             cli,
             [

@@ -21,11 +21,17 @@ This module contains no OWASP detection logic; it only declares CLI options.
 
 import click
 
+from cli.parsers import _assert_readable
+from utils.http_client import parse_resolve
+
+SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
 # ---------------------------------------------------------------------------
 # Validation callbacks (copied verbatim from apileaks.py so validation behavior
 # on every command that accepts Transversal_Options is byte-identical to the
 # legacy ``full`` command).
 # ---------------------------------------------------------------------------
+
 
 def _validate_depth(ctx, param, value):
     """Click callback: reject a negative --depth, naming the offending value.
@@ -97,75 +103,179 @@ def _validate_retries(ctx, param, value):
 
 TRANSVERSAL_OPTIONS = [
     # --- target -----------------------------------------------------------
-    click.option('--target', '-t', help='Target URL to scan (overrides config)'),
-    click.option('--target-file', 'target_file', default=None,
-                 type=click.Path(exists=True, readable=True,
-                                 file_okay=True, dir_okay=False),
-                 metavar='FILE',
-                 help='Plain-text file with one target URL per line (# comments and blank '
-                      'lines are skipped). Lines without a scheme are auto-prefixed with '
-                      'https://. When supplied, --target is optional; both can be given '
-                      'together (--target becomes an implicit first entry).'),
-    click.option('--max-hosts', 'max_hosts', type=int, default=None, metavar='N',
-                 help='Maximum number of hosts to scan from --target-file (scans the first N).'),
+    click.option("--target", "-t", help="Target URL to scan (overrides config)"),
+    click.option(
+        "--target-file",
+        "target_file",
+        default=None,
+        type=click.Path(exists=True, readable=True, file_okay=True, dir_okay=False),
+        metavar="FILE",
+        help="Plain-text file with one target URL per line (# comments and blank "
+        "lines are skipped). Lines without a scheme are auto-prefixed with "
+        "https://. When supplied, --target is optional; both can be given "
+        "together (--target becomes an implicit first entry).",
+    ),
+    click.option(
+        "--max-hosts",
+        "max_hosts",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum number of hosts to scan from --target-file (scans the first N).",
+    ),
     # --- output / logging -------------------------------------------------
-    click.option('--output', '-o', help='Output filename for reports (files will be saved in reports/ directory)'),
-    click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
-                 default='WARNING', help='Logging level'),
-    click.option('--log-file', help='Log file path (optional)'),
-    click.option('--json-logs', is_flag=True, help='Output logs in JSON format'),
+    click.option(
+        "--output",
+        "-o",
+        help="Output filename for reports (files will be saved in reports/ directory)",
+    ),
+    click.option(
+        "--log-level",
+        type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]),
+        default="WARNING",
+        help="Logging level",
+    ),
+    click.option("--log-file", help="Log file path (optional)"),
+    click.option("--json-logs", is_flag=True, help="Output logs in JSON format"),
     # --- rate limit -------------------------------------------------------
-    click.option('--rate-limit', type=int, help='Requests per second limit'),
+    click.option("--rate-limit", type=int, help="Requests per second limit"),
     # --- timeout / retries / concurrency (validated) ----------------------
-    click.option('--timeout', 'timeout', type=float, default=None, callback=_validate_timeout,
-                 help='Per-request timeout in seconds applied to every discovery request '
-                      '(must be > 0; default: 10).'),
-    click.option('--retries', 'retries', type=int, default=None, callback=_validate_retries,
-                 help='Number of automatic retries for each failed discovery request '
-                      '(must be >= 0; default: 2).'),
-    click.option('--concurrency', 'concurrency', type=int, default=None, callback=_validate_concurrency,
-                 help='Max concurrent in-flight discovery requests (default: 50).'),
+    click.option(
+        "--timeout",
+        "timeout",
+        type=float,
+        default=None,
+        callback=_validate_timeout,
+        help="Per-request timeout in seconds applied to every discovery request "
+        "(must be > 0; default: 10).",
+    ),
+    click.option(
+        "--retries",
+        "retries",
+        type=int,
+        default=None,
+        callback=_validate_retries,
+        help="Number of automatic retries for each failed discovery request "
+        "(must be >= 0; default: 2).",
+    ),
+    click.option(
+        "--concurrency",
+        "concurrency",
+        type=int,
+        default=None,
+        callback=_validate_concurrency,
+        help="Max concurrent in-flight discovery requests (default: 50).",
+    ),
     # --- safe mode --------------------------------------------------------
-    click.option('--safe-mode', is_flag=True, help='Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)'),
+    click.option(
+        "--safe-mode",
+        is_flag=True,
+        help="Enable Safe Mode: skip state-changing probes (POST/PUT/PATCH/DELETE) and restrict requests to safe methods (non-destructive scan)",
+    ),
     # --- auth context -----------------------------------------------------
-    click.option('--jwt', help='JWT token to use for authentication'),
-    click.option('--auth-context', 'auth_context', multiple=True, metavar='user:token[:privilege]',
-                 help='Authenticated identity supplied as user:token with an optional '
-                      ':privilege suffix. Repeatable: pass once per user to run multi-user '
-                      'authorization tests (e.g. --auth-context alice:eyJ...:1 '
-                      '--auth-context bob:eyJ...:1).'),
+    click.option("--jwt", help="JWT token to use for authentication"),
+    click.option(
+        "--auth-context",
+        "auth_context",
+        multiple=True,
+        metavar="user:token[:privilege]",
+        help="Authenticated identity supplied as user:token with an optional "
+        ":privilege suffix. Repeatable: pass once per user to run multi-user "
+        "authorization tests (e.g. --auth-context alice:eyJ...:1 "
+        "--auth-context bob:eyJ...:1).",
+    ),
     # --- proxy ------------------------------------------------------------
-    click.option('--proxy', help='Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.'),
-    click.option('--proxy-verify-ssl', 'proxy_verify_ssl', is_flag=True, help='Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).'),
+    click.option(
+        "--proxy",
+        help="Route all HTTP traffic through an intercepting proxy (e.g. Burp/Caido/Hetty: http://127.0.0.1:8080). TLS verification is disabled by default for proxied HTTPS targets.",
+    ),
+    click.option(
+        "--proxy-verify-ssl",
+        "proxy_verify_ssl",
+        is_flag=True,
+        help="Keep TLS certificate verification enabled when using --proxy (use after installing the proxy CA).",
+    ),
     # --- CI options -------------------------------------------------------
-    click.option('--ci-mode', is_flag=True, help='Enable CI/CD mode with appropriate exit codes and artifact generation'),
-    click.option('--fail-on', type=click.Choice(['critical', 'high', 'medium', 'low']),
-                 default='high', help='Fail CI pipeline on findings of this severity or higher'),
-    click.option('--sarif', is_flag=True, help='Generate a SARIF 2.1.0 report (for code scanning / CI integration)'),
-    click.option('--baseline', type=click.Path(), help='Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.'),
+    click.option(
+        "--ci-mode",
+        is_flag=True,
+        help="Enable CI/CD mode with appropriate exit codes and artifact generation",
+    ),
+    click.option(
+        "--fail-on",
+        type=click.Choice(["critical", "high", "medium", "low"]),
+        default="high",
+        help="Fail CI pipeline on findings of this severity or higher",
+    ),
+    click.option(
+        "--sarif",
+        is_flag=True,
+        help="Generate a SARIF 2.1.0 report (for code scanning / CI integration)",
+    ),
+    click.option(
+        "--baseline",
+        type=click.Path(),
+        help="Path to a baseline JSON report. Findings matching the baseline by (category, endpoint, method) are treated as known; only new findings drive the CI severity gate. A missing path treats every finding as new.",
+    ),
     # --- user-agent trio (mutually exclusive) -----------------------------
-    click.option('--user-agent-random', is_flag=True, help='Use random User-Agent headers to evade WAF'),
-    click.option('--user-agent-custom', help='Custom User-Agent string to use for all requests'),
-    click.option('--user-agent-file', help='File containing User-Agent strings (one per line) for rotation'),
+    click.option(
+        "--user-agent-random", is_flag=True, help="Use random User-Agent headers to evade WAF"
+    ),
+    click.option("--user-agent-custom", help="Custom User-Agent string to use for all requests"),
+    click.option(
+        "--user-agent-file", help="File containing User-Agent strings (one per line) for rotation"
+    ),
     # --- discovery scope (design D4: available to module subcommands too) --
-    click.option('--depth', 'depth', type=int, default=None, callback=_validate_depth,
-                 help='Max recursion depth for discovery (0 = no recursion). '
-                      'Overrides APILEAK_MAX_DEPTH and the config default (3).'),
-    click.option('--recursive/--no-recursive', 'recursive', default=None,
-                 help='Enable or disable recursive discovery (default: enabled).'),
-    click.option('--max-requests', 'max_requests', type=int, default=None, callback=_validate_max_requests,
-                 help='Global request budget for discovery (default: unbounded).'),
-    click.option('--extensions', '-x', 'extensions', multiple=True, metavar='EXT',
-                 help='File extensions to append to each wordlist entry (comma-separated, repeatable). '
-                      'e.g. -x json,php or -x .json -x .php. Leading dots are optional.'),
-    click.option('--recursion-status', 'recursion_status', metavar='CLASSES', default=None,
-                 help='Restrict recursion to endpoints whose status class is in CLASSES: a '
-                      "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
-                      'default VALID/AUTH_REQUIRED recursion; never relaxes it.'),
-    click.option('--recursion-type', 'recursion_type', metavar='TYPES', default=None,
-                 help='Restrict recursion to endpoints whose type is in TYPES: a comma-separated '
-                      "list of endpoint types like 'admin,api_version'. Only narrows the default "
-                      'recursion; never relaxes it.'),
+    click.option(
+        "--depth",
+        "depth",
+        type=int,
+        default=None,
+        callback=_validate_depth,
+        help="Max recursion depth for discovery (0 = no recursion). "
+        "Overrides APILEAK_MAX_DEPTH and the config default (3).",
+    ),
+    click.option(
+        "--recursive/--no-recursive",
+        "recursive",
+        default=None,
+        help="Enable or disable recursive discovery (default: enabled).",
+    ),
+    click.option(
+        "--max-requests",
+        "max_requests",
+        type=int,
+        default=None,
+        callback=_validate_max_requests,
+        help="Global request budget for discovery (default: unbounded).",
+    ),
+    click.option(
+        "--extensions",
+        "-x",
+        "extensions",
+        multiple=True,
+        metavar="EXT",
+        help="File extensions to append to each wordlist entry (comma-separated, repeatable). "
+        "e.g. -x json,php or -x .json -x .php. Leading dots are optional.",
+    ),
+    click.option(
+        "--recursion-status",
+        "recursion_status",
+        metavar="CLASSES",
+        default=None,
+        help="Restrict recursion to endpoints whose status class is in CLASSES: a "
+        "comma-separated list of status classes like '2xx,3xx'. Only narrows the "
+        "default VALID/AUTH_REQUIRED recursion; never relaxes it.",
+    ),
+    click.option(
+        "--recursion-type",
+        "recursion_type",
+        metavar="TYPES",
+        default=None,
+        help="Restrict recursion to endpoints whose type is in TYPES: a comma-separated "
+        "list of endpoint types like 'admin,api_version'. Only narrows the default "
+        "recursion; never relaxes it.",
+    ),
 ]
 
 
@@ -180,3 +290,283 @@ def transversal_options(func):
     for option in reversed(TRANSVERSAL_OPTIONS):
         func = option(func)
     return func
+
+
+# ---------------------------------------------------------------------------
+# Option groups extracted from apileaks.py (monolith decomposition)
+# ---------------------------------------------------------------------------
+
+
+def request_context_options(f):
+    """Shared request-context options: ``--header``/``-H``, ``--cookie``, ``--basic-auth``."""
+    f = click.option(
+        "--basic-auth",
+        "basic_auth",
+        metavar="user:pass",
+        help="HTTP Basic credentials (user:pass) sent as an Authorization header on every discovery request.",
+    )(f)
+    f = click.option(
+        "--cookie",
+        "cookie",
+        metavar="COOKIE",
+        help="Raw Cookie header string applied to every discovery request.",
+    )(f)
+    f = click.option(
+        "--header",
+        "-H",
+        "header",
+        multiple=True,
+        metavar='"Name: Value"',
+        help='Custom header applied to every discovery request, "Name: Value" format. Repeatable.',
+    )(f)
+    return f
+
+
+def resilience_options(f):
+    """Shared resilience options: ``--timeout``, ``--retries``."""
+    f = click.option(
+        "--retries",
+        "retries",
+        type=int,
+        default=None,
+        callback=_validate_retries,
+        help="Number of automatic retries for each failed discovery request "
+        "(must be >= 0; default: 2).",
+    )(f)
+    f = click.option(
+        "--timeout",
+        "timeout",
+        type=float,
+        default=None,
+        callback=_validate_timeout,
+        help="Per-request timeout in seconds applied to every discovery request "
+        "(must be > 0; default: 10).",
+    )(f)
+    return f
+
+
+def concurrency_options(f):
+    """Shared concurrency options: ``--max-requests``, ``--concurrency``."""
+    f = click.option(
+        "--concurrency",
+        "concurrency",
+        type=int,
+        default=None,
+        callback=_validate_concurrency,
+        help="Max concurrent in-flight discovery requests (default: 50).",
+    )(f)
+    f = click.option(
+        "--max-requests",
+        "max_requests",
+        type=int,
+        default=None,
+        callback=_validate_max_requests,
+        help="Global request budget for discovery (default: unbounded).",
+    )(f)
+    return f
+
+
+def matcher_filter_options(f):
+    """Shared response matcher/filter options: ``--match-*`` and ``--filter-*``."""
+    f = click.option(
+        "--filter-time",
+        "filter_time",
+        multiple=True,
+        metavar="EXPR",
+        help="Exclude results whose response time (seconds) satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--filter-regex",
+        "filter_regex",
+        multiple=True,
+        metavar="REGEX",
+        help="Exclude results whose response body matches the regular expression REGEX. Repeatable.",
+    )(f)
+    f = click.option(
+        "--filter-lines",
+        "filter_lines",
+        multiple=True,
+        metavar="EXPR",
+        help="Exclude results whose response line count satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--filter-words",
+        "filter_words",
+        multiple=True,
+        metavar="EXPR",
+        help="Exclude results whose response word count satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--filter-size",
+        "filter_size",
+        multiple=True,
+        metavar="EXPR",
+        help="Exclude results whose response body size (bytes) satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--match-time",
+        "match_time",
+        multiple=True,
+        metavar="EXPR",
+        help="Match results whose response time (seconds) satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--match-regex",
+        "match_regex",
+        multiple=True,
+        metavar="REGEX",
+        help="Match results whose response body matches the regular expression REGEX. Repeatable.",
+    )(f)
+    f = click.option(
+        "--match-lines",
+        "match_lines",
+        multiple=True,
+        metavar="EXPR",
+        help="Match results whose response line count satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--match-words",
+        "match_words",
+        multiple=True,
+        metavar="EXPR",
+        help="Match results whose response word count satisfies EXPR. Repeatable.",
+    )(f)
+    f = click.option(
+        "--match-size",
+        "match_size",
+        multiple=True,
+        metavar="EXPR",
+        help="Match results whose response body size (bytes) satisfies EXPR (e.g. >100, <50, 10-20, 200). Repeatable.",
+    )(f)
+    return f
+
+
+def machine_output_options(f):
+    """Shared machine-readable output options: ``--output-format``, ``--output-file``."""
+    f = click.option(
+        "--output-file",
+        "output_file",
+        type=click.Path(),
+        help="Destination path for the machine-readable output (extension selects the format)",
+    )(f)
+    f = click.option(
+        "--output-format",
+        "output_format",
+        type=click.Choice(["csv", "jsonl"]),
+        help="Write a machine-readable discovery output in the selected format (csv or jsonl)",
+    )(f)
+    return f
+
+
+# ---------------------------------------------------------------------------
+# TLS / method / secret validators and the tls_options group (dir/par)
+# ---------------------------------------------------------------------------
+
+
+def _validate_methods(ctx, param, value):
+    """Click callback: parse/normalize --methods and reject invalid values.
+
+    ``--methods`` is a comma-separated list of HTTP methods that drives the
+    ParameterFuzzer's injection-point selection (query-carrying vs body-carrying
+    methods). Supported tokens are ``{GET, POST, PUT, PATCH, DELETE}``,
+    case-insensitive. An empty/whitespace-only value is rejected (Requirement
+    6.4) and a value containing no supported HTTP method is rejected while naming
+    the offending value (Requirement 6.5), both before any request is issued.
+    Unsupported tokens are ignored only when at least one supported token is
+    present. Returns the normalized (upper-cased, de-duplicated, order-preserving)
+    list of supported methods written to ``fuzzing.parameters.methods``
+    (Requirement 6.1).
+    """
+    if value is None or not value.strip():
+        raise click.BadParameter("--methods must not be empty or whitespace-only")
+    tokens = [tok.strip().upper() for tok in value.split(",") if tok.strip()]
+    normalized = []
+    for tok in tokens:
+        if tok in SUPPORTED_METHODS and tok not in normalized:
+            normalized.append(tok)
+    if not normalized:
+        raise click.BadParameter(
+            f"--methods contains no supported HTTP method (got {value!r}); "
+            f"supported methods are {', '.join(SUPPORTED_METHODS)}"
+        )
+    return normalized
+
+
+def _validate_client_cert(ctx, param, value):
+    """Click callback: validate --client-cert and return the parsed value.
+
+    Accepts either a single ``PATH`` (combined cert+key PEM) or a ``cert:key``
+    pair. Each referenced path must exist and be readable, otherwise a
+    descriptive error names the unreadable path and no Endpoint_Discovery runs
+    (Requirement 29.6). Returns either the path string or a ``(cert, key)`` tuple
+    suitable for httpx's ``cert`` kwarg (Requirement 29.1).
+    """
+    if value is None:
+        return None
+    if ":" in value:
+        cert_path, key_path = value.split(":", 1)
+        _assert_readable(cert_path, "--client-cert")
+        _assert_readable(key_path, "--client-cert key")
+        return (cert_path, key_path)
+    _assert_readable(value, "--client-cert")
+    return value
+
+
+def _validate_ca_bundle(ctx, param, value):
+    """Click callback: validate --ca-bundle path readability before discovery.
+
+    The custom CA bundle path must exist and be readable; otherwise a descriptive
+    error names the unreadable path and no Endpoint_Discovery runs (Requirement
+    29.6). Returns the path unchanged (Requirement 29.2).
+    """
+    if value is None:
+        return None
+    _assert_readable(value, "--ca-bundle")
+    return value
+
+
+def _validate_resolve(ctx, param, value):
+    """Click callback: validate --resolve as a host:ip pair before discovery.
+
+    Delegates to ``parse_resolve`` so a value not expressed as ``host:ip`` is
+    rejected with a descriptive error naming the value and no Endpoint_Discovery
+    runs (Requirement 29.7). Returns the parsed ``(host, ip)`` tuple (Requirement
+    29.4).
+    """
+    if value is None:
+        return None
+    try:
+        return parse_resolve(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def tls_options(f):
+    """Shared TLS-transport options: ``--client-cert``, ``--ca-bundle``, ``--resolve``."""
+    f = click.option(
+        "--resolve",
+        "resolve",
+        metavar="host:ip",
+        default=None,
+        callback=_validate_resolve,
+        help="Override DNS resolution for the named host to the supplied IP for every "
+        "discovery request (e.g. api.example.com:127.0.0.1).",
+    )(f)
+    f = click.option(
+        "--ca-bundle",
+        "ca_bundle",
+        metavar="PATH",
+        default=None,
+        callback=_validate_ca_bundle,
+        help="Custom CA bundle used to verify target certificates for every discovery request.",
+    )(f)
+    f = click.option(
+        "--client-cert",
+        "client_cert",
+        metavar="PATH[:KEY]",
+        default=None,
+        callback=_validate_client_cert,
+        help="Client certificate for mutual TLS, presented on every discovery request. "
+        "A combined cert+key PEM PATH, or a cert:key pair of paths.",
+    )(f)
+    return f

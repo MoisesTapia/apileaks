@@ -60,6 +60,10 @@ Run all of these at once with `scan`, or one in isolation with `owasp <key>`.
 | `security_misconfig` | API8 | Security Misconfiguration detection |
 | `inventory` | API9 | Improper Inventory Management detection |
 | `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+| `parameter_pollution` | API8* | HTTP Parameter Pollution (discovered endpoints + Burp/Caido capture replay) |
+| `spec_driven_testing` | API8* | OpenAPI/Swagger contract-enforcement audit (enum/type/required) |
+
+\* Not a strict Top 10 mapping.
 
 ```bash
 # List modules (key, OWASP category, summary)

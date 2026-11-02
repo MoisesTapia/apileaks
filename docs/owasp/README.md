@@ -9,15 +9,19 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 | **API1** | [Broken Object Level Authorization](bola-testing.md) | `bola` | ✅ Complete | P0 | Broken Object Level Authorization (BOLA) detection |
 | **API2** | Broken Authentication | `auth` | ✅ Complete | P0 | Broken Authentication detection |
 | **API3** | [Broken Object Property Level Authorization](property-level-auth.md) | `property` | ✅ Complete | P0 | Broken Object Property Level Authorization detection |
-| **API4** | Unrestricted Resource Consumption | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
-| **API5** | Broken Function Level Authorization | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
-| **API6** | Unrestricted Access to Sensitive Business Flows | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
+| **API4** | [Unrestricted Resource Consumption](resource-consumption.md) | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
+| **API5** | [Broken Function Level Authorization](function-level-auth.md) | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
+| **API6** | [Unrestricted Access to Sensitive Business Flows](business-flows.md) | `business_flow` | ✅ Complete | P1 | Unrestricted Access to Sensitive Business Flows detection |
 | **API7** | [Server-Side Request Forgery](ssrf-testing.md) | `ssrf` | ✅ Complete | P1 | Server-Side Request Forgery (SSRF) detection |
-| **API8** | Security Misconfiguration | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
-| **API9** | Improper Inventory Management | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
-| **API10** | Unsafe Consumption of APIs | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
+| **API8** | [Security Misconfiguration](security-misconfiguration.md) | `security_misconfig` | ✅ Complete | P1 | Security Misconfiguration detection |
+| **API9** | [Improper Inventory Management](inventory-management.md) | `inventory` | ✅ Complete | P2 | Improper Inventory Management detection |
+| **API10** | [Unsafe Consumption of APIs](unsafe-consumption.md) | `unsafe_consumption` | ✅ Complete | P2 | Unsafe Consumption of APIs detection |
+| **API8*** | [HTTP Parameter Pollution](parameter-pollution.md) | `parameter_pollution` | ✅ Complete | — | Duplicate-parameter handling across discovered endpoints + Burp/Caido capture replay |
+| **API8*** | [Spec-Driven Testing](spec-driven-testing.md) | `spec_driven_testing` | ✅ Complete | — | OpenAPI/Swagger contract-enforcement audit (enum/type/required) |
 
 **Legend**: ✅ Complete
+
+\* Not a strict Top 10 mapping. These two modules extend coverage beyond the OWASP API Security Top 10 2023 list; they are filed under API8 (Security Misconfiguration) as the closest fit — see each module's doc for why.
 
 ### Running the modules
 
@@ -34,23 +38,28 @@ python apileaks.py scan --target https://api.example.com --modules bola,auth
 
 ## 🎯 Module Status
 
-All ten OWASP API Security Top 10 2023 modules are fully implemented and registered:
+All ten OWASP API Security Top 10 2023 modules are fully implemented and registered, plus two additional modules that extend coverage beyond the Top 10:
 
 ### P0 Modules (Critical)
 - ✅ **API1 — `bola`**: Comprehensive ID enumeration, horizontal privilege escalation, anonymous object access, cross-user leakage. Supports composite-key, verb-tampering, parameter-pollution, and id-leakage probes with opt-in destructive mode.
 - ✅ **API2 — `auth`**: JWT algorithm confusion, expired-token acceptance, weak HMAC secrets, missing authentication, MFA bypass, OAuth flow abuse, predictable reset tokens. Opt-in aggressive probes (rate-limit burst, revocation race).
-- ✅ **API3 — `property`**: Mass assignment, sensitive field exposure (passwords, API keys, SSNs), undocumented response fields, read-only property bypass.
-- ✅ **API5 — `function_auth`**: Unauthorized admin access, HTTP method bypass, parameter/header bypass, vertical privilege escalation.
+- ✅ **API3 — `property`**: Mass assignment detection (dangerous fields injected into POST/PUT/PATCH bodies), sensitive field exposure (passwords, API keys, SSNs in responses), read-only property modification, undocumented field discovery across auth contexts. Configurable sensitive-field and mass-assignment-field lists.
+- ✅ **API5 — `function_auth`**: Four attack levels — L1 multi-token matrix replay (admin-discovered endpoints with low-priv/anonymous tokens), L2 HTTP verb tampering + X-HTTP-Method-Override bypass, L3 mass-assignment role injection (registration/profile-update flows), L4 API version downgrade. Configurable admin paths, dangerous methods, role fields/values, version list, and JSON probe-matrix output.
 
 ### P1 Modules (High Priority)
-- ✅ **API4 — `resource`**: Missing rate limiting, oversized payload acceptance, deeply nested JSON, ReDoS-susceptible patterns, complex query processing without guards.
-- ✅ **API6 — `business_flow`**: Business logic bypass, sensitive workflow manipulation, excessive-use detection.
+- ✅ **API4 — `resource`**: Rate-limit absence (burst of N requests), large-payload acceptance (1MB/10MB), deeply nested JSON, ReDoS-susceptible patterns, complex query strings. Configurable burst size, payload sizes, and nesting depth.
+- ✅ **API6 — `business_flow`**: Rate-limit absence detection (N repeated requests with no 429 or anti-automation headers), quota/inventory decrement check (resource fields unchanged across N requests), and multi-step flow bypass (complete ordered transaction sequences repeated end-to-end). Configurable patterns, quota fields, repetition count, and inter-request delay.
 - ✅ **API7 — `ssrf`**: Internal network access, cloud metadata endpoint access (`169.254.169.254`), file-protocol abuse, URL-scheme bypass, IP-encoding bypass, blind SSRF via OOB callback, opt-in port scanning and redirect-chain probes.
-- ✅ **API8 — `security_misconfig`**: Misconfigured CORS, missing or weak security headers, insecure framework defaults, verbose error responses.
+- ✅ **API8 — `security_misconfig`**: Permissive CORS policy detection (wildcard origins, credentials+wildcard, dangerous methods), missing required security headers (HSTS, X-Content-Type-Options, X-Frame-Options, CSP). Read-only probes — Safe Mode compatible by design. Configurable required-header list.
 
 ### P2 Modules (Medium Priority)
-- ✅ **API9 — `inventory`**: Deprecated/undocumented API versions, shadow endpoints not in official specs, documentation gaps.
-- ✅ **API10 — `unsafe_consumption`**: Insufficient validation of external API data, insecure trust boundaries with third-party services.
+- ✅ **API8 — `security_misconfig`**: Permissive CORS policy detection (wildcard origins, credentials+wildcard, dangerous methods), missing required security headers (HSTS, X-Content-Type-Options, X-Frame-Options, CSP). Read-only probes — Safe Mode compatible by design. Configurable required-header list.
+- ✅ **API9 — `inventory`**: Deprecated, undocumented, and non-current API version detection via version fuzzing. Identifies `/api/v1/` accessible alongside `/api/v3/`, dev/beta endpoints in production, and decommissioned-but-live versions. Configurable deprecated detection toggle.
+- ✅ **API10 — `unsafe_consumption`**: Unvalidated upstream data reflection (injection via query params and body), blind redirect following (Location-header and IMDS-signature detection), and cleartext upstream channel (static `http://` scheme check). Configurable upstream indicators, custom payloads, OOB redirect listener support.
+
+### Beyond the Top 10
+- ✅ **`parameter_pollution`**: HTTP Parameter Pollution across discovered endpoints (query strings) AND captured traffic — reuses the same Burp Suite XML / HAR importers as SSRF's Full_Replay_Mode (`--burp-xml`/`--har`, HAR covers Caido, Burp Logger, Hetty, DevTools, Firefox), but is NOT restricted to "URL-like" fields: every query parameter and every JSON/form body field of a captured request is a pollution candidate. Detects both inconsistent duplicate-parameter resolution and authorization bypass via pollution.
+- ✅ **`spec_driven_testing`**: Audits whether a live API enforces its own declared OpenAPI/Swagger contract. Drives its attack surface directly from the `--openapi`/`--postman` spec (not from discovery), checking declared `enum` values, parameter `type`, and `required` flags are actually enforced server-side.
 
 ## 🛡️ Module Architecture
 
@@ -243,7 +252,9 @@ Integrate OWASP testing into CI/CD pipelines:
 - **[BOLA Testing (API1)](bola-testing.md)** - Comprehensive guide to Broken Object Level Authorization testing
 - **[Property Level Authorization (API3)](property-level-auth.md)** - Mass assignment, data exposure, and property-level access control
 - **[SSRF Testing (API7)](ssrf-testing.md)** - Internal network access, cloud metadata, blind SSRF, bypass encodings, port scanning
-- **[OWASP Command Reference](../owasp-command.md)** - Full `owasp` CLI reference for all ten modules and module-specific options
+- **[HTTP Parameter Pollution](parameter-pollution.md)** - Discovered-endpoint and Burp/Caido capture-replay duplicate-parameter testing
+- **[Spec-Driven Testing](spec-driven-testing.md)** - OpenAPI/Swagger contract-enforcement audit
+- **[OWASP Command Reference](../owasp-command.md)** - Full `owasp` CLI reference for all twelve modules and module-specific options
 - **[Scan Guide](../scan-guide.md)** - Orchestrated multi-module scan with full `scan` option reference
 
 For the `auth` (API2) module JWT attack vectors and manual utilities, see the **[JWT Attacks Guide](../jwt-attacks.md)**.
@@ -258,6 +269,8 @@ For the `auth` (API2) module JWT attack vectors and manual utilities, see the **
 | **Resource** | DoS testing, rate limiting | Missing rate limits, large payload acceptance |
 | **Function** | Admin access, method bypass | Unauthorized admin access, HTTP method bypass |
 | **SSRF** | Internal/metadata access, scheme bypass, blind OOB, port scan | Cloud metadata exposure, blocklist bypass, blind SSRF |
+| **Parameter Pollution** | Duplicate-parameter probing (discovered + captured) | Inconsistent resolution, auth bypass via pollution |
+| **Spec-Driven Testing** | Enum/type/required contract enforcement | Undeclared values/types/omissions silently accepted |
 
 ## 🔍 Finding Analysis
 

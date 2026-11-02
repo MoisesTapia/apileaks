@@ -598,4 +598,4 @@ grep "statistics" debug.log
 
 ---
 
-**Need help?** Check our [troubleshooting guide](advanced/troubleshooting.md) or open an issue on GitHub.
+**Need help?** Check our [troubleshooting guide](troubleshooting-guide.md) or open an issue on GitHub.

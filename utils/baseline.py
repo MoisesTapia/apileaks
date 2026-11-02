@@ -14,7 +14,6 @@ comparison (Requirement 11.2).
 import json
 import os
 from dataclasses import dataclass
-from typing import List, Set, Tuple
 
 from core.logging import get_logger
 from utils.findings import Finding
@@ -55,7 +54,7 @@ class BaselineComparator:
         """
         return FindingKey(category=f.category, endpoint=f.endpoint, method=f.method)
 
-    def load(self, path: str) -> Set[FindingKey]:
+    def load(self, path: str) -> set[FindingKey]:
         """Load baseline finding keys from a JSON report file.
 
         The baseline file reuses the existing JSON report shape: a top-level
@@ -78,7 +77,7 @@ class BaselineComparator:
             return set()
 
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             # An unreadable/unparseable baseline cannot establish prior knowledge;
@@ -92,7 +91,7 @@ class BaselineComparator:
 
         findings = self._extract_findings(data)
 
-        keys: Set[FindingKey] = set()
+        keys: set[FindingKey] = set()
         for entry in findings:
             if not isinstance(entry, dict):
                 continue
@@ -127,8 +126,8 @@ class BaselineComparator:
         return []
 
     def classify(
-        self, findings: List[Finding], baseline: Set[FindingKey]
-    ) -> Tuple[List[Finding], List[Finding]]:
+        self, findings: list[Finding], baseline: set[FindingKey]
+    ) -> tuple[list[Finding], list[Finding]]:
         """Partition findings into new and known relative to a baseline.
 
         A finding whose :class:`FindingKey` is present in ``baseline`` is
@@ -144,8 +143,8 @@ class BaselineComparator:
         Returns:
             A ``(new_findings, known_findings)`` tuple.
         """
-        new_findings: List[Finding] = []
-        known_findings: List[Finding] = []
+        new_findings: list[Finding] = []
+        known_findings: list[Finding] = []
 
         for finding in findings:
             if self.key(finding) in baseline:

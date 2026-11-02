@@ -1,6 +1,6 @@
 # Scan Guide — Orchestrated OWASP Assessment
 
-`scan` is APILeak's primary command. It runs endpoint discovery and then executes all ten registered OWASP API Security Top 10 modules by default, aggregating every finding through the unified reporting pipeline and driving the CI/CD severity gate.
+`scan` is APILeak's primary command. It runs endpoint discovery and then executes all twelve registered OWASP modules by default (the ten OWASP API Security Top 10 2023 categories plus `parameter_pollution` and `spec_driven_testing`), aggregating every finding through the unified reporting pipeline and driving the CI/CD severity gate.
 
 Use [`owasp <key>`](owasp-command.md) to run a single module in isolation.
 
@@ -16,7 +16,7 @@ Use [`owasp <key>`](owasp-command.md) to run a single module in isolation.
 - [Authentication Options](#authentication-options)
 - [BOLA Module Options](#bola-module-options)
 - [Auth Module Options](#auth-module-options)
-- [Spec-Driven Testing](#spec-driven-testing)
+- [Spec Import Options](#spec-import-options)
 - [Multi-User Testing](#multi-user-testing)
 - [CI/CD Integration](#cicd-integration)
 - [General Options](#general-options)
@@ -30,7 +30,7 @@ Use [`owasp <key>`](owasp-command.md) to run a single module in isolation.
 A plain `scan` invocation:
 
 1. Runs endpoint discovery against the target (same engine as `dir`)
-2. Executes all ten registered OWASP modules by default
+2. Executes all twelve registered OWASP modules by default
 3. Aggregates all findings into one report
 4. Evaluates the CI/CD severity gate (when `--ci-mode` is set)
 
@@ -62,9 +62,9 @@ When `--config` is supplied and also `--target`, the CLI target wins over the co
 
 | Option | Description | Default | Example |
 |--------|-------------|---------|---------|
-| `--modules` | Comma-separated list of OWASP module keys to run | All ten modules | `--modules bola,auth,property` |
+| `--modules` | Comma-separated list of OWASP module keys to run | All twelve modules | `--modules bola,auth,property` |
 
-The `APILEAK_MODULES` environment variable is the fallback when `--modules` is not supplied. If neither is set, all ten modules run.
+The `APILEAK_MODULES` environment variable is the fallback when `--modules` is not supplied. If neither is set, all twelve modules run.
 
 **Available module keys** (in OWASP category order):
 
@@ -80,6 +80,10 @@ The `APILEAK_MODULES` environment variable is the fallback when `--modules` is n
 | `security_misconfig` | API8 | Security Misconfiguration detection |
 | `inventory` | API9 | Improper Inventory Management detection |
 | `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+| `parameter_pollution` | API8* | HTTP Parameter Pollution (discovered endpoints + Burp/Caido capture replay) |
+| `spec_driven_testing` | API8* | OpenAPI/Swagger contract-enforcement audit (enum/type/required) |
+
+\* Not a strict Top 10 mapping — see the [OWASP Command Reference](owasp-command.md) for details.
 
 An unrecognized key aborts with a descriptive error before any module runs.
 
@@ -190,9 +194,9 @@ These options are specific to the `auth` module. They only take effect when `aut
 | `--reset-token-sample` | Observed password-reset token to analyze for predictability. Repeatable | — | `--reset-token-sample tok1 --reset-token-sample tok2` |
 | `--reset-token-known-input` | Known input (e.g. account email) for hash-of-known-input classification. Repeatable | — | `--reset-token-known-input user@example.com` |
 
-## Spec-Driven Testing
+## Spec Import Options
 
-Supply OpenAPI/Swagger or Postman specs so the OWASP modules test declared operations in addition to discovered endpoints.
+Supply OpenAPI/Swagger or Postman specs so the OWASP modules test declared operations in addition to discovered endpoints. These same two options also feed the `spec_driven_testing` module's own contract-enforcement audit — see [Spec-Driven Testing](owasp/spec-driven-testing.md) for what that module specifically checks (enum/type/required constraints), as distinct from this general spec-import plumbing.
 
 | Option | Description | Example |
 |--------|-------------|---------|

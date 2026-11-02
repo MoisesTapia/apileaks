@@ -21,6 +21,30 @@ APILeak implements and registers all ten OWASP API Security Top 10 2023 categori
 
 **Legend**: ✅ Complete
 
+### Beyond the Top 10: two additional modules
+
+Two modules extend coverage past the strict OWASP API Security Top 10 list,
+both filed under API8 (Security Misconfiguration) as the closest fit since
+neither maps 1:1 to a single Top 10 category:
+
+| Module | Enable string | What it audits |
+|--------|---------------|-----------------|
+| HTTP Parameter Pollution | `parameter_pollution` | Duplicate-parameter handling across **discovered endpoints** and **captured traffic** (Burp Suite XML, or HAR exported from Caido/Burp Logger/Hetty/DevTools/Firefox) — generalizes the capture-replay mechanism `ssrf_testing.py` introduced, beyond SSRF |
+| Spec-Driven Testing | `spec_driven_testing` | Whether the live API enforces its own declared OpenAPI/Swagger contract (enum values, parameter types, required fields) — audits every declared operation directly from the spec, independent of discovery |
+
+```bash
+# Parameter Pollution: discovered endpoints only
+python apileaks.py owasp parameter_pollution --target https://api.example.com
+
+# Parameter Pollution: also replay a Burp/Caido capture (every query + body
+# field is a candidate, not just SSRF's "URL-like" subset)
+python apileaks.py owasp parameter_pollution --target https://api.example.com --burp-xml export.xml
+python apileaks.py owasp parameter_pollution --target https://api.example.com --har caido-export.har
+
+# Spec-Driven Testing: audit the full declared surface of an OpenAPI/Swagger doc
+python apileaks.py owasp spec_driven_testing --target https://api.example.com --openapi openapi.yaml
+```
+
 ### Running the modules
 
 Every module can be invoked two ways:
@@ -46,6 +70,10 @@ python apileaks.py scan --target https://api.example.com --modules bola,auth
 | `security_misconfig` | API8 | Security Misconfiguration detection |
 | `inventory` | API9 | Improper Inventory Management detection |
 | `unsafe_consumption` | API10 | Unsafe Consumption of APIs detection |
+| `parameter_pollution` | API8* | HTTP Parameter Pollution detection (discovered endpoints + Burp/Caido capture replay) |
+| `spec_driven_testing` | API8* | OpenAPI/Swagger contract-enforcement audit (enum/type/required) |
+
+\* Not a strict Top 10 mapping — filed under API8 as the closest fit (see "Beyond the Top 10" below).
 
 > `full` and `main` are deprecated, hidden aliases of `scan` and should not be used in new examples. Only `bola` and `auth` currently own module-specific options; the other eight accept transversal options only.
 
@@ -229,7 +257,7 @@ python apileaks.py scan --config config/owasp_config.yaml --target https://api.e
 ```yaml
 # config/owasp_config.yaml
 owasp_testing:
-  enabled_modules: ["bola", "auth", "property", "resource", "function_auth", "ssrf", "business_flow", "security_misconfig", "inventory", "unsafe_consumption"]
+  enabled_modules: ["bola", "auth", "property", "resource", "function_auth", "ssrf", "business_flow", "security_misconfig", "inventory", "unsafe_consumption", "parameter_pollution", "spec_driven_testing"]
   
   bola_testing:
     enabled: true

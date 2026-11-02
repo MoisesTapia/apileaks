@@ -159,9 +159,9 @@ def _run_ci_gate(findings, extra_args):
     counts in the fake results.
     """
     results = _make_results(findings)
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
-        with patch.object(apileaks, "APILeakCore", _fake_core_class(results)), patch.object(
+        with patch("cli.runner.APILeakCore", _fake_core_class(results)), patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
         ), patch("utils.report_generator.ReportGenerator") as report_gen:
             report_gen.return_value.save_reports.return_value = []
@@ -282,9 +282,9 @@ def test_sarif_zero_findings_writes_valid_empty_report():
     **Validates: Requirements 5.2**
     """
     results = _make_results([])
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
-        with patch.object(apileaks, "APILeakCore", _fake_core_class(results)), patch.object(
+        with patch("cli.runner.APILeakCore", _fake_core_class(results)), patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
         ):
             result = runner.invoke(
@@ -319,13 +319,12 @@ def test_malformed_baseline_exits_nonzero_naming_file_with_no_scan():
 
     **Validates: Requirements 5.7**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("bad_baseline.json", "w", encoding="utf-8") as handle:
             handle.write("{ this is not valid json ]")
 
-        with patch.object(apileaks, "run_enhanced_apileak") as mock_run, patch.object(
-            apileaks, "APILeakCore"
+        with patch("cli.runner.run_enhanced_apileak") as mock_run, patch("cli.runner.APILeakCore"
         ) as mock_core:
             result = runner.invoke(
                 cli,
@@ -345,14 +344,13 @@ def test_unreadable_baseline_directory_exits_nonzero_with_no_scan():
 
     **Validates: Requirements 5.7**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         import os
 
         os.mkdir("baseline_dir")
 
-        with patch.object(apileaks, "run_enhanced_apileak") as mock_run, patch.object(
-            apileaks, "APILeakCore"
+        with patch("cli.runner.run_enhanced_apileak") as mock_run, patch("cli.runner.APILeakCore"
         ) as mock_core:
             result = runner.invoke(
                 cli,
@@ -387,12 +385,12 @@ def test_valid_empty_baseline_runs_the_scan():
     **Validates: Requirements 5.7**
     """
     results = _make_results([])
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("good_baseline.json", "w", encoding="utf-8") as handle:
             handle.write('{"findings": []}')
 
-        with patch.object(apileaks, "APILeakCore", _fake_core_class(results)), patch.object(
+        with patch("cli.runner.APILeakCore", _fake_core_class(results)), patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
         ), patch("utils.report_generator.ReportGenerator") as report_gen:
             report_gen.return_value.save_reports.return_value = []

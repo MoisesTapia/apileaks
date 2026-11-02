@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Type
 
 import boto3
@@ -109,9 +109,9 @@ class SecurityHubPublisher:
                 dt = datetime.fromisoformat(ts_str)
                 timestamp = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             except (ValueError, TypeError):
-                timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
-            timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Description — truncate at 1024 chars
         description = str(finding.get("evidence", "No evidence provided"))

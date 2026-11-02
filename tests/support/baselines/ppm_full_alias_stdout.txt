@@ -1,3 +1,5 @@
+[DEPRECATION] 'full' is deprecated and will be removed in a future release. Use 'scan' instead.
+[DEPRECATION] Selecting modules through 'full --modules' is deprecated. Use 'apileaks owasp bola' instead.
 
 🎯 Target: https://api.example.test
 🛡️  OWASP Modules: bola

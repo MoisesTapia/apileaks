@@ -36,6 +36,7 @@ Covered invalid-input cases:
 
 from __future__ import annotations
 
+import sys
 from unittest import mock
 
 import pytest
@@ -180,6 +181,16 @@ def test_missing_client_cert_rejected_naming_path_no_requests():
     _assert_rejected_no_requests(result, output, ["--client-cert", bad_path])
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "os.chmod(0o000) does not restrict the owning user's read access on "
+        "Windows (NTFS permissions are ACL-based, not POSIX mode bits), so this "
+        "test cannot simulate an unreadable file there. The validator under "
+        "test (_assert_readable -> os.access(path, os.R_OK)) is itself "
+        "cross-platform; only this test's unreadability fixture is POSIX-only."
+    ),
+)
 def test_unreadable_client_cert_rejected_naming_path_no_requests(tmp_path):
     """An unreadable ``--client-cert`` path is rejected naming it, no request (R9.5)."""
     cert = tmp_path / "client-cert.pem"

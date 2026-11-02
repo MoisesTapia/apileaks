@@ -34,13 +34,14 @@ from click.testing import CliRunner
 import apileaks
 from apileaks import cli
 from cli.owasp_descriptors import all_keys
+from core import __version__ as _APILEAK_VERSION
 
 
 CLI_TARGET = "http://cli-target.example"
 ENV_TARGET = "http://env-target.example"
 CONFIG_TARGET = "http://config-target.example"
 
-DEFAULT_USER_AGENT = "APILeak/0.2.1"
+DEFAULT_USER_AGENT = f"APILeak/{_APILEAK_VERSION}"
 DEFAULT_TIMEOUT = 10
 
 
@@ -76,11 +77,10 @@ def _invoke_capturing_config(args, env=None):
 
         return _noop()
 
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with patch.object(
         apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-    ), patch.object(
-        apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)
+    ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)
     ) as mock_run:
         result = runner.invoke(cli, ["--no-banner", *args])
     return result, captured.get("config"), mock_run
@@ -304,7 +304,7 @@ def test_config_file_supplies_target_and_timeout_over_default():
 
     **Validates: Requirements 10.1, 10.4**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("cfg.yaml", "w", encoding="utf-8") as handle:
             handle.write(_write_config(base_url=CONFIG_TARGET, timeout=33))
@@ -321,7 +321,7 @@ def test_config_file_supplies_target_and_timeout_over_default():
 
         with patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-        ), patch.object(apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)):
+        ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)):
             result = runner.invoke(cli, ["--no-banner", "scan", "--config", "cfg.yaml"])
 
     assert result.exit_code == 0, result.output
@@ -335,7 +335,7 @@ def test_cli_option_overrides_config_file():
 
     **Validates: Requirements 10.4**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("cfg.yaml", "w", encoding="utf-8") as handle:
             handle.write(_write_config(base_url=CONFIG_TARGET, timeout=33))
@@ -352,7 +352,7 @@ def test_cli_option_overrides_config_file():
 
         with patch.object(
             apileaks.ConfigurationManager, "validate_configuration", return_value=[]
-        ), patch.object(apileaks, "run_enhanced_apileak", MagicMock(side_effect=_capture)):
+        ), patch("cli.runner.run_enhanced_apileak", MagicMock(side_effect=_capture)):
             result = runner.invoke(
                 cli,
                 ["--no-banner", "scan", "--config", "cfg.yaml",
@@ -374,12 +374,12 @@ def test_malformed_config_exits_nonzero_naming_file():
 
     **Validates: Requirements 10.5**
     """
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem():
         with open("broken.yaml", "w", encoding="utf-8") as handle:
             handle.write("::: not valid yaml :::\n\t- broken: [")
 
-        with patch.object(apileaks, "run_enhanced_apileak") as mock_run:
+        with patch("cli.runner.run_enhanced_apileak") as mock_run:
             result = runner.invoke(
                 cli, ["--no-banner", "scan", "--config", "broken.yaml"]
             )
@@ -398,8 +398,8 @@ def test_nonexistent_config_exits_nonzero_naming_file():
 
     **Validates: Requirements 10.5**
     """
-    runner = CliRunner(mix_stderr=False)
-    with patch.object(apileaks, "run_enhanced_apileak") as mock_run:
+    runner = CliRunner()
+    with patch("cli.runner.run_enhanced_apileak") as mock_run:
         result = runner.invoke(
             cli, ["--no-banner", "scan", "--config", "definitely-missing.yaml"]
         )

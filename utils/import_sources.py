@@ -13,12 +13,12 @@ Supported formats:
 
 import base64
 import json
-import xml.etree.ElementTree as _stdlib_ET  # for type annotations only
-import defusedxml.ElementTree as ET
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import xml.etree.ElementTree as _stdlib_ET  # stdlib: used only for the Element type annotation
+from dataclasses import dataclass
+from typing import Any, Optional
 from urllib.parse import urlsplit
+
+import defusedxml.ElementTree as ET  # safe, XXE-protected parsing of untrusted imports
 
 from core.logging import get_logger
 
@@ -44,12 +44,34 @@ class ImportSourceError(Exception):
 
 # Field name keywords (checked case-insensitively) that indicate the field
 # is intended to carry a URL, hostname, or fetchable resource reference.
-_URL_KEYWORDS: frozenset = frozenset({
-    "url", "uri", "host", "endpoint", "target", "webhook", "callback",
-    "redirect", "link", "href", "src", "source", "dest", "destination",
-    "fetch", "import", "feed", "avatar", "image", "thumbnail",
-    "imageurl", "avatarurl", "feedurl", "importurl",
-})
+_URL_KEYWORDS: frozenset = frozenset(
+    {
+        "url",
+        "uri",
+        "host",
+        "endpoint",
+        "target",
+        "webhook",
+        "callback",
+        "redirect",
+        "link",
+        "href",
+        "src",
+        "source",
+        "dest",
+        "destination",
+        "fetch",
+        "import",
+        "feed",
+        "avatar",
+        "image",
+        "thumbnail",
+        "imageurl",
+        "avatarurl",
+        "feedurl",
+        "importurl",
+    }
+)
 
 
 def _is_url_like_field(name: str, value: Any) -> bool:
@@ -88,20 +110,20 @@ class ImportedRequest:
 
     method: str
     path: str
-    headers: Dict[str, str]
-    body: Optional[Dict[str, Any]]
-    url_like_fields: List[str]
-    raw_body: Optional[str]
+    headers: dict[str, str]
+    body: dict[str, Any] | None
+    url_like_fields: list[str]
+    raw_body: str | None
 
 
-def _detect_url_like_fields(body: Optional[Dict[str, Any]]) -> List[str]:
+def _detect_url_like_fields(body: dict[str, Any] | None) -> list[str]:
     """Return names of URL-like fields from a parsed JSON body dict."""
     if not body or not isinstance(body, dict):
         return []
     return [k for k, v in body.items() if _is_url_like_field(k, v)]
 
 
-def _parse_json_body(raw_body: Optional[str]) -> Optional[Dict[str, Any]]:
+def _parse_json_body(raw_body: str | None) -> dict[str, Any] | None:
     """Try to parse raw_body as a JSON object; return None on failure."""
     if not raw_body:
         return None
@@ -135,13 +157,12 @@ class BurpXmlImporter:
     def __init__(self, path: str) -> None:
         self._path = path
 
-    def parse(self) -> List[ImportedRequest]:
+    def parse(self) -> list[ImportedRequest]:
         """Parse the XML file and return a list of ``ImportedRequest`` objects."""
         import os
+
         if not os.path.exists(self._path):
-            raise ImportSourceError(
-                f"Burp XML file not found: '{self._path}'"
-            )
+            raise ImportSourceError(f"Burp XML file not found: '{self._path}'")
 
         try:
             tree = ET.parse(self._path)
@@ -154,7 +175,7 @@ class BurpXmlImporter:
         # Support both <items> root with <item> children and flat <item> roots.
         items = root.findall("item") if root.tag != "item" else [root]
 
-        results: List[ImportedRequest] = []
+        results: list[ImportedRequest] = []
         for idx, item in enumerate(items):
             try:
                 req = self._parse_item(item)
@@ -168,13 +189,13 @@ class BurpXmlImporter:
                 )
         return results
 
-    def _parse_item(self, item: ET.Element) -> Optional["ImportedRequest"]:
+    def _parse_item(self, item: _stdlib_ET.Element) -> Optional["ImportedRequest"]:
         """Extract an ``ImportedRequest`` from a single ``<item>`` element."""
         request_elem = item.find("request")
         if request_elem is None or request_elem.text is None:
             raise ValueError("Missing or empty <request> element")
 
-        is_b64 = (request_elem.get("base64", "false").lower() == "true")
+        is_b64 = request_elem.get("base64", "false").lower() == "true"
         raw_bytes: bytes
         if is_b64:
             try:
@@ -210,7 +231,7 @@ class BurpXmlImporter:
         full_path = request_line[1]
 
         # Headers
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
         for line in lines[1:]:
             if ":" in line:
                 hname, _, hval = line.partition(":")
@@ -218,9 +239,7 @@ class BurpXmlImporter:
 
         # Body
         raw_body_str = body_part.decode("utf-8", errors="replace") if body_part else None
-        content_type = next(
-            (v for k, v in headers.items() if k.lower() == "content-type"), ""
-        )
+        content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
         body = None
         if "application/json" in content_type.lower():
             body = _parse_json_body(raw_body_str)
@@ -256,32 +275,27 @@ class HarImporter:
     def __init__(self, path: str) -> None:
         self._path = path
 
-    def parse(self) -> List[ImportedRequest]:
+    def parse(self) -> list[ImportedRequest]:
         """Parse the HAR file and return a list of ``ImportedRequest`` objects."""
         import os
+
         if not os.path.exists(self._path):
-            raise ImportSourceError(
-                f"HAR file not found: '{self._path}'"
-            )
+            raise ImportSourceError(f"HAR file not found: '{self._path}'")
 
         try:
             with open(self._path, encoding="utf-8", errors="replace") as fh:
                 data = json.load(fh)
         except (json.JSONDecodeError, ValueError) as exc:
-            raise ImportSourceError(
-                f"HAR file is not valid JSON: '{self._path}': {exc}"
-            ) from exc
+            raise ImportSourceError(f"HAR file is not valid JSON: '{self._path}': {exc}") from exc
 
         if not isinstance(data, dict) or "log" not in data:
-            raise ImportSourceError(
-                f"HAR file missing required 'log' key: '{self._path}'"
-            )
+            raise ImportSourceError(f"HAR file missing required 'log' key: '{self._path}'")
 
         entries = data["log"].get("entries", [])
         if not entries:
             return []
 
-        results: List[ImportedRequest] = []
+        results: list[ImportedRequest] = []
         for idx, entry in enumerate(entries):
             try:
                 req = self._parse_entry(entry)
@@ -315,15 +329,15 @@ class HarImporter:
             path = f"{path}?{parsed.query}"
 
         # Headers: HAR uses [{name, value}, ...] format.
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
         for hdr in request.get("headers", []):
             if isinstance(hdr, dict) and "name" in hdr and "value" in hdr:
                 headers[hdr["name"]] = hdr["value"]
 
         # Body from postData.
         post_data = request.get("postData")
-        raw_body_str: Optional[str] = None
-        body: Optional[Dict[str, Any]] = None
+        raw_body_str: str | None = None
+        body: dict[str, Any] | None = None
 
         if isinstance(post_data, dict):
             raw_body_str = post_data.get("text") or None
