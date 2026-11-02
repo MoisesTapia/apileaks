@@ -180,8 +180,7 @@ OWASP_MODULE_DESCRIPTORS: list[OwaspModuleDescriptor] = [
     OwaspModuleDescriptor(
         key="spec_driven_testing",
         owasp_category="API8",
-        summary="OpenAPI/Swagger contract-enforcement audit (enum/type/"
-        "required constraints)",
+        summary="OpenAPI/Swagger contract-enforcement audit (enum/type/required constraints)",
         config_field="spec_driven_testing",
         specific_options=spec_driven_options,
         apply_options=apply_spec_driven_options,

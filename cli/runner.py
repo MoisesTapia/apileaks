@@ -345,7 +345,11 @@ async def run_enhanced_apileak(
         # Some test doubles stub save_reports with a plain list[str] of paths,
         # so accept either shape rather than assuming every caller returns dicts.
         for report_file in report_files:
-            path = report_file.get("path", report_file) if isinstance(report_file, dict) else report_file
+            path = (
+                report_file.get("path", report_file)
+                if isinstance(report_file, dict)
+                else report_file
+            )
             click.echo(f"  - {path}")
 
         # Baseline comparison: classify findings into new vs known relative to a

@@ -272,9 +272,7 @@ class SpecDrivenTestingModule(OWASPModule, SafeModeGuard):
             )
             return None
 
-    async def _audit_operation(
-        self, base_url: str, operation: SpecOperation
-    ) -> list[Finding]:
+    async def _audit_operation(self, base_url: str, operation: SpecOperation) -> list[Finding]:
         findings: list[Finding] = []
 
         baseline = await self._probe(base_url, operation)
@@ -290,11 +288,16 @@ class SpecDrivenTestingModule(OWASPModule, SafeModeGuard):
 
             if param.enum:
                 mutated = await self._probe(
-                    base_url, operation,
+                    base_url,
+                    operation,
                     **{overrides_kwarg: {param.name: _ENUM_VIOLATION_SENTINEL}},
                 )
                 finding = self._finding_if_not_enforced(
-                    operation, param, "enum", baseline_success, mutated,
+                    operation,
+                    param,
+                    "enum",
+                    baseline_success,
+                    mutated,
                     evidence_detail=f"declared enum {param.enum!r} but accepted "
                     f"'{_ENUM_VIOLATION_SENTINEL}'",
                 )
@@ -303,11 +306,16 @@ class SpecDrivenTestingModule(OWASPModule, SafeModeGuard):
 
             elif param.type in _TYPE_CONFUSION_VALUES:
                 mutated = await self._probe(
-                    base_url, operation,
+                    base_url,
+                    operation,
                     **{overrides_kwarg: {param.name: _TYPE_CONFUSION_VALUES[param.type]}},
                 )
                 finding = self._finding_if_not_enforced(
-                    operation, param, "type", baseline_success, mutated,
+                    operation,
+                    param,
+                    "type",
+                    baseline_success,
+                    mutated,
                     evidence_detail=f"declared type '{param.type}' but accepted "
                     f"'{_TYPE_CONFUSION_VALUES[param.type]}'",
                 )
@@ -318,7 +326,11 @@ class SpecDrivenTestingModule(OWASPModule, SafeModeGuard):
                 omit: dict[str, str | None] = {param.name: None}
                 mutated = await self._probe(base_url, operation, **{overrides_kwarg: omit})
                 finding = self._finding_if_not_enforced(
-                    operation, param, "required", baseline_success, mutated,
+                    operation,
+                    param,
+                    "required",
+                    baseline_success,
+                    mutated,
                     evidence_detail="declared required=true but accepted the request "
                     "with the parameter omitted entirely",
                 )

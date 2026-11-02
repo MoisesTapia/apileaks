@@ -120,9 +120,7 @@ def build_json_array_pollution_variants(
     return body_a, body_b, body_polluted
 
 
-def classify_pollution_response(
-    status_a: int, status_b: int, status_polluted: int
-) -> str | None:
+def classify_pollution_response(status_a: int, status_b: int, status_polluted: int) -> str | None:
     """Classify an HPP probe's three response status codes into a finding category.
 
     This is a conservative, status-code-only heuristic (callers with access to

@@ -1504,9 +1504,7 @@ For support and documentation: https://github.com/apileak/apileak
         # is what mypy was flagging here (see
         # technical-debt/code-quality-audit.md #16); behavior is unchanged.
         if formats is not None:
-            selected_formats = {
-                name: info for name, info in formats_all.items() if name in formats
-            }
+            selected_formats = {name: info for name, info in formats_all.items() if name in formats}
         else:
             selected_formats = {
                 name: info

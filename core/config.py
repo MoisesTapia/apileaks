@@ -764,9 +764,7 @@ class OWASPConfig:
     parameter_pollution_testing: ParameterPollutionConfig = field(
         default_factory=ParameterPollutionConfig
     )
-    spec_driven_testing: SpecDrivenTestingConfig = field(
-        default_factory=SpecDrivenTestingConfig
-    )
+    spec_driven_testing: SpecDrivenTestingConfig = field(default_factory=SpecDrivenTestingConfig)
     # Optional Spec_Schema merged from the repeatable ``--openapi`` / ``--postman``
     # sources supplied to the ``full`` command (Requirement 49.2). Defaults to
     # ``None`` and is NOT sourced from YAML by ``_build_owasp_config``, so
@@ -1521,9 +1519,7 @@ class ConfigurationManager:
             parameter_pollution_testing=ParameterPollutionConfig(
                 **data.get("parameter_pollution_testing", {})
             ),
-            spec_driven_testing=SpecDrivenTestingConfig(
-                **data.get("spec_driven_testing", {})
-            ),
+            spec_driven_testing=SpecDrivenTestingConfig(**data.get("spec_driven_testing", {})),
         )
 
     def _build_ssrf_config(self, data: dict[str, Any]) -> SSRFConfig:

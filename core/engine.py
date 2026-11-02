@@ -1067,7 +1067,9 @@ class APILeakCore:
 
             if "parameter_pollution" not in self.owasp_modules:
                 parameter_pollution_module = ParameterPollutionModule(
-                    self.config.owasp_testing.parameter_pollution_testing, http_client, auth_contexts
+                    self.config.owasp_testing.parameter_pollution_testing,
+                    http_client,
+                    auth_contexts,
                 )
                 self.register_owasp_module("parameter_pollution", parameter_pollution_module)
 
@@ -1259,9 +1261,7 @@ class APILeakCore:
             self.scan_results.statistics.parameters_tested = fuzzing_stats.get(
                 "parameters_tested", 0
             )
-            self.scan_results.statistics.endpoints_tested = fuzzing_stats.get(
-                "endpoints_tested", 0
-            )
+            self.scan_results.statistics.endpoints_tested = fuzzing_stats.get("endpoints_tested", 0)
 
         # Log OWASP coverage information
         owasp_coverage = self.findings_collector.get_owasp_coverage()

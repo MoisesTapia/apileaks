@@ -103,7 +103,9 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
         probes_issued = 0
 
         try:
-            probes_issued = await self._test_discovered_endpoints(endpoints, findings, probes_issued)
+            probes_issued = await self._test_discovered_endpoints(
+                endpoints, findings, probes_issued
+            )
             probes_issued = await self._test_imported_requests(endpoints, findings, probes_issued)
         except Exception as e:
             self.logger.error("Parameter pollution testing failed", error=str(e))
@@ -166,8 +168,11 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
         if har_path:
             from utils.import_sources import HarImporter
 
-            self.logger.info("Loading HAR import source (Caido, Burp Logger, Hetty, "
-                              "DevTools, Firefox all export this format)", path=har_path)
+            self.logger.info(
+                "Loading HAR import source (Caido, Burp Logger, Hetty, "
+                "DevTools, Firefox all export this format)",
+                path=har_path,
+            )
             imported.extend(HarImporter(har_path).parse())
 
         return imported
@@ -218,7 +223,10 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
                         break
                     probes_issued += 1
                     finding = await self._probe_json_body_pollution(
-                        probe_url, imported_req.method, imported_req.body, field_name,
+                        probe_url,
+                        imported_req.method,
+                        imported_req.body,
+                        field_name,
                         headers=imported_req.headers,
                     )
                     if finding is not None:
@@ -235,7 +243,10 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
                         break
                     probes_issued += 1
                     finding = await self._probe_form_body_pollution(
-                        probe_url, imported_req.method, form_fields, field_name,
+                        probe_url,
+                        imported_req.method,
+                        form_fields,
+                        field_name,
                         headers=imported_req.headers,
                     )
                     if finding is not None:
@@ -257,9 +268,7 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
 
     @staticmethod
     def _is_form_urlencoded(headers: dict[str, str]) -> bool:
-        content_type = next(
-            (v for k, v in headers.items() if k.lower() == "content-type"), ""
-        )
+        content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
         return "application/x-www-form-urlencoded" in content_type.lower()
 
     @staticmethod
@@ -288,9 +297,7 @@ class ParameterPollutionModule(OWASPModule, SafeModeGuard):
                 method, url_polluted, headers=headers or {}
             )
         except Exception as exc:
-            self.logger.debug(
-                "Query pollution probe failed", url=url, param=param, error=str(exc)
-            )
+            self.logger.debug("Query pollution probe failed", url=url, param=param, error=str(exc))
             return None
 
         return self._build_finding_if_anomalous(

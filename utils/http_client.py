@@ -687,7 +687,9 @@ class HTTPRequestEngine:
                 # runtime, unprovable to mypy without a TypedDict mirroring
                 # httpx's full signature (see technical-debt/code-quality-audit.md #16).
                 httpx_response = await self.client.request(
-                    method=request.method, url=request.url, **request_kwargs  # type: ignore[arg-type]
+                    method=request.method,
+                    url=request.url,
+                    **request_kwargs,  # type: ignore[arg-type]
                 )
 
                 elapsed = time.time() - start_time
