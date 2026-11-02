@@ -1319,7 +1319,7 @@ class ReportGenerator:
             findings_section += "=" * 80 + "\n"
 
             # Group findings by severity
-            findings_by_severity = {}
+            findings_by_severity: dict[str, list[Any]] = {}
             for finding in findings_list:
                 severity = finding.severity.value
                 if severity not in findings_by_severity:
@@ -1432,7 +1432,13 @@ For support and documentation: https://github.com/apileak/apileak
         scan_type: str = "full",
         output_filename: str = None,
         formats: list[str] | None = None,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
+        # Return type corrected to list[dict[str, Any]]: this returns
+        # `generated_files` (file_info records), not plain path strings — the
+        # previous `-> list[str]` signature didn't match (see
+        # technical-debt/code-quality-audit.md #16). `cli/runner.py`'s caller
+        # was fixed in the same pass to read `report_file["path"]` instead of
+        # treating each entry as a string.
         """
         Save comprehensive reports in all configured formats with precise timestamps
 
@@ -1461,7 +1467,7 @@ For support and documentation: https://github.com/apileak/apileak
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Enhanced report generation with error handling and validation
-        formats_all = {
+        formats_all: dict[str, dict[str, Any]] = {
             "xml": {
                 "generator": self.generate_xml_report,
                 "description": "XML report compatible with Nessus and Burp Suite",
@@ -1492,10 +1498,17 @@ For support and documentation: https://github.com/apileak/apileak
         # Honor configured formats when provided. When `formats` is None,
         # preserve the original behavior (xml, json, html, txt). When provided,
         # generate exactly those formats that are known.
+        # Named distinctly from the `formats` parameter (list[str] | None of
+        # requested format names) instead of reassigning it to a dict —
+        # reusing the parameter name for a different type was confusing and
+        # is what mypy was flagging here (see
+        # technical-debt/code-quality-audit.md #16); behavior is unchanged.
         if formats is not None:
-            formats = {name: info for name, info in formats_all.items() if name in formats}
+            selected_formats = {
+                name: info for name, info in formats_all.items() if name in formats
+            }
         else:
-            formats = {
+            selected_formats = {
                 name: info
                 for name, info in formats_all.items()
                 if name in ("xml", "json", "html", "txt")
@@ -1518,7 +1531,7 @@ For support and documentation: https://github.com/apileak/apileak
 
         generation_start = datetime.now()
 
-        for format_name, format_info in formats.items():
+        for format_name, format_info in selected_formats.items():
             try:
                 self.logger.info(
                     "Generating report", format=format_name, description=format_info["description"]

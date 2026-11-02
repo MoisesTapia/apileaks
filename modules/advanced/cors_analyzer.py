@@ -180,7 +180,7 @@ class CORSAnalyzer:
         for result in test_results:
             if isinstance(result, CORSTestResult):
                 valid_results.append(result)
-            elif isinstance(result, Exception):
+            elif isinstance(result, BaseException):
                 self.logger.warning("CORS test failed", error=str(result))
 
         analysis.test_results = valid_results

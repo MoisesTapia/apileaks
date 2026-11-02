@@ -706,8 +706,6 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
 
         role_fields: list[str] = getattr(self.config, "role_fields", []) or []
         role_values: list[str] = getattr(self.config, "role_values", []) or []
-        role_fields: list[str] = getattr(self.config, "role_fields", []) or []
-        role_values: list[str] = getattr(self.config, "role_values", []) or []
 
         if not role_fields or not role_values:
             return findings
@@ -862,9 +860,6 @@ class FunctionLevelAuthModule(OWASPModule, SafeModeGuard):
 
         Finding: BFLA_VERSION_DOWNGRADE (HIGH).
         """
-        findings: list[Finding] = []
-        low_ctx = self._pick_low_priv_ctx()
-        configured_versions: list[str] = getattr(self.config, "api_versions", []) or []
         findings: list[Finding] = []
         low_ctx = self._pick_low_priv_ctx()
         configured_versions: list[str] = getattr(self.config, "api_versions", []) or []

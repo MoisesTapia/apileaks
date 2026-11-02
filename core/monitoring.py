@@ -167,10 +167,12 @@ class PerformanceMonitor:
             window_size: Size of sliding window for metrics
         """
         self.window_size = window_size
-        self.response_times = deque(maxlen=window_size)
-        self.request_results = deque(maxlen=window_size)  # True for success, False for error
-        self.request_timestamps = deque(maxlen=window_size)
-        self.memory_usage = deque(maxlen=window_size)
+        self.response_times: deque[float] = deque(maxlen=window_size)
+        self.request_results: deque[bool] = deque(
+            maxlen=window_size
+        )  # True for success, False for error
+        self.request_timestamps: deque[datetime] = deque(maxlen=window_size)
+        self.memory_usage: deque[float] = deque(maxlen=window_size)
         self.active_connections = 0
         self.rate_limited_requests = 0
         self.total_requests = 0
@@ -383,12 +385,17 @@ class AnomalyDetector:
         # Store alerts and trigger callbacks
         for alert in alerts:
             self.alerts.append(alert)
+            # NOTE: `alert_message` (not `message`) — APILeakLogger.warning()'s
+            # first positional parameter is itself named `message` ("Anomaly
+            # detected" above); passing a second `message=` kwarg collided with
+            # it and raised "got multiple values for argument 'message'" on
+            # every anomaly alert (see technical-debt/code-quality-audit.md #16).
             self.logger.warning(
                 "Anomaly detected",
                 alert_id=alert.id,
                 level=alert.level,
                 category=alert.category,
-                message=alert.message,
+                alert_message=alert.message,
                 details=alert.details,
             )
 

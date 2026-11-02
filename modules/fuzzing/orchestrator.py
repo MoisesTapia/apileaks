@@ -8,11 +8,12 @@ import json
 import secrets
 import string
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 from urllib.parse import urlencode, urljoin, urlparse
 from uuid import uuid4
 
@@ -366,7 +367,7 @@ class EndpointFuzzer:
         # as they arrive rather than waiting for discovery to finish. The caller
         # is responsible for opening the handle before discovery starts and
         # closing it afterwards. None disables streaming (no extra I/O).
-        self.streaming_output_handle = None
+        self.streaming_output_handle: IO[str] | None = None
 
         self.logger.info(
             "Endpoint Fuzzer initialized",
@@ -673,6 +674,13 @@ class EndpointFuzzer:
         # pulling further product/zip combinations and terminates discovery
         # gracefully (Requirements 42.3, 42.4, 43.4).
         use_markers = depth == 0 and bool(self._markers) and self._marker_wordlists is not None
+        # Annotated explicitly: the two branches below yield tuple[None, str]
+        # (marker mode) and tuple[str, str] (legacy mode) respectively: without
+        # this annotation mypy pins the type from whichever branch it sees
+        # first and flags the other as incompatible, even though both branches
+        # feed the same `for word, candidate in candidate_source:` consumer
+        # below that only ever needs `word` to be "falsy-or-a-string".
+        candidate_source: Iterator[tuple[str | None, str]]
         if use_markers:
             # ``cand`` is already a full candidate URL; the base-path urljoin is
             # bypassed for marker candidates. ``word`` is None so per-path
@@ -758,7 +766,7 @@ class EndpointFuzzer:
 
         # Execute requests. Concurrency is now bounded by the asyncio.Semaphore
         # in _test_endpoint (Concurrency_Limit), not by a hardcoded batch size.
-        discovered_endpoints = []
+        discovered_endpoints: list[Endpoint] = []
 
         # Enforce the request budget (Request_Budget). Skip when unbounded.
         if self.max_requests is not None:
@@ -819,7 +827,7 @@ class EndpointFuzzer:
         for result in results:
             if isinstance(result, Endpoint):
                 endpoints.append(result)
-            elif isinstance(result, Exception):
+            elif isinstance(result, BaseException):
                 self.logger.debug("Request failed", error=str(result))
 
         return endpoints
@@ -1580,8 +1588,12 @@ class ParameterFuzzer:
         # a bounded run that never reaches its limit.
         self.budget_stop_reason: str | None = None
 
-        # Boundary test values
-        self.boundary_values = {
+        # Boundary test values. Explicitly annotated as dict[str, list[Any]]:
+        # every value here IS a list at runtime, but mypy's literal inference
+        # over this many mixed element types (str/int/bool/None/list/dict)
+        # collapses the value type to plain `object`, which is not iterable to
+        # mypy even though it always is in practice.
+        self.boundary_values: dict[str, list[Any]] = {
             "string": ["", "a", "A" * 1000, "A" * 10000, None, "null", "0", "-1", "999999999"],
             "integer": [0, 1, -1, 999999999, -999999999, None, "null", "", "abc"],
             "boolean": [True, False, "true", "false", "1", "0", None, "null", ""],
@@ -1930,6 +1942,12 @@ class ParameterFuzzer:
         wordlists = self._param_marker_wordlists  # List[List[str]]
         fuzz_mode = self._param_fuzz_mode
 
+        # Annotated explicitly: zip_longest() and product() return distinct
+        # (incompatible-looking) iterator types; both branches feed the same
+        # `zip(candidate_gen, value_combos, ...)` consumer below, which only
+        # needs an iterator of tuples, so the mismatch is a type-checker
+        # artifact, not a runtime concern.
+        value_combos: Iterator[tuple[Any, ...]]
         if fuzz_mode.value == "pitchfork":
             value_combos = _itertools.zip_longest(*wordlists)
         else:
@@ -2039,7 +2057,7 @@ class ParameterFuzzer:
 
     async def _fuzz_query_parameters(self, endpoint: Endpoint) -> list[Finding]:
         """Fuzz query parameters for an endpoint"""
-        findings = []
+        findings: list[Finding] = []
 
         # Load query parameter wordlist
         wordlist = await self._load_wordlist(self.config.parameters.query_wordlist)
@@ -2189,7 +2207,7 @@ class ParameterFuzzer:
 
     async def _fuzz_body_parameters(self, endpoint: Endpoint) -> list[Finding]:
         """Fuzz body parameters for an endpoint"""
-        findings = []
+        findings: list[Finding] = []
 
         # Load body parameter wordlist
         wordlist = await self._load_wordlist(self.config.parameters.body_wordlist)
@@ -2414,7 +2432,7 @@ class ParameterFuzzer:
         self, endpoint: Endpoint, param_name: str, location: str, baseline_response: Response
     ) -> list[Finding]:
         """Perform boundary testing on a parameter"""
-        findings = []
+        findings: list[Finding] = []
 
         for _value_type, test_values in self.boundary_values.items():
             for test_value in test_values:
@@ -2483,7 +2501,7 @@ class ParameterFuzzer:
         self, endpoint: Endpoint, param_name: str, baseline_response: Response
     ) -> list[Finding]:
         """Perform boundary testing on JSON parameters"""
-        findings = []
+        findings: list[Finding] = []
 
         for _value_type, test_values in self.boundary_values.items():
             for test_value in test_values:
@@ -2887,7 +2905,7 @@ class HeaderFuzzer:
 
     async def _fuzz_custom_headers(self, endpoint: Endpoint) -> list[Finding]:
         """Fuzz custom headers for an endpoint"""
-        findings = []
+        findings: list[Finding] = []
 
         # Load header wordlist
         wordlist = await self._load_wordlist(self.config.headers.wordlist)
@@ -2930,7 +2948,7 @@ class HeaderFuzzer:
 
     async def _test_bypass_headers(self, endpoint: Endpoint) -> list[Finding]:
         """Test headers for authentication/authorization bypass"""
-        findings = []
+        findings: list[Finding] = []
 
         # Get baseline response
         baseline_response = await self._get_baseline_response(endpoint)

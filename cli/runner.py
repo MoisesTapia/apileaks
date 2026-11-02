@@ -338,8 +338,15 @@ async def run_enhanced_apileak(
             click.echo(f"Info: {results.statistics.info_findings}")
 
         click.echo("\nReports generated:")
+        # ReportGenerator.save_reports normally returns list[dict] (each a
+        # {"path": ..., "format": ..., ...} file_info record) — printing the
+        # raw dict showed its Python repr instead of the file path on every
+        # completed scan (see technical-debt/code-quality-audit.md #16).
+        # Some test doubles stub save_reports with a plain list[str] of paths,
+        # so accept either shape rather than assuming every caller returns dicts.
         for report_file in report_files:
-            click.echo(f"  - {report_file}")
+            path = report_file.get("path", report_file) if isinstance(report_file, dict) else report_file
+            click.echo(f"  - {path}")
 
         # Baseline comparison: classify findings into new vs known relative to a
         # baseline JSON report (Requirements 11.1-11.3). A missing baseline path

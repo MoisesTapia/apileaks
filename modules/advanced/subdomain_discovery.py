@@ -151,7 +151,7 @@ class SubdomainDiscovery:
                 valid_results.append(result)
                 if result.is_accessible:
                     self.accessible_subdomains.append(result.subdomain)
-            elif isinstance(result, Exception):
+            elif isinstance(result, BaseException):
                 self.logger.warning("Subdomain test failed", error=str(result))
 
         self.discovered_subdomains = valid_results
@@ -279,7 +279,7 @@ class SubdomainDiscovery:
         Returns:
             List of findings related to subdomain discovery
         """
-        findings = []
+        findings: list[Finding] = []
 
         if not self.accessible_subdomains:
             return findings

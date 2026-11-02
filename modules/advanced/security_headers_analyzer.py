@@ -173,7 +173,7 @@ class SecurityHeadersAnalyzer:
                     missing_headers=len(result.missing_headers),
                 )
 
-            elif isinstance(result, Exception):
+            elif isinstance(result, BaseException):
                 self.logger.error(
                     "Security headers analysis failed for endpoint",
                     endpoint=endpoint,
@@ -593,7 +593,7 @@ class SecurityHeadersAnalyzer:
         )
 
         # Find most common missing header
-        missing_header_counts = {}
+        missing_header_counts: dict[str, int] = {}
         for analysis in self.analysis_results.values():
             for header in analysis.missing_headers:
                 missing_header_counts[header] = missing_header_counts.get(header, 0) + 1

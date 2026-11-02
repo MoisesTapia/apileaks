@@ -244,8 +244,8 @@ class EnhancedOrchestrator:
             List of phase names in execution order
         """
         # Simple topological sort with priority consideration
-        executed = set()
-        order = []
+        executed: set[str] = set()
+        order: list[str] = []
 
         # Sort phases by priority first
         sorted_phases = sorted(self.phases.items(), key=lambda x: x[1].priority)
@@ -421,8 +421,15 @@ class EnhancedOrchestrator:
             # Initialize version fuzzer (correct arg order: config first, then http_client)
             version_fuzzer = VersionFuzzer(vf_config, http_client)
 
-            # Fuzz API versions
-            versions_found = await version_fuzzer.fuzz_api_versions(target)
+            # Fuzz API versions. ``fuzz_api_versions`` returns list[APIVersion]
+            # (rich objects), but ``self.api_versions_found`` is declared and
+            # consumed as list[str] (version strings like "v1", "v2") — extract
+            # `.version` so findings/evidence/execution_context get the clean
+            # string instead of a dataclass repr, and downstream JSON
+            # serialization of execution_context doesn't choke on a non-JSON
+            # -serializable APIVersion object (see
+            # technical-debt/code-quality-audit.md #16).
+            versions_found = [v.version for v in await version_fuzzer.fuzz_api_versions(target)]
 
             if versions_found:
                 self.api_versions_found = versions_found
@@ -470,17 +477,29 @@ class EnhancedOrchestrator:
                 self.waf_detected = waf_info
                 self.execution_context["waf_detected"] = waf_info
 
-                # Add WAF detection finding
+                # Add WAF detection finding. WAFDetectionResult has no `.name`
+                # field (its fields are detected/waf_type/confidence/...) — the
+                # previous `waf_info.name` raised AttributeError every time a
+                # WAF was actually detected, silently swallowed by the
+                # `except Exception` below, so this finding was never
+                # successfully reported (see
+                # technical-debt/code-quality-audit.md #16). `waf_type` is a
+                # str subclass (WAFType(str, Enum)), so it renders cleanly
+                # (e.g. "cloudflare").
                 self.findings_collector.add_finding(
                     category="WAF_DETECTION",
                     severity=None,  # Will be auto-classified as INFO
                     endpoint=target,
                     method="GET",
-                    evidence=f"WAF detected: {waf_info.name} (confidence: {waf_info.confidence:.2f})",
+                    evidence=(
+                        f"WAF detected: {waf_info.waf_type} (confidence: {waf_info.confidence:.2f})"
+                    ),
                     recommendation="Use WAF evasion techniques for testing",
                 )
 
-                self.logger.info("WAF detected", waf=waf_info.name, confidence=waf_info.confidence)
+                self.logger.info(
+                    "WAF detected", waf=waf_info.waf_type, confidence=waf_info.confidence
+                )
 
         except ImportError:
             self.logger.warning("WAF detector module not available")

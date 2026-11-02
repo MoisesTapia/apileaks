@@ -210,6 +210,7 @@ async def replay_request(
         Dict with keys: method, url, request_headers, request_body,
         status_code, response_headers, response_body, elapsed.
     """
+    from core.config import RateLimitConfig
     from utils.http_client import HTTPRequestEngine, RateLimiter, RetryConfig
 
     # Build merged headers: entry headers < extra_headers < JWT
@@ -220,7 +221,10 @@ async def replay_request(
     if jwt_token:
         merged_headers["Authorization"] = f"Bearer {jwt_token}"
 
-    rate_limiter = RateLimiter(requests_per_second=10)
+    # RateLimiter takes a single RateLimitConfig, not bare kwargs (BUG: was
+    # `RateLimiter(requests_per_second=10)`, which raised TypeError on every
+    # real `apileaks replay <index>` call — see technical-debt/code-quality-audit.md #16).
+    rate_limiter = RateLimiter(RateLimitConfig(requests_per_second=10))
     retry_config = RetryConfig(max_attempts=1)  # replay: no retries
 
     engine = HTTPRequestEngine(

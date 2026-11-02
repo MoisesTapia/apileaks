@@ -289,7 +289,7 @@ class ResourceConsumptionModule(OWASPModule):
 
         # Analyze responses
         for response in responses:
-            if isinstance(response, Exception):
+            if isinstance(response, BaseException):
                 blocked_requests += 1
             elif isinstance(response, Response):
                 if response.status_code == 429:  # Too Many Requests
@@ -593,7 +593,7 @@ class ResourceConsumptionModule(OWASPModule):
             Resource test result
         """
         # Create deeply nested JSON
-        nested_json = {}
+        nested_json: dict[str, Any] = {}
         current = nested_json
 
         for i in range(self.config.json_depth_limit):

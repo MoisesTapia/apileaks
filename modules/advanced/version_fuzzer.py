@@ -186,9 +186,14 @@ class VersionFuzzer:
         # Execute all version pattern tests
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process results
+        # Process results.
+        # BaseException, not Exception: asyncio.gather(..., return_exceptions=True)
+        # can surface CancelledError, which in Python 3.8+ inherits from
+        # BaseException rather than Exception. Checking only `Exception` would
+        # let a raw CancelledError slip into `discovered_versions` as if it were
+        # an APIVersion (see technical-debt/code-quality-audit.md #16).
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 self.logger.warning(
                     "Version pattern test failed",
                     pattern=self.config.version_patterns[i],

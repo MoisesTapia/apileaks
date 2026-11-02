@@ -541,7 +541,15 @@ class HTTPRequestEngine:
                 }
                 self.logger.info("Overriding DNS resolution", host=resolve_host, ip=resolve_ip)
 
-            self.client = httpx.AsyncClient(**client_kwargs)
+            # client_kwargs is built incrementally above with keys/value types
+            # that always correspond to a real, correctly-typed AsyncClient
+            # parameter (limits=Limits, timeout=Timeout, verify=bool|str,
+            # cert=str|tuple, proxy=str, mounts=dict, follow_redirects=bool,
+            # http2=bool). mypy cannot verify a dynamically-built dict against
+            # AsyncClient's many mutually-exclusive parameter types; this is
+            # safe at runtime by construction (see
+            # technical-debt/code-quality-audit.md #16).
+            self.client = httpx.AsyncClient(**client_kwargs)  # type: ignore[arg-type]
 
             self._client_initialized = True
             self.logger.debug("HTTP client initialized")
@@ -621,7 +629,12 @@ class HTTPRequestEngine:
         # Convert exceptions to error responses
         result = []
         for i, response in enumerate(responses):
-            if isinstance(response, Exception):
+            # BaseException, not Exception: asyncio.gather(..., return_exceptions=True)
+            # can surface CancelledError, which in Python 3.8+ inherits from
+            # BaseException rather than Exception. Checking only `Exception` let a
+            # raw CancelledError slip into `result` as if it were a Response
+            # (see technical-debt/code-quality-audit.md #16).
+            if isinstance(response, BaseException):
                 self.logger.error("Batch request failed", request_index=i, error=str(response))
                 # Create error response
                 error_response = Response(
@@ -668,9 +681,13 @@ class HTTPRequestEngine:
                 if request.json is not None:
                     request_kwargs["json"] = request.json
 
-                # Make the request
+                # Make the request. Same dynamically-built-dict pattern as
+                # client_kwargs above (headers=dict[str,str], timeout=float|None,
+                # params=dict, content=bytes|str|None, json=Any) — safe at
+                # runtime, unprovable to mypy without a TypedDict mirroring
+                # httpx's full signature (see technical-debt/code-quality-audit.md #16).
                 httpx_response = await self.client.request(
-                    method=request.method, url=request.url, **request_kwargs
+                    method=request.method, url=request.url, **request_kwargs  # type: ignore[arg-type]
                 )
 
                 elapsed = time.time() - start_time
