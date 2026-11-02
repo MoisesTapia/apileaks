@@ -188,7 +188,7 @@ class GitLabSASTGenerator:
         try:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -276,7 +276,7 @@ class JUnitXMLGenerator:
         try:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -309,7 +309,7 @@ class JUnitXMLGenerator:
         try:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -387,7 +387,7 @@ class CSVGenerator:
                         str(f.get("timestamp", "")),
                     ]
                     writer.writerow(row)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             return final_path
         except Exception as exc:
             try:
@@ -431,7 +431,7 @@ class PDFGenerator:
                 self._generate_with_reportlab(tmp_path)
             else:
                 self._generate_with_weasyprint(tmp_path)
-            os.rename(tmp_path, final_path)
+            os.replace(tmp_path, final_path)
             size_kb = os.path.getsize(final_path) / 1024
             logging.info(
                 "PDF report written: %s (%.1f KB)",

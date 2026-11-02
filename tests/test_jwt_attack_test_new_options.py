@@ -198,7 +198,8 @@ def test_raw_request_supplies_token_and_context(spy_engine, tmp_path):
         f"Authorization: Bearer {BASE_TOKEN}\r\n"
         "X-Trace: abc123\r\n"
         "\r\n"
-        "{\"q\": 1}"
+        "{\"q\": 1}",
+        newline="",
     )
 
     result = _invoke("--raw-request", str(raw))
@@ -221,7 +222,8 @@ def test_raw_request_tokenless_aborts_before_any_request(spy_engine, tmp_path):
     raw.write_text(
         "GET /api/data HTTP/1.1\r\n"
         "Host: api.example.com\r\n"
-        "\r\n"
+        "\r\n",
+        newline="",
     )
 
     result = _invoke("--raw-request", str(raw))
@@ -253,7 +255,8 @@ def test_explicit_header_overrides_raw_request_header(spy_engine, tmp_path):
         "Host: api.example.com\r\n"
         f"Authorization: Bearer {BASE_TOKEN}\r\n"
         "X-Trace: from-file\r\n"
-        "\r\n"
+        "\r\n",
+        newline="",
     )
 
     result = _invoke("--raw-request", str(raw), "-H", "X-Trace: from-cli")

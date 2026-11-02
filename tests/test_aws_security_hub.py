@@ -11,6 +11,14 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
+# ``boto3`` is an optional dependency (install via ``pip install .[aws]``) —
+# it is only needed by ci-cd/scripts/aws_security_hub.py, not by the core
+# tool. Skip this whole module cleanly instead of erroring at collection time
+# when it is not installed.
+pytest.importorskip("boto3")
+
 # ---------------------------------------------------------------------------
 # Import path — ci-cd/scripts uses a hyphen so we inject the path manually.
 # ---------------------------------------------------------------------------

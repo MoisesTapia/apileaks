@@ -173,7 +173,7 @@ class TestGitLabSASTGenerator:
         findings = [make_finding()]
         gen = GitLabSASTGenerator(findings, make_scan_meta(), str(tmp_path))
 
-        with patch("os.rename", side_effect=OSError("disk full")):
+        with patch("os.replace", side_effect=OSError("disk full")):
             with pytest.raises(SystemExit):
                 gen.generate()
 
@@ -408,7 +408,7 @@ class TestCSVGenerator:
         meta = make_scan_meta()
         gen = CSVGenerator([finding], meta, str(tmp_path))
 
-        with patch("os.rename", side_effect=OSError("no space")):
+        with patch("os.replace", side_effect=OSError("no space")):
             with pytest.raises(SystemExit):
                 gen.generate()
 
@@ -485,7 +485,7 @@ class TestPDFGenerator:
         meta = make_scan_meta()
         gen = PDFGenerator(findings, meta, str(tmp_path))
 
-        with patch("os.rename", side_effect=OSError("disk full")):
+        with patch("os.replace", side_effect=OSError("disk full")):
             with pytest.raises(SystemExit):
                 gen.generate()
 
@@ -528,7 +528,7 @@ class TestReportWriteAtomicity:
 
     def test_sarif_generator_atomicity(self, tmp_path):
         gen = GitLabSASTGenerator([make_finding()], make_scan_meta(), str(tmp_path))
-        with patch("os.rename", side_effect=OSError("forced")):
+        with patch("os.replace", side_effect=OSError("forced")):
             with pytest.raises(SystemExit):
                 gen.generate()
         assert not os.path.exists(os.path.join(str(tmp_path), "gl-sast-report.json"))
@@ -536,7 +536,7 @@ class TestReportWriteAtomicity:
     def test_junit_per_module_atomicity(self, tmp_path):
         meta = make_scan_meta()
         gen = JUnitXMLGenerator([make_finding()], meta, str(tmp_path))
-        with patch("os.rename", side_effect=OSError("forced")):
+        with patch("os.replace", side_effect=OSError("forced")):
             with pytest.raises(SystemExit):
                 gen.generate_per_module("mod", [make_finding()], 0.0)
         xml_files = [f for f in os.listdir(str(tmp_path)) if f.endswith(".xml")]
@@ -545,7 +545,7 @@ class TestReportWriteAtomicity:
     def test_csv_generator_atomicity(self, tmp_path):
         meta = make_scan_meta()
         gen = CSVGenerator([make_finding()], meta, str(tmp_path))
-        with patch("os.rename", side_effect=OSError("forced")):
+        with patch("os.replace", side_effect=OSError("forced")):
             with pytest.raises(SystemExit):
                 gen.generate()
         final_path = os.path.join(str(tmp_path), f"apileak-report-{meta.pipeline_id}.csv")
@@ -558,7 +558,7 @@ class TestReportWriteAtomicity:
     def test_pdf_generator_atomicity(self, tmp_path):
         meta = make_scan_meta()
         gen = PDFGenerator([make_finding()], meta, str(tmp_path))
-        with patch("os.rename", side_effect=OSError("forced")):
+        with patch("os.replace", side_effect=OSError("forced")):
             with pytest.raises(SystemExit):
                 gen.generate()
         final_path = os.path.join(str(tmp_path), f"apileak-report-{meta.pipeline_id}.pdf")

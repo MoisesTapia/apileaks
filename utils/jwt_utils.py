@@ -1010,7 +1010,12 @@ def parse_raw_request(path: str) -> RawRequest:
         raise ValueError(f"Raw request file '{path}' is empty")
 
     # Normalize line endings and split headers from the body on the first blank line.
-    normalized = raw.replace("\r\n", "\n")
+    # Order matters: collapse "\r\n" pairs first, then any remaining lone "\r"
+    # (e.g. from a file that went through an extra round of newline translation
+    # on Windows, or a bare old-Mac-style line ending), so a stray leftover "\r"
+    # never ends up glued to a header name/value and silently breaking lookups
+    # such as the Host-header scan below.
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
     if "\n\n" in normalized:
         header_block, body = normalized.split("\n\n", 1)
         body = body if body != "" else None

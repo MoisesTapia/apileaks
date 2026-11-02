@@ -336,7 +336,7 @@ class TestParseRawRequest:
             "\r\n"
         )
         path = tmp_path / "req.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
 
         parsed = parse_raw_request(str(path))
         assert parsed.token == token
@@ -353,7 +353,7 @@ class TestParseRawRequest:
             "\r\n"
         )
         path = tmp_path / "cookie.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
 
         parsed = parse_raw_request(str(path))
         assert parsed.token == token
@@ -370,7 +370,7 @@ class TestParseRawRequest:
             f'{{"jwt":"{token}"}}'
         )
         path = tmp_path / "body.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
 
         parsed = parse_raw_request(str(path))
         assert parsed.token == token
@@ -384,7 +384,7 @@ class TestParseRawRequest:
             "\r\n"
         )
         path = tmp_path / "notoken.txt"
-        path.write_text(raw)
+        path.write_text(raw, newline="")
         with pytest.raises(ValueError, match="notoken.txt"):
             parse_raw_request(str(path))
 
