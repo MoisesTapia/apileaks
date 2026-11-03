@@ -1196,6 +1196,39 @@ class HTTPOutputConfig:
 
 
 @dataclass
+class CloudAuditConfig:
+    """
+    Configuration for cloud API gateway security audits (OWASP API8 / Blue Team).
+
+    Supports auditing AWS API Gateway, GCP API Gateway/Cloud Endpoints, and
+    Azure API Management using each provider's native SDK credential chain.
+    All operations are read-only by default.
+    """
+
+    providers: list[str] = field(default_factory=lambda: ["aws"])
+    """Providers to audit: any subset of ["aws", "gcp", "azure"]."""
+
+    # AWS
+    aws_profiles: list[str] = field(default_factory=list)
+    aws_role_arns: list[str] = field(default_factory=list)
+    aws_regions: list[str] = field(default_factory=lambda: ["us-east-1"])
+
+    # GCP
+    gcp_project_ids: list[str] = field(default_factory=list)
+    gcp_service_account_file: str | None = None
+
+    # Azure
+    azure_subscription_ids: list[str] = field(default_factory=list)
+    azure_resource_groups: list[str] = field(default_factory=list)
+    azure_tenant_id: str | None = None
+    azure_client_id: str | None = None
+    azure_client_secret: str | None = None
+
+    # Safety
+    allow_destructive: bool = False
+
+
+@dataclass
 class SecretScanConfig:
     """Secret/leak detection configuration (Requirement 30).
 
@@ -1224,6 +1257,7 @@ class APILeakConfig:
     http_output: HTTPOutputConfig = field(default_factory=HTTPOutputConfig)
     ci_cd_integration: CICDIntegrationConfig = field(default_factory=CICDIntegrationConfig)
     secret_scan: SecretScanConfig = field(default_factory=SecretScanConfig)
+    cloud_audit: CloudAuditConfig | None = None
     safe_mode: bool = False
     proxy: str | None = None
     proxy_verify_ssl: bool = False

@@ -6,6 +6,7 @@ Enterprise-grade API fuzzing and OWASP testing tool
 
 import click
 
+from cli.commands.cloud_audit_cmds import cloud_audit_cmd
 from cli.commands.discovery_cmds import (
     DEFAULT_PARAMETER_WORDLIST,  # noqa: F401  re-exported (public surface / tests)
     ScanScopeError,  # noqa: F401  re-exported (public surface / tests)
@@ -148,6 +149,7 @@ def cli(ctx, no_banner):
 
 # Register command families extracted into cli/commands/ (monolith decomposition).
 cli.add_command(jwt)
+cli.add_command(cloud_audit_cmd)
 cli.add_command(wordlist_group)
 cli.add_command(dir)
 cli.add_command(par)
