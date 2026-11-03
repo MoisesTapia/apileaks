@@ -80,3 +80,38 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  dependency-audit:
+    name: pip-audit — MCP & AI extras
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install "pip-audit>=2.7.0"
+
+      # Audits the exact pinned dependency tree for the [mcp] extra.
+      # Uses hash-verified requirements-mcp.txt (generated via pip-compile
+      # --generate-hashes). pip-audit exits non-zero on any CVE, which
+      # causes the pipeline to fail. (Requirement 13.2 / OWASP MCP04)
+      - name: Audit [mcp] extra — hash-verified (requirements-mcp.txt)
+        run: pip-audit -r requirements-mcp.txt
+
+      # For the [ai] extra there is no pre-compiled lockfile, so install
+      # into the current environment and then let pip-audit scan what landed.
+      # A fresh GitHub Actions runner means only [ai] transitive deps are
+      # present, keeping the blast radius focused on those packages.
+      - name: Install [ai] extra
+        run: pip install -e ".[ai]"
+
+      - name: Audit [ai] extra — installed environment
+        run: pip-audit

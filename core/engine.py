@@ -3,11 +3,16 @@ APILeak Core Engine
 Main orchestrator for fuzzing and OWASP testing operations
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from mcp_server.progress import ToolProgressStream
 
 from utils.discovery_checkpoint import DiscoveryCheckpointError
 from utils.findings import Finding, FindingsCollector
@@ -219,13 +224,21 @@ class APILeakCore:
         self.scan_results: ScanResults | None = None
         self.is_running = False
 
+        # Optional progress stream — injected by MCP tool handlers (Task 5.1)
+        self._progress_stream: ToolProgressStream | None = None
+
         self.logger.info(
             "APILeak Core Engine initialized",
             target=config.target.base_url,
             enabled_modules=config.owasp_testing.enabled_modules,
         )
 
-    async def run_scan(self, target: str, scope_endpoints: list[Any] | None = None) -> ScanResults:
+    async def run_scan(
+        self,
+        target: str,
+        scope_endpoints: list[Any] | None = None,
+        progress_stream: "ToolProgressStream | None" = None,
+    ) -> ScanResults:
         """
         Execute complete APILeak scan with enhanced orchestration
 
@@ -261,6 +274,10 @@ class APILeakCore:
         # phase) can reach it. The fuzzing phase uses this to lazily seed the
         # synthetic parameter target for a parameter-only (``par``) run.
         self.target = target
+
+        # Store optional progress stream so the orchestrator can emit updates
+        # via _emit_phase_progress after each phase completes (Task 5.1).
+        self._progress_stream = progress_stream
 
         self.is_running = True
         start_time = datetime.now()
@@ -328,6 +345,43 @@ class APILeakCore:
             raise
         finally:
             self.is_running = False
+
+    async def _emit_phase_progress(
+        self,
+        phase: str,
+        phases_done: int,
+        total_phases: int,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a progress update for the completed *phase* via the optional
+        :class:`~mcp_server.progress.ToolProgressStream` attached to this engine.
+
+        Called by :meth:`~core.orchestrator.EnhancedOrchestrator.execute_orchestration`
+        after each successful phase, passing the orchestrator's running phase count
+        so the percentage can be computed here (Requirements 3.1, 3.2).
+
+        When no ``_progress_stream`` is attached this method is a cheap no-op and
+        adds no overhead to normal (non-MCP) scans.
+
+        Args:
+            phase: Name of the phase that just completed.
+            phases_done: Number of phases completed so far (1-indexed at call time).
+            total_phases: Total number of enabled phases in the execution order.
+            extra: Optional extra metadata forwarded to the :class:`ProgressUpdate`.
+        """
+        if self._progress_stream is None:
+            return
+
+        findings_count = self.findings_collector.get_statistics().get("total_findings", 0)
+        percent: float | None = (
+            round(phases_done / total_phases * 100.0, 1) if total_phases > 0 else None
+        )
+        await self._progress_stream.emit(
+            phase=phase,
+            findings_count=findings_count,
+            percent_complete=percent,
+            extra=extra or {},
+        )
 
     async def _execute_discovery_phase(
         self, target: str, scope_endpoints: list[Any] | None = None
@@ -1446,6 +1500,52 @@ class APILeakCore:
             )
 
         return status
+
+    async def run_cloud_audit(self, cloud_config: Any) -> list[Finding]:
+        """
+        Run a cloud gateway security audit and merge the normalised findings
+        into this engine's FindingsCollector (Req 7.4).
+
+        When called after ``run_scan()``, the findings are added to the same
+        ``FindingsCollector`` that the existing ``ScanResults`` and
+        ``ReportGenerator`` already reference.  This means that any subsequent
+        call to ``ReportGenerator.save_reports(self.scan_results, ...)`` will
+        automatically include both the OWASP findings and the cloud-audit
+        findings in a single consolidated report — no post-processing merge
+        step is required.
+
+        Parameters
+        ----------
+        cloud_config:
+            A ``CloudAuditConfig`` instance that specifies which provider(s)
+            to audit and how to resolve credentials.
+
+        Returns
+        -------
+        list[Finding]
+            The normalised cloud-audit findings that were added to the
+            collector (duplicates already removed by ``FindingsCollector``).
+        """
+        from modules.cloud.orchestrator import CloudAuditOrchestrator as _CloudOrch
+
+        self.logger.info(
+            "Running cloud audit via engine — merging findings into existing collector",
+            providers=cloud_config.providers,
+            scan_id=self.scan_id,
+        )
+
+        orchestrator = _CloudOrch(cloud_config)
+        findings = await orchestrator.run(scan_id=self.scan_id)
+
+        added = self.findings_collector.add_findings(findings)
+
+        self.logger.info(
+            "Cloud audit findings merged into engine collector",
+            total_returned=len(findings),
+            unique_added=added,
+        )
+
+        return findings
 
     async def health_check(self) -> dict[str, Any]:
         """

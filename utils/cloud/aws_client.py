@@ -117,6 +117,11 @@ class AWSGatewayClient:
     def iam(self) -> Any:
         return self._client("iam")
 
+    @property
+    def sts(self) -> Any:
+        """STS client (caller-identity, temporary credentials, etc.)."""
+        return self._client("sts")
+
     # ------------------------------------------------------------------
     # Pagination helpers
     # ------------------------------------------------------------------

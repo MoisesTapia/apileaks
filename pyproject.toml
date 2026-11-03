@@ -64,6 +64,36 @@ fast = [
 aws = [
     "boto3>=1.34.0",
 ]
+# Soporte de auditoría de GCP API Gateway.
+# Instalar con: `pip install apileaks[gcp]`
+gcp = [
+    "google-cloud-api-gateway>=1.5.0",
+    "google-auth>=2.20.0",
+    "google-api-python-client>=2.95.0",
+]
+# Soporte de auditoría de Azure API Management.
+# Instalar con: `pip install apileaks[azure]`
+azure = [
+    "azure-identity>=1.14.0",
+    "azure-mgmt-apimanagement>=3.0.0",
+    "azure-mgmt-authorization>=3.0.0",
+]
+# Servidor MCP: expone las capacidades de APILeak como MCP tools invocables
+# por agentes de IA (Claude, Kiro, etc.).
+# Instalar con: `pip install apileaks[mcp]`
+mcp = [
+    "mcp==1.28.1",
+    "jsonschema>=4.0.0",
+]
+# Asistencia de IA: triage/deduplicación de hallazgos con LLMs.
+# Instalar con: `pip install apileaks[ai]`           → AnthropicProvider + OpenAIProvider
+# Para Amazon Bedrock añadir también [aws]:
+# `pip install apileaks[ai,aws]`                      → todos los proveedores
+# boto3 (BedrockProvider) ya está declarado en el extra [aws] — no se duplica aquí.
+ai = [
+    "anthropic>=0.25.0",
+    "openai>=1.0.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -73,6 +103,10 @@ dev = [
     "black>=23.7.0",
     "flake8>=6.0.0",
     "mypy>=1.5.0",
+    "pip-audit>=2.7.0",
+    # Generación de SBOM CycloneDX (Req 13.3 / OWASP MCP04).
+    # Usar con: cyclonedx-py environment --output-format JSON --outfile sbom-mcp.cdx.json
+    "cyclonedx-bom==4.6.1",
 ]
 
 [project.scripts]
@@ -156,9 +190,9 @@ module = ["utils.jwt_utils"]
 ignore_errors = true
 
 [tool.setuptools.packages.find]
-# Incluye los paquetes Python (cli, core, modules, utils)
+# Incluye los paquetes Python (cli, core, modules, utils, mcp_server)
 where = ["."]
-include = ["apileaks*", "cli*", "core*", "modules*", "utils*"]
+include = ["apileaks*", "cli*", "core*", "modules*", "utils*", "mcp_server*"]
 exclude = ["tests*", "venv*", ".hypothesis*"]
 
 [tool.setuptools.package-data]

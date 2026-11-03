@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     # populated later by the CLI (subtask 38.4), so no runtime import is needed.
     from utils.discovery_scope import PathScope, RecursionScope, StorageStatusSelection
     from utils.spec_import import SpecSchema
+    # AIConfig is used only as a type annotation on APILeakConfig; the runtime
+    # import lives inside _build_ai_config to break the circular import chain:
+    # core.config -> utils.ai.provider_base -> utils/__init__ -> utils.findings
+    # -> core.config (Requirement 7.1).
+    from utils.ai.provider_base import AIConfig
 
 logger = get_logger(__name__)
 
@@ -1195,6 +1200,28 @@ class HTTPOutputConfig:
     status_code_filter: list[int] | None = None
 
 
+def _looks_like_env_var_ref(value: str) -> bool:
+    """Return True when *value* is an environment-variable reference rather than a raw secret.
+
+    Recognised formats
+    ------------------
+    - ``${VAR_NAME}``   (shell / Docker Compose expansion)
+    - ``$VAR_NAME``     (bare shell variable)
+    - ``env:VAR_NAME``  (config-management style used by some CI systems)
+
+    This check is used by :meth:`CloudAuditConfig.has_plaintext_secret` to
+    distinguish intentional credential delegation from accidentally-inlined
+    raw secrets.
+    """
+    if not value:
+        return False
+    return bool(
+        re.match(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$", value)
+        or re.match(r"^\$[A-Za-z_][A-Za-z0-9_]*$", value)
+        or re.match(r"^env:[A-Za-z_][A-Za-z0-9_]*$", value)
+    )
+
+
 @dataclass
 class CloudAuditConfig:
     """
@@ -1203,6 +1230,14 @@ class CloudAuditConfig:
     Supports auditing AWS API Gateway, GCP API Gateway/Cloud Endpoints, and
     Azure API Management using each provider's native SDK credential chain.
     All operations are read-only by default.
+
+    Credential policy (Requirements 2.1, 2.4, 2.6)
+    -----------------------------------------------
+    Sensitive fields (``azure_client_secret``) SHOULD be empty or reference an
+    environment variable (``${VAR}`` / ``$VAR`` / ``env:VAR``).  Inlining a raw
+    secret in the YAML violates the "no-secret-in-YAML" policy; a warning is
+    emitted in ``__post_init__`` and ``has_plaintext_secret()`` returns ``True``
+    so that callers (and property tests) can detect the violation.
     """
 
     providers: list[str] = field(default_factory=lambda: ["aws"])
@@ -1226,6 +1261,81 @@ class CloudAuditConfig:
 
     # Safety
     allow_destructive: bool = False
+
+    # ------------------------------------------------------------------
+    # Internal: fields that must never contain raw secret values in YAML.
+    # File paths (gcp_service_account_file) are intentionally excluded —
+    # they reference a key file on disk rather than the secret itself.
+    # ------------------------------------------------------------------
+    _SENSITIVE_FIELDS: "tuple[str, ...]" = field(
+        default=("azure_client_secret",),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:  # noqa: D105
+        """Validate providers list and warn on inline plaintext credentials."""
+        valid_providers = {"aws", "gcp", "azure"}
+        for p in self.providers:
+            if p not in valid_providers:
+                raise ValueError(
+                    f"CloudAuditConfig: unknown provider {p!r}. "
+                    f"Valid providers: {sorted(valid_providers)}"
+                )
+
+        if self.has_plaintext_secret():
+            _sensitive_names = [
+                f for f in self._SENSITIVE_FIELDS if self._field_is_plaintext(f)
+            ]
+            logger.warning(
+                "CloudAuditConfig contains a raw secret value in a sensitive field. "
+                "Inline credentials in YAML violate the no-secret-in-YAML policy "
+                "(Requirements 2.1, 2.4, 2.6). "
+                "Use environment-variable references (${VAR}) or the SDK credential "
+                "chain instead.",
+                sensitive_fields=_sensitive_names,
+            )
+
+    def _field_is_plaintext(self, field_name: str) -> bool:
+        """Return True when *field_name* holds a non-empty, non-env-var value."""
+        value = getattr(self, field_name, None)
+        if not value:
+            return False
+        return not _looks_like_env_var_ref(value)
+
+    def has_plaintext_secret(self) -> bool:
+        """Return ``True`` when any sensitive field contains a raw (non-env-var) value.
+
+        Used by Property 5 tests and by callers that want to enforce the
+        no-secret-in-YAML policy before constructing cloud clients.
+        """
+        return any(self._field_is_plaintext(f) for f in self._SENSITIVE_FIELDS)
+
+    def uses_sdk_chain(self, provider: str) -> bool:
+        """Return ``True`` when *provider* will rely on its native SDK credential chain.
+
+        A provider "uses the SDK chain" when no explicit credentials are
+        configured for it in this ``CloudAuditConfig``:
+
+        - **aws**: no ``aws_profiles`` and no ``aws_role_arns`` → boto3 default chain.
+        - **gcp**: no ``gcp_service_account_file`` → Application Default Credentials.
+        - **azure**: none of ``azure_tenant_id``, ``azure_client_id``,
+          ``azure_client_secret`` → ``DefaultAzureCredential``.
+
+        Raises ``ValueError`` for an unrecognised provider name.
+        """
+        if provider == "aws":
+            return not self.aws_profiles and not self.aws_role_arns
+        if provider == "gcp":
+            return self.gcp_service_account_file is None
+        if provider == "azure":
+            return (
+                self.azure_tenant_id is None
+                and self.azure_client_id is None
+                and self.azure_client_secret is None
+            )
+        raise ValueError(f"Unknown provider: {provider!r}")
 
 
 @dataclass
@@ -1258,6 +1368,12 @@ class APILeakConfig:
     ci_cd_integration: CICDIntegrationConfig = field(default_factory=CICDIntegrationConfig)
     secret_scan: SecretScanConfig = field(default_factory=SecretScanConfig)
     cloud_audit: CloudAuditConfig | None = None
+    # AI assistance layer — populated from the ``ai:`` YAML section
+    # (Requirements 7.1, 7.4).  ``None`` disables all AI-assisted functions
+    # without raising errors (``build_llm_provider`` handles the None case).
+    # String annotation avoids a circular import at module load time; the
+    # actual type is utils.ai.provider_base.AIConfig.
+    ai: "AIConfig | None" = None
     safe_mode: bool = False
     proxy: str | None = None
     proxy_verify_ssl: bool = False
@@ -1405,6 +1521,16 @@ class ConfigurationManager:
             secret_scan_data = config_data.get("secret_scan", {})
             secret_scan = self._build_secret_scan_config(secret_scan_data)
 
+            cloud_audit_data = config_data.get("cloud_audit")
+            cloud_audit = (
+                self._build_cloud_audit_config(cloud_audit_data)
+                if cloud_audit_data is not None
+                else None
+            )
+
+            ai_data = config_data.get("ai")
+            ai = self._build_ai_config(ai_data) if ai_data is not None else None
+
             return APILeakConfig(
                 target=target,
                 fuzzing=fuzzing,
@@ -1416,6 +1542,8 @@ class ConfigurationManager:
                 http_output=http_output,
                 ci_cd_integration=ci_cd_integration,
                 secret_scan=secret_scan,
+                cloud_audit=cloud_audit,
+                ai=ai,
                 safe_mode=config_data.get("safe_mode", False),
                 proxy=config_data.get("proxy"),
                 proxy_verify_ssl=config_data.get("proxy_verify_ssl", False),
@@ -1515,6 +1643,88 @@ class ConfigurationManager:
         if patterns:
             return SecretScanConfig(enabled=enabled, patterns=dict(patterns))
         return SecretScanConfig(enabled=enabled)
+
+    def _build_cloud_audit_config(self, data: dict[str, Any]) -> "CloudAuditConfig":
+        """Parse the ``cloud_audit`` YAML section into a :class:`CloudAuditConfig`.
+
+        Supports all provider credential fields (Requirements 8.1, 8.2). Any
+        field absent from *data* falls back to its dataclass default.  The
+        ``CloudAuditConfig.__post_init__`` validator is executed automatically
+        on construction and will log a warning if a plaintext credential is
+        detected.
+
+        Multi-account / multi-project / multi-subscription scanning (Req 8.2)
+        is handled by accepting list values for ``aws_profiles``,
+        ``aws_role_arns``, ``gcp_project_ids`` and ``azure_subscription_ids``.
+        """
+        # Normalise single-value strings to lists for the multi-account fields.
+        def _as_list(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value]
+            return list(value)
+
+        providers_raw = data.get("providers", ["aws"])
+        providers = _as_list(providers_raw) if isinstance(providers_raw, str) else list(providers_raw)
+
+        return CloudAuditConfig(
+            providers=providers,
+            aws_profiles=_as_list(data.get("aws_profiles")),
+            aws_role_arns=_as_list(data.get("aws_role_arns")),
+            aws_regions=_as_list(data.get("aws_regions")) or ["us-east-1"],
+            gcp_project_ids=_as_list(data.get("gcp_project_ids")),
+            gcp_service_account_file=data.get("gcp_service_account_file"),
+            azure_subscription_ids=_as_list(data.get("azure_subscription_ids")),
+            azure_resource_groups=_as_list(data.get("azure_resource_groups")),
+            azure_tenant_id=data.get("azure_tenant_id"),
+            azure_client_id=data.get("azure_client_id"),
+            azure_client_secret=data.get("azure_client_secret"),
+            allow_destructive=bool(data.get("allow_destructive", False)),
+        )
+
+    def _build_ai_config(self, data: dict[str, Any]) -> "AIConfig":
+        """Build AI assistance configuration from the ``ai:`` YAML dict.
+
+        Supports both explicit sub-keys (``provider``, ``model``,
+        ``timeout_seconds``, ``max_retries``) and the shorthand aliases
+        ``ai_provider`` / ``ai_model`` at the top level of the ``ai:`` block
+        so that users can write either::
+
+            ai:
+              provider: anthropic
+              model: claude-3-5-sonnet-20241022
+
+        or the shorthand form::
+
+            ai:
+              ai_provider: anthropic
+              ai_model: claude-3-5-sonnet-20241022
+
+        (Requirements 7.1, 7.4)
+
+        Args:
+            data: The parsed YAML dict for the ``ai:`` section.
+
+        Returns:
+            A fully populated :class:`~utils.ai.provider_base.AIConfig`.
+        """
+        # Local import breaks the circular dependency:
+        # core.config → utils.ai.provider_base → utils/__init__ →
+        # utils.findings → core.config
+        from utils.ai.provider_base import AIConfig  # noqa: PLC0415
+
+        # ``ai_provider`` / ``ai_model`` are accepted as aliases for users who
+        # mirror the CLI flag names; ``provider`` / ``model`` take precedence.
+        provider = data.get("provider") or data.get("ai_provider")
+        model = data.get("model") or data.get("ai_model")
+
+        return AIConfig(
+            provider=provider,
+            model=model,
+            timeout_seconds=float(data.get("timeout_seconds", 30.0)),
+            max_retries=int(data.get("max_retries", 3)),
+        )
 
     def _build_owasp_config(self, data: dict[str, Any]) -> OWASPConfig:
         """Build OWASP configuration from dict"""

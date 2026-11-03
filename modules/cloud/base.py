@@ -98,6 +98,50 @@ class GatewayFinding:
 
 
 # ---------------------------------------------------------------------------
+# Helper: permission-denied / not-auditable finding factory
+# ---------------------------------------------------------------------------
+
+
+def create_permission_denied_finding(
+    resource_id: str,
+    resource_type: str,
+    provider: str,
+    account_context: str,
+    operation: str,
+) -> GatewayFinding:
+    """
+    Return an INFO-level GatewayFinding for a resource that could not be audited
+    due to insufficient permissions or exhausted retries after throttling.
+
+    Parameters
+    ----------
+    resource_id:      ARN / resource URI of the resource that could not be read.
+    resource_type:    Type label (e.g. ``"rest_api"``, ``"gcp_api_config"``).
+    provider:         Short provider identifier: ``"aws"``, ``"gcp"``, or ``"azure"``.
+    account_context:  Profile / project / subscription label.
+    operation:        The SDK operation that was denied (e.g. ``"get_rest_apis"``).
+    """
+    return GatewayFinding(
+        provider=provider,
+        resource_id=resource_id,
+        resource_type=resource_type,
+        check_id="cloud_resource_not_auditable",
+        title=f"Resource not auditable: insufficient permissions or throttled for '{operation}'",
+        severity=GatewaySeverity.INFO,
+        evidence={
+            "operation": operation,
+            "reason": "InsufficientPermissionsError or ProviderThrottledError",
+        },
+        remediation=(
+            "Grant the auditing identity the minimum read-only permissions required. "
+            "If the issue is throttling, increase the retry limit or reduce audit scope. "
+            "See your cloud provider's IAM documentation for required roles."
+        ),
+        account_context=account_context,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
 

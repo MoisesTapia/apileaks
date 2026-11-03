@@ -597,6 +597,39 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
                 cfg.fuzzing.parameters.enabled = False
                 cfg.fuzzing.headers.enabled = False
 
+        # Build AIConfig for AI triage when --ai-triage is requested.
+        # AIConfig defaults to provider=None which causes safe_triage to return
+        # None with a WARNING — the scan is never failed (Requirement 5.3).
+        # Provider and model are read from the config object (task 10.1 adds
+        # these fields; defensive getattr keeps this forward-compatible) or from
+        # environment variables so no plain-text credentials are needed in YAML
+        # (Requirement 7.3).
+        ai_config = None
+        if opts.get("ai_triage"):
+            from utils.ai.provider_base import AIConfig  # lazy import (optional extra)
+
+            ai_provider = getattr(cfg, "ai_provider", None) or os.environ.get(
+                "APILEAK_AI_PROVIDER"
+            )
+            ai_model = getattr(cfg, "ai_model", None) or os.environ.get("APILEAK_AI_MODEL")
+            ai_config = AIConfig(provider=ai_provider, model=ai_model)
+
+        # Build AIConfig for AI deduplication when --ai-dedup is requested.
+        # Provider and model are resolved identically to --ai-triage: config object
+        # first, environment variable fallback, never plain-text credentials in YAML
+        # (Requirement 7.3). build_llm_provider returns None when provider is absent —
+        # SemanticDeduplicator degrades to its deterministic fallback in that case
+        # (Requirements 6.1, 6.3, 7.2).
+        ai_dedup_config = None
+        if opts.get("ai_dedup"):
+            from utils.ai.provider_base import AIConfig  # lazy import (optional extra)
+
+            ai_provider = getattr(cfg, "ai_provider", None) or os.environ.get(
+                "APILEAK_AI_PROVIDER"
+            )
+            ai_model = getattr(cfg, "ai_model", None) or os.environ.get("APILEAK_AI_MODEL")
+            ai_dedup_config = AIConfig(provider=ai_provider, model=ai_model)
+
         asyncio.run(
             runner.run_enhanced_apileak(
                 cfg,
@@ -604,6 +637,10 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
                 opts.get("fail_on", "high"),
                 opts.get("baseline"),
                 scope_endpoints=scope_endpoints,
+                ai_triage=opts.get("ai_triage", False),
+                ai_config=ai_config,
+                ai_dedup=opts.get("ai_dedup", False),
+                ai_dedup_config=ai_dedup_config,
             )
         )
 
@@ -772,6 +809,29 @@ _ORCHESTRATOR_EXTRA_OPTIONS = [
         "context name to one or more endpoint pattern regular expressions that "
         "SHOULD be forbidden for that identity. A parse/compile failure aborts "
         "before any request is issued.",
+    ),
+    click.option(
+        "--ai-triage",
+        "ai_triage",
+        is_flag=True,
+        default=False,
+        help="Run AI-assisted triage on scan findings after the scan completes. "
+        "Requires a configured LLM provider (set 'ai_provider' in the APILeak "
+        "YAML config or the APILEAK_AI_PROVIDER environment variable). When the "
+        "provider is absent or unavailable the scan completes normally without "
+        "the AI section — the scan is never failed by AI errors (Requirement 5.3).",
+    ),
+    click.option(
+        "--ai-dedup",
+        "ai_dedup",
+        is_flag=True,
+        default=False,
+        help="Run AI-assisted semantic deduplication on scan findings after the scan "
+        "completes. Groups findings that refer to the same underlying root cause and "
+        "renders both the consolidated group summary and the full detail of each "
+        "individual finding (Requirements 6.1, 6.2). "
+        "Requires a configured LLM provider; when absent, the deterministic fallback "
+        "is used and the scan is never failed by deduplication errors.",
     ),
 ]
 

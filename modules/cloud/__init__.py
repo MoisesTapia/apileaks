@@ -12,6 +12,7 @@ from modules.cloud.azure_apim import AzureAPIMAuditor
 from modules.cloud.base import CloudGatewayAuditor, GatewayFinding, GatewaySeverity
 from modules.cloud.gcp_api_gateway import GCPGatewayAuditor
 from modules.cloud.normalizer import GatewayFindingNormalizer
+from modules.cloud.orchestrator import CloudAuditOrchestrator
 
 __all__ = [
     "CloudGatewayAuditor",
@@ -21,4 +22,5 @@ __all__ = [
     "AWSGatewayAuditor",
     "GCPGatewayAuditor",
     "AzureAPIMAuditor",
+    "CloudAuditOrchestrator",
 ]

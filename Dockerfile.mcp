@@ -1,0 +1,207 @@
+# APILeak MCP Server Dockerfile
+# Builds a container image that exposes all APILeak capabilities as MCP tools
+# invocable by AI agents (Claude Desktop, Kiro, or any MCP-compatible client).
+#
+# This is a separate image from the base Dockerfile because it adds:
+#   - mcp_server/      — MCP protocol layer
+#   - cli/             — CLI command definitions (tool registry uses them)
+#   - utils/ai/        — AI provider abstraction (optional triage / dedup)
+#   - MCP SDK + Starlette + uvicorn (installed from requirements-mcp.txt)
+#
+# Two transports are supported:
+#   stdio  — for local AI clients that launch the container as a subprocess
+#   http   — persistent HTTP/SSE server (default entrypoint for this image)
+#
+# Build:
+#   docker build -f Dockerfile.mcp -t apileak-mcp:latest .
+#
+# Run (HTTP, recommended for docker-compose):
+#   docker run -p 8080:8080 \
+#     -e APILEAKS_MCP_AUTH_TOKEN=your-secret-token \
+#     apileak-mcp:latest
+#
+# Run (stdio, for MCP clients that launch the container):
+#   docker run -i apileak-mcp:latest \
+#     python apileaks.py mcp-server --transport stdio
+
+# ============================================================
+# Stage 1 — Builder
+# ============================================================
+FROM python:3.11-alpine AS builder
+
+# Build dependencies (compiling native extensions)
+RUN apk add --no-cache \
+    gcc \
+    musl-dev \
+    libffi-dev \
+    openssl-dev \
+    && rm -rf /var/cache/apk/*
+
+# Upgrade pip and install core requirements
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --user -r /tmp/requirements.txt
+
+# Install MCP-specific requirements (hash-verified lockfile — OWASP MCP04)
+# These add: mcp==1.28.1, jsonschema, starlette, uvicorn, sse-starlette
+COPY requirements-mcp.txt /tmp/requirements-mcp.txt
+RUN pip install --no-cache-dir --user \
+    --require-hashes \
+    -r /tmp/requirements-mcp.txt
+
+# ============================================================
+# Stage 2 — Production
+# ============================================================
+FROM python:3.11-alpine
+
+# Image metadata
+LABEL maintainer="APILeak Team <team@apileak.com>" \
+      description="APILeak MCP Server — exposes API security testing as MCP tools for AI agents" \
+      version="0.3.0" \
+      org.opencontainers.image.title="APILeak MCP Server" \
+      org.opencontainers.image.description="OWASP API Security Top 10 testing via Model Context Protocol" \
+      org.opencontainers.image.version="0.3.0" \
+      org.opencontainers.image.vendor="APILeak Team" \
+      org.opencontainers.image.licenses="MIT"
+
+# Runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    curl \
+    && rm -rf /var/cache/apk/* \
+    && update-ca-certificates
+
+# Non-root user (principle of least privilege)
+RUN addgroup -g 1000 apileak && \
+    adduser -D -s /bin/sh -u 1000 -G apileak apileak
+
+WORKDIR /app
+
+# Copy Python packages from builder
+COPY --from=builder /root/.local /home/apileak/.local
+
+# Copy application source — all directories required by the MCP server
+COPY --chown=apileak:apileak core/       ./core/
+COPY --chown=apileak:apileak modules/    ./modules/
+COPY --chown=apileak:apileak utils/      ./utils/
+COPY --chown=apileak:apileak mcp_server/ ./mcp_server/
+COPY --chown=apileak:apileak cli/        ./cli/
+COPY --chown=apileak:apileak templates/  ./templates/
+COPY --chown=apileak:apileak wordlists/  ./wordlists/
+COPY --chown=apileak:apileak config/     ./config/
+COPY --chown=apileak:apileak apileaks.py .
+COPY --chown=apileak:apileak setup.py   .
+
+# Directories for audit logs and reports
+RUN mkdir -p /app/logs /app/reports /app/output && \
+    chown -R apileak:apileak /app/logs /app/reports /app/output
+
+USER apileak
+
+# Python path
+ENV PATH="/home/apileak/.local/bin:$PATH" \
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1
+
+# ── Core scan settings ─────────────────────────────────────────────────────
+ENV APILEAK_LOG_LEVEL=INFO \
+    APILEAK_RATE_LIMIT=10 \
+    APILEAK_VERIFY_SSL=true \
+    APILEAK_TIMEOUT=10
+
+# ── MCP server settings ────────────────────────────────────────────────────
+#
+# APILEAKS_MCP_AUTH_TOKEN  — Bearer token required by HTTP clients.
+#                            MUST be set before starting HTTP transport.
+# MCP_TRANSPORT            — "http" (default) or "stdio"
+# MCP_PORT                 — TCP port for HTTP transport (default: 8080)
+# MCP_ALLOW_DESTRUCTIVE    — set to "true" to enable destructive tools
+#                            (each invocation still requires a ConfirmationToken)
+# MCP_RATE_LIMIT           — max invocations per client per minute (default: 60)
+# MCP_AUDIT_LOG            — path for the append-only JSON-Lines audit log
+# MCP_TLS_CERT             — path to TLS certificate (optional, HTTP transport)
+# MCP_TLS_KEY              — path to TLS private key (optional, HTTP transport)
+#
+ENV APILEAKS_MCP_AUTH_TOKEN="" \
+    MCP_TRANSPORT=http \
+    MCP_PORT=8080 \
+    MCP_ALLOW_DESTRUCTIVE=false \
+    MCP_RATE_LIMIT=60 \
+    MCP_AUDIT_LOG=/app/logs/mcp-audit.jsonl \
+    MCP_TLS_CERT="" \
+    MCP_TLS_KEY=""
+
+# ── AI provider settings (optional — requires apileaks[ai]) ────────────────
+#
+# ANTHROPIC_API_KEY  — Anthropic API key for Claude-based triage
+# OPENAI_API_KEY     — OpenAI API key for GPT-based triage
+# AI_PROVIDER        — "anthropic" | "openai" | "bedrock" | "" (disabled)
+# AI_MODEL           — model identifier (provider-specific)
+#
+ENV ANTHROPIC_API_KEY="" \
+    OPENAI_API_KEY="" \
+    AI_PROVIDER="" \
+    AI_MODEL=""
+
+# Expose HTTP transport port
+EXPOSE 8080
+
+# Health check — verifies the MCP server responds (HTTP mode only)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -sf \
+        -H "Authorization: Bearer ${APILEAKS_MCP_AUTH_TOKEN}" \
+        "http://localhost:${MCP_PORT}/sse" \
+        --max-time 5 \
+        -o /dev/null \
+        || exit 1
+
+# Entrypoint script that maps environment variables to CLI flags
+COPY --chown=apileak:apileak <<'EOF' /app/entrypoint-mcp.sh
+#!/bin/sh
+set -e
+
+# If arguments were passed directly (e.g. from docker-compose command:),
+# execute them directly. This lets docker-compose override to "mcp-audit" etc.
+if [ "$1" = "mcp-server" ] || [ "$1" = "mcp-audit" ] || [ "$1" = "scan" ] || [ "$1" = "--help" ]; then
+    exec python apileaks.py "$@"
+fi
+
+# Otherwise, build the mcp-server invocation from environment variables.
+ARGS="mcp-server --transport ${MCP_TRANSPORT:-http}"
+
+if [ "${MCP_TRANSPORT:-http}" = "http" ]; then
+    ARGS="$ARGS --port ${MCP_PORT:-8080}"
+
+    if [ -z "$APILEAKS_MCP_AUTH_TOKEN" ]; then
+        echo "ERROR: APILEAKS_MCP_AUTH_TOKEN must be set for HTTP transport." >&2
+        echo "       Set it via the environment variable or pass --mcp-auth-token." >&2
+        exit 1
+    fi
+    ARGS="$ARGS --mcp-auth-token ${APILEAKS_MCP_AUTH_TOKEN}"
+
+    if [ -n "$MCP_TLS_CERT" ] && [ -n "$MCP_TLS_KEY" ]; then
+        ARGS="$ARGS --tls-cert ${MCP_TLS_CERT} --tls-key ${MCP_TLS_KEY}"
+    fi
+fi
+
+if [ "${MCP_ALLOW_DESTRUCTIVE:-false}" = "true" ]; then
+    ARGS="$ARGS --allow-destructive-mcp"
+fi
+
+ARGS="$ARGS --mcp-rate-limit ${MCP_RATE_LIMIT:-60}"
+
+if [ -n "$MCP_AUDIT_LOG" ]; then
+    # Ensure the log directory exists
+    mkdir -p "$(dirname "${MCP_AUDIT_LOG}")"
+    ARGS="$ARGS --audit-log ${MCP_AUDIT_LOG}"
+fi
+
+exec python apileaks.py $ARGS
+EOF
+
+RUN chmod +x /app/entrypoint-mcp.sh
+
+ENTRYPOINT ["/app/entrypoint-mcp.sh"]
+
+# Volume mounts for persistent data
+VOLUME ["/app/logs", "/app/reports", "/app/config"]

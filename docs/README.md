@@ -39,6 +39,13 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[HTTP Parameter Pollution](owasp/parameter-pollution.md)** - Discovered-endpoint and Burp/Caido capture-replay duplicate-parameter testing (beyond the Top 10)
 - **[Spec-Driven Testing](owasp/spec-driven-testing.md)** - OpenAPI/Swagger contract-enforcement audit (beyond the Top 10)
 
+### MCP Server — AI Integration (v0.3.0)
+- **[MCP Server Guide](mcp-server.md)** - Complete guide: install, connect Claude/Kiro, run scans via AI
+- **[Docker Deployment](mcp-docker.md)** - Run the MCP server in Docker and docker-compose
+- **[AI Providers](mcp-ai-providers.md)** - Configure Anthropic, OpenAI, or Amazon Bedrock for AI triage
+- **[MCP Tools Reference](mcp-tools-reference.md)** - Full JSON Schema and examples for every MCP tool
+- **[MCP Security Documentation](mcp_server_security.md)** - OWASP MCP Top 10 controls and self-audit results
+
 ### Advanced Topics
 - **[Advanced Discovery](advanced-discovery.md)** - Advanced endpoint discovery techniques
 - **[Framework Detection](framework-detection-version-fuzzing.md)** - Framework detection and version fuzzing
@@ -51,6 +58,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 
 ## 🚀 Quick Links
 
+- **MCP / AI Integration**: [MCP Server Guide](mcp-server.md) → [Docker Deployment](mcp-docker.md) → [Tools Reference](mcp-tools-reference.md)
 - **Getting Started**: [Installation Guide](installation.md) → [User Guide](user-guide.md) → [Usage Examples](usage-examples.md)
 - **JWT Security Testing**: [JWT Attack Testing](jwt-attacks.md) → [Usage Examples](usage-examples.md)
 - **For Developers**: [Developer Guide](developer-guide.md) → [Architecture](architecture.md) → [Testing Guide](testing.md)

@@ -5,26 +5,32 @@ Audits the configuration of cloud API gateways (AWS API Gateway, GCP API
 Gateway / Cloud Endpoints, Azure API Management) using read-only management-
 plane SDK calls.  Findings are normalised to standard APILeak Finding objects
 under OWASP API8 (Security Misconfiguration) and written to the output
-directory alongside any other scan results.
+directory using the same ReportGenerator pipeline as every other APILeak scan.
 
 All cloud operations are read-only by default.  Use
 --allow-destructive-cloud-audit to enable write operations (none are
 currently implemented — the flag exists for future extensibility and as an
 explicit safety knob).
+
+Req 1.5 / 7.4: cloud findings go through ReportGenerator, the same pipeline
+used by every other APILeak module, making combined and standalone reports
+consistent.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
-from pathlib import Path
+from datetime import datetime
+from types import SimpleNamespace
 
 import click
 
 from core.cloud_audit import CloudAuditOrchestrator
 from core.config import CloudAuditConfig
 from core.logging import get_logger
+from utils.findings import Finding, FindingsCollector
+from utils.report_generator import ReportGenerator
 
 logger = get_logger(__name__)
 
@@ -206,9 +212,11 @@ def cloud_audit_cmd(
         )
 
     orchestrator = CloudAuditOrchestrator(config)
+    start_time = datetime.now()
     summary = asyncio.run(orchestrator.run())
+    end_time = datetime.now()
 
-    # --- Report ---
+    # --- Console summary ---
     click.echo(
         f"\n[cloud-audit] {len(summary.findings)} finding(s) across "
         f"{len(summary.auditors_succeeded)} auditor(s)."
@@ -221,28 +229,19 @@ def cloud_audit_cmd(
             err=True,
         )
 
-    # Write output
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    findings_file = output_path / "cloud_audit_findings.json"
-
-    serializable = [
-        {
-            "id": f.id,
-            "category": f.category,
-            "owasp_category": f.owasp_category,
-            "severity": f.severity.value,
-            "endpoint": f.endpoint,
-            "evidence": f.evidence,
-            "recommendation": f.recommendation,
-        }
-        for f in summary.findings
-    ]
-
-    with open(findings_file, "w", encoding="utf-8") as fh:
-        json.dump(serializable, fh, indent=2, ensure_ascii=False)
-
-    click.echo(f"[cloud-audit] Findings written to: {findings_file}")
+    # --- Route findings through ReportGenerator (Req 1.5) ---
+    report_files = _save_cloud_audit_reports(
+        findings=summary.findings,
+        providers=resolved_providers,
+        output_dir=output_dir,
+        start_time=start_time,
+        end_time=end_time,
+        output_format=output_format,
+    )
+    click.echo("\n[cloud-audit] Reports generated:")
+    for rf in report_files:
+        path = rf.get("path", rf) if isinstance(rf, dict) else rf
+        click.echo(f"  - {path}")
 
     if output_format == "text":
         for f in summary.findings:
@@ -255,3 +254,129 @@ def cloud_audit_cmd(
     high_plus = [f for f in summary.findings if f.severity.value in ("CRITICAL", "HIGH")]
     if high_plus:
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a results namespace and route through ReportGenerator
+# ---------------------------------------------------------------------------
+
+
+def _save_cloud_audit_reports(
+    findings: list[Finding],
+    providers: list[str],
+    output_dir: str,
+    start_time: datetime,
+    end_time: datetime,
+    output_format: str = "json",
+) -> list[dict]:
+    """
+    Populate a FindingsCollector with cloud findings and persist them via
+    ReportGenerator — the same pipeline used by every other APILeak scan
+    (Req 1.5 / 7.4).
+
+    Parameters
+    ----------
+    findings:
+        Normalised Finding objects returned by CloudAuditOrchestrator.
+    providers:
+        Provider labels used to build a descriptive target_url for the report.
+    output_dir:
+        Directory where report files are written.
+    start_time / end_time:
+        Wall-clock times bracketing the audit run (used for performance
+        metrics in the report).
+    output_format:
+        "json" (default) or "text".  Text output is printed by the caller;
+        this function always generates the full report set via ReportGenerator.
+
+    Returns
+    -------
+    list[dict]
+        File-info records returned by ReportGenerator.save_reports, each
+        containing at minimum a "path" key.
+    """
+    from uuid import uuid4
+
+    scan_id = str(uuid4())
+
+    # --- Populate a FindingsCollector (enables OWASP coverage stats) ---
+    collector = FindingsCollector(scan_id)
+    collector.add_findings(findings)
+
+    # --- Build statistics mirroring the shape expected by ReportGenerator ---
+    sev = {s: 0 for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")}
+    for f in findings:
+        sev[f.severity.value] = sev.get(f.severity.value, 0) + 1
+
+    statistics = SimpleNamespace(
+        findings_count=len(findings),
+        critical_findings=sev["CRITICAL"],
+        high_findings=sev["HIGH"],
+        medium_findings=sev["MEDIUM"],
+        low_findings=sev["LOW"],
+        info_findings=sev["INFO"],
+        total_requests=0,
+        endpoints_discovered=0,
+    )
+
+    duration = end_time - start_time
+    performance_metrics = SimpleNamespace(
+        duration=duration,
+        requests_per_second=0.0,
+        average_response_time=0.0,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    # target_url describes the audit scope in a human-readable way
+    target_url = f"cloud-audit://{'+'.join(providers)}"
+
+    results = SimpleNamespace(
+        scan_id=scan_id,
+        target_url=target_url,
+        timestamp=start_time,
+        statistics=statistics,
+        performance_metrics=performance_metrics,
+        findings_collector=collector,
+        findings=findings,
+        discovered_endpoints=[],
+    )
+
+    # Determine which report formats to generate
+    # "text" is a CLI display mode, not a ReportGenerator format — always
+    # generate at least JSON so there is a machine-readable artifact.
+    formats = ["json", "html", "xml", "txt"]
+
+    generator = ReportGenerator()
+    return generator.save_reports(
+        results,
+        output_dir,
+        scan_type="cloud_audit",
+        formats=formats,
+    )
+
+
+def merge_cloud_findings(
+    findings: list[Finding],
+    collector: FindingsCollector,
+) -> int:
+    """
+    Add a list of cloud-audit Finding objects into an existing
+    FindingsCollector so that a subsequent call to ReportGenerator produces a
+    single consolidated report containing both OWASP and cloud findings
+    (Req 7.4).
+
+    Parameters
+    ----------
+    findings:
+        Normalised Finding objects produced by CloudAuditOrchestrator.run().
+    collector:
+        The FindingsCollector owned by the active APILeakCore instance.
+
+    Returns
+    -------
+    int
+        Number of unique findings actually added (duplicates are silently
+        dropped by FindingsCollector).
+    """
+    return collector.add_findings(findings)

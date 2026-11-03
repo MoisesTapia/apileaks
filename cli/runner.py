@@ -102,6 +102,271 @@ def evaluate_severity_gate(counts, fail_on):
     return 1
 
 
+def _run_ai_triage_section(results, ai_config) -> None:
+    """Run AI-assisted finding triage and print the result as a console section.
+
+    This helper is called synchronously from within the already-running asyncio
+    event loop of ``run_enhanced_apileak`` via ``asyncio.run_coroutine_threadsafe``
+    — actually, since we ARE in an async context we call the coroutine directly
+    via a new small event loop on a thread, OR we delegate to a sync wrapper that
+    calls ``asyncio.run``.  Because ``run_enhanced_apileak`` itself is awaited
+    inside an outer ``asyncio.run`` we cannot nest ``asyncio.run`` directly; we
+    therefore use ``asyncio.get_event_loop().run_until_complete`` — but the
+    cleanest approach given the existing code pattern is to accept the coroutine
+    here and run it with the already-running loop via ``await``.
+
+    To keep the call-site simple this function is intentionally **synchronous**:
+    it creates a tiny new event loop so it can be called from within a running
+    loop context without nesting.  Failures at every stage are caught and logged
+    as WARNING — the scan result is never affected (Requirement 5.3).
+
+    Args:
+        results: Scan results object produced by ``APILeakCore.run_scan``.
+        ai_config: ``AIConfig`` instance (may be ``None`` — treated as
+            no-provider config in that case).
+    """
+    import asyncio as _asyncio
+
+    try:
+        from utils.ai.provider_base import AIConfig, build_llm_provider
+        from utils.ai.triage_assistant import FindingTriageAssistant
+    except ImportError:
+        logger.warning(
+            "ai_triage_import_error: utils.ai module is not available — "
+            "AI triage section omitted. Install the 'apileaks[ai]' extra to enable it."
+        )
+        return
+
+    # Resolve findings — mirrors the baseline comparison path in the caller.
+    if hasattr(results, "findings_collector") and results.findings_collector:
+        all_findings = results.findings_collector.get_prioritized_findings()
+    else:
+        all_findings = list(getattr(results, "findings", []) or [])
+
+    # Build the LLM provider.  build_llm_provider returns None when
+    # ai_config.provider is None, or when the config is None — both are safe.
+    if ai_config is None:
+        ai_config = AIConfig()  # provider=None -> safe_triage returns None + WARNING
+
+    try:
+        llm_provider = build_llm_provider(ai_config)
+    except (ValueError, ImportError) as exc:
+        logger.warning(
+            "ai_triage_provider_build_failed: Could not build LLM provider — "
+            "AI triage section omitted.",
+            error=str(exc),
+        )
+        return
+
+    assistant = FindingTriageAssistant(llm_provider)
+
+    # Run the coroutine.  We are inside a synchronous helper called from an
+    # async context that is itself already executing inside an asyncio event
+    # loop (the one created by ``asyncio.run`` in ``_build_and_run``). Running a
+    # *nested* asyncio.run is forbidden; instead we use a fresh thread with its
+    # own event loop so there is no nesting.
+    import concurrent.futures as _futures
+
+    triage_report = None
+    with _futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            lambda: _asyncio.run(assistant.safe_triage(all_findings))
+        )
+        try:
+            triage_report = future.result()
+        except Exception as exc:
+            logger.warning(
+                "ai_triage_unexpected_error: AI triage raised an unexpected error — "
+                "AI triage section omitted.",
+                error=str(exc),
+            )
+            return
+
+    if triage_report is None:
+        # safe_triage already logged an appropriate WARNING; nothing more to do.
+        return
+
+    # Render the triage section — strictly additive (Requirement 5.2).
+    click.echo("\n" + "=" * 60)
+    click.echo("AI Triage Report")
+    click.echo("=" * 60)
+    click.echo(f"\n{triage_report.narrative_summary}")
+
+    if triage_report.prioritized_finding_ids:
+        click.echo("\nPriority Order (highest → lowest):")
+        for rank, fid in enumerate(triage_report.prioritized_finding_ids, 1):
+            note = triage_report.per_finding_notes.get(fid, "")
+            note_str = f"  ↳ {note}" if note else ""
+            click.echo(f"  {rank:>3}. {fid}")
+            if note_str:
+                click.echo(f"       {note_str}")
+
+    click.echo("=" * 60)
+    logger.info(
+        "ai_triage_section_appended",
+        finding_count=len(triage_report.prioritized_finding_ids),
+    )
+
+
+def _run_ai_dedup_section(results, ai_config) -> None:
+    """Run AI-assisted semantic deduplication and print grouped findings.
+
+    Groups findings that share the same root cause and renders both the
+    consolidated group summary AND the full detail of each individual finding
+    within each group so no information is lost (Requirements 6.1, 6.2).
+
+    When no LLM provider is configured, ``SemanticDeduplicator`` transparently
+    falls back to a deterministic grouping strategy so the section is always
+    populated when ``--ai-dedup`` is requested (Requirement 6.3).
+
+    Failures at every stage are caught and logged as WARNING — the scan result
+    is never affected (Requirement 5.3 applied to the dedup feature).
+
+    Args:
+        results: Scan results object produced by ``APILeakCore.run_scan``.
+        ai_config: ``AIConfig`` instance (may be ``None`` — treated as
+            no-provider config in that case).
+    """
+    import asyncio as _asyncio
+
+    try:
+        from utils.ai.provider_base import AIConfig, build_llm_provider
+        from utils.ai.semantic_dedup import SemanticDeduplicator
+    except ImportError:
+        logger.warning(
+            "ai_dedup_import_error: utils.ai module is not available — "
+            "AI dedup section omitted. Install the 'apileaks[ai]' extra to enable it."
+        )
+        return
+
+    # Resolve findings — mirrors the baseline comparison path in the caller.
+    if hasattr(results, "findings_collector") and results.findings_collector:
+        all_findings = results.findings_collector.get_prioritized_findings()
+    else:
+        all_findings = list(getattr(results, "findings", []) or [])
+
+    if not all_findings:
+        click.echo("\n" + "=" * 60)
+        click.echo("AI Semantic Deduplication Report")
+        click.echo("=" * 60)
+        click.echo("No findings to deduplicate.")
+        click.echo("=" * 60)
+        return
+
+    # Build the LLM provider.  build_llm_provider returns None when
+    # ai_config.provider is None — SemanticDeduplicator uses its deterministic
+    # fallback in that case (graceful degradation, Requirement 6.3 / 7.2).
+    if ai_config is None:
+        ai_config = AIConfig()  # provider=None -> deterministic fallback
+
+    try:
+        llm_provider = build_llm_provider(ai_config)
+    except (ValueError, ImportError) as exc:
+        logger.warning(
+            "ai_dedup_provider_build_failed: Could not build LLM provider — "
+            "falling back to deterministic deduplication.",
+            error=str(exc),
+        )
+        llm_provider = None  # SemanticDeduplicator handles None gracefully
+
+    deduplicator = SemanticDeduplicator(llm_provider)
+
+    # Run the coroutine in a fresh thread to avoid nesting event loops (same
+    # pattern as _run_ai_triage_section).
+    import concurrent.futures as _futures
+
+    groups = None
+    with _futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            lambda: _asyncio.run(deduplicator.safe_deduplicate(all_findings))
+        )
+        try:
+            groups = future.result()
+        except Exception as exc:
+            logger.warning(
+                "ai_dedup_unexpected_error: AI deduplication raised an unexpected "
+                "error — AI dedup section omitted.",
+                error=str(exc),
+            )
+            return
+
+    if groups is None:
+        # safe_deduplicate already logged the appropriate WARNING; nothing more.
+        return
+
+    # Build a lookup so individual Finding details can be rendered for each
+    # member — this is the no-information-loss requirement (Requirement 6.2).
+    finding_by_id: dict = {f.id: f for f in all_findings}
+
+    multi_groups = [g for g in groups if len(g.member_finding_ids) > 1]
+    singleton_groups = [g for g in groups if len(g.member_finding_ids) == 1]
+
+    click.echo("\n" + "=" * 60)
+    click.echo("AI Semantic Deduplication Report")
+    click.echo("=" * 60)
+    click.echo(
+        f"\nTotal findings: {len(all_findings)}  →  "
+        f"{len(groups)} group(s)  "
+        f"({len(multi_groups)} consolidated, {len(singleton_groups)} singleton)"
+    )
+
+    if multi_groups:
+        click.echo("\n── Consolidated Groups ──")
+        for group in multi_groups:
+            short_id = group.group_id[:8]
+            click.echo(f"\n  Group {short_id}…  ({len(group.member_finding_ids)} findings)")
+            click.echo(f"  Root cause: {group.root_cause_summary}")
+            click.echo(f"  Members:")
+            for fid in group.member_finding_ids:
+                finding = finding_by_id.get(fid)
+                if finding is not None:
+                    severity_label = getattr(
+                        getattr(finding, "severity", None), "value",
+                        str(getattr(finding, "severity", "unknown"))
+                    ).upper()
+                    click.echo(
+                        f"    • [{severity_label}] {fid}"
+                        f"  {getattr(finding, 'method', '')} {getattr(finding, 'endpoint', '')}"
+                        f"  — {getattr(finding, 'category', '')}"
+                    )
+                    evidence = getattr(finding, "evidence", "") or ""
+                    if evidence:
+                        preview = evidence[:120].replace("\n", " ")
+                        click.echo(f"      Evidence: {preview}")
+                    recommendation = getattr(finding, "recommendation", "") or ""
+                    if recommendation:
+                        rec_preview = recommendation[:100].replace("\n", " ")
+                        click.echo(f"      Recommendation: {rec_preview}")
+                else:
+                    click.echo(f"    • {fid}")
+
+    if singleton_groups:
+        click.echo(f"\n── Ungrouped Findings ({len(singleton_groups)}) ──")
+        for group in singleton_groups:
+            fid = group.member_finding_ids[0]
+            finding = finding_by_id.get(fid)
+            if finding is not None:
+                severity_label = getattr(
+                    getattr(finding, "severity", None), "value",
+                    str(getattr(finding, "severity", "unknown"))
+                ).upper()
+                click.echo(
+                    f"  • [{severity_label}] {fid}"
+                    f"  {getattr(finding, 'method', '')} {getattr(finding, 'endpoint', '')}"
+                    f"  — {getattr(finding, 'category', '')}"
+                )
+            else:
+                click.echo(f"  • {fid}")
+
+    click.echo("=" * 60)
+    logger.info(
+        "ai_dedup_section_appended",
+        total_findings=len(all_findings),
+        group_count=len(groups),
+        consolidated_group_count=len(multi_groups),
+    )
+
+
 async def run_enhanced_apileak(
     config,
     ci_mode=False,
@@ -111,6 +376,10 @@ async def run_enhanced_apileak(
     scope_endpoints=None,
     checkpoint_path=None,
     resume_checkpoint=None,
+    ai_triage=False,
+    ai_config=None,
+    ai_dedup=False,
+    ai_dedup_config=None,
 ):
     """
     Run enhanced APILeak scan with full integration of all components
@@ -133,6 +402,23 @@ async def run_enhanced_apileak(
                   discovery phase directly so the OWASP modules consume exactly
                   the seeded endpoints, skipping wordlist discovery
                   (Requirements 36.3, 36.8).
+        ai_triage: When ``True``, run AI-assisted triage on findings after the
+                  scan and append the triage section to the console output
+                  (Requirement 5.1).  Failures are always logged as WARNING and
+                  never fail the scan (Requirement 5.3).
+        ai_config: :class:`~utils.ai.provider_base.AIConfig` instance built by
+                  the CLI from the configured provider settings.  Defaults to a
+                  no-provider config when ``None`` (triage will be skipped with a
+                  warning). Only consulted when ``ai_triage=True``.
+        ai_dedup: When ``True``, run AI-assisted semantic deduplication on
+                  findings after the scan and append the dedup section to the
+                  console output (Requirements 6.1, 6.2).  When no LLM provider
+                  is configured, the deterministic fallback is used transparently
+                  (Requirement 6.3).  Failures are logged as WARNING and never
+                  fail the scan.
+        ai_dedup_config: :class:`~utils.ai.provider_base.AIConfig` instance for
+                  the deduplication step.  Defaults to a no-provider config when
+                  ``None``.  Only consulted when ``ai_dedup=True``.
     """
     logger = get_logger("run_enhanced_apileak")
 
@@ -373,6 +659,25 @@ async def run_enhanced_apileak(
             click.echo(f"  - Baseline: {baseline}")
             click.echo(f"  - New findings: {len(new_findings)}")
             click.echo(f"  - Known findings: {len(known_findings)}")
+
+        # --- AI triage section (Requirements 5.1, 5.2, 5.3) ---
+        # Appended AFTER the baseline comparison so the operator sees it before
+        # the CI/CD exit banner.  The original findings and already-written report
+        # files are never modified — the triage output is strictly additive
+        # (Requirement 5.2).  safe_triage() returns None on any AI failure so
+        # the scan is never failed by AI errors (Requirement 5.3).
+        if ai_triage:
+            _run_ai_triage_section(results, ai_config)
+
+        # --- AI dedup section (Requirements 6.1, 6.2, 6.3) ---
+        # Appended after the triage section (if present). Groups semantically
+        # equivalent findings and renders both the consolidated group summary
+        # AND the full detail of each individual member Finding — no information
+        # loss (Requirement 6.2). The deterministic fallback runs transparently
+        # when no LLM provider is configured (Requirement 6.3). Failures are
+        # always logged as WARNING; the scan result is never affected.
+        if ai_dedup:
+            _run_ai_dedup_section(results, ai_dedup_config)
 
         # Enhanced CI/CD integration with configurable exit codes
         if ci_mode:

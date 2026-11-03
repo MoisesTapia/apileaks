@@ -113,3 +113,176 @@ services:
     
     profiles:
       - ci
+
+  # ===========================================================================
+  # MCP Server — HTTP/SSE transport (profile: mcp)
+  # ===========================================================================
+  # Start with:
+  #   APILEAKS_MCP_AUTH_TOKEN=your-secret docker compose --profile mcp up
+  #
+  # The server exposes all APILeak capabilities as MCP tools on port 8080.
+  # Connect any MCP-compatible AI client (Claude, Kiro) to http://localhost:8080/sse
+  # with the Bearer token set in APILEAKS_MCP_AUTH_TOKEN.
+  # ---------------------------------------------------------------------------
+  apileak-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    image: apileak-mcp:latest
+    container_name: apileak-mcp-server
+    
+    # Resource limits — the MCP server may run long scans
+    mem_limit: 512m
+    cpus: 1.0
+    
+    ports:
+      - "${MCP_HOST_PORT:-8080}:8080"
+    
+    environment:
+      # ── Required ──────────────────────────────────────────────────────────
+      # Set this before starting. Clients must include:
+      #   Authorization: Bearer <token>
+      # Generate: python -c "import secrets; print(secrets.token_urlsafe(32))"
+      - APILEAKS_MCP_AUTH_TOKEN=${APILEAKS_MCP_AUTH_TOKEN:-}
+      
+      # ── MCP server options ────────────────────────────────────────────────
+      - MCP_TRANSPORT=http
+      - MCP_PORT=8080
+      - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-60}
+      - MCP_AUDIT_LOG=/app/logs/mcp-audit.jsonl
+      - MCP_ALLOW_DESTRUCTIVE=${MCP_ALLOW_DESTRUCTIVE:-false}
+      
+      # ── TLS (optional — pass cert/key paths if you have them) ─────────────
+      # Without these, run behind a reverse proxy (nginx/Caddy/Traefik).
+      # See docs/mcp-docker.md for a reference nginx configuration.
+      - MCP_TLS_CERT=${MCP_TLS_CERT:-}
+      - MCP_TLS_KEY=${MCP_TLS_KEY:-}
+      
+      # ── AI provider (optional — enables --ai-triage / --ai-dedup) ────────
+      - AI_PROVIDER=${AI_PROVIDER:-}
+      - AI_MODEL=${AI_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      
+      # ── Logging ───────────────────────────────────────────────────────────
+      - APILEAK_LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    
+    volumes:
+      - ./logs:/app/logs:rw          # MCP audit log (mcp-audit.jsonl)
+      - ./reports:/app/reports:rw    # Scan reports
+      - ./config:/app/config:ro      # Optional custom config.yaml
+      # Uncomment to mount TLS certificates:
+      # - ./certs:/app/certs:ro
+    
+    networks:
+      - mcp-net
+    
+    healthcheck:
+      test: >
+        curl -sf
+        -H "Authorization: Bearer $$APILEAKS_MCP_AUTH_TOKEN"
+        http://localhost:8080/sse
+        --max-time 5 -o /dev/null
+        || exit 1
+      interval: 30s
+      timeout: 15s
+      start_period: 20s
+      retries: 3
+    
+    restart: unless-stopped
+    
+    profiles:
+      - mcp
+
+  # ===========================================================================
+  # MCP Audit — runs mcp-audit against the HTTP MCP server (profile: mcp-audit)
+  # ===========================================================================
+  # Use this to verify that the running MCP server passes its own security audit.
+  # Start with:
+  #   APILEAKS_MCP_AUTH_TOKEN=your-secret docker compose --profile mcp-audit up
+  #
+  # The container will:
+  #   1. Wait for apileak-mcp to be healthy.
+  #   2. Run mcp-audit against it.
+  #   3. Print findings (JSON) and exit 1 if any HIGH/CRITICAL finding is found.
+  # ---------------------------------------------------------------------------
+  apileak-mcp-audit:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    image: apileak-mcp:latest
+    container_name: apileak-mcp-auditor
+    
+    depends_on:
+      apileak-mcp:
+        condition: service_healthy
+    
+    environment:
+      - APILEAKS_MCP_AUTH_TOKEN=${APILEAKS_MCP_AUTH_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+      - APILEAK_LOG_LEVEL=WARNING
+    
+    volumes:
+      - ./reports:/app/reports:rw
+    
+    networks:
+      - mcp-net
+    
+    command:
+      - mcp-audit
+      - --target
+      - "http://apileak-mcp-server:8080"
+      - --output
+      - json
+      - --fail-on-findings
+    
+    restart: "no"
+    
+    profiles:
+      - mcp-audit
+
+  # ===========================================================================
+  # MCP Dev — interactive development container (profile: mcp-dev)
+  # ===========================================================================
+  # Mounts the full repo read-write. Use for testing changes to the MCP server
+  # without rebuilding the image.
+  # Start with:
+  #   docker compose --profile mcp-dev up -d
+  #   docker exec -it apileak-mcp-dev bash
+  #   python apileaks.py mcp-server --transport stdio
+  # ---------------------------------------------------------------------------
+  apileak-mcp-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    image: apileak-mcp:latest
+    container_name: apileak-mcp-dev
+    
+    environment:
+      - APILEAK_LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+      - APILEAKS_MCP_AUTH_TOKEN=${APILEAKS_MCP_AUTH_TOKEN:-dev-token-change-me}
+    
+    volumes:
+      - .:/app:rw                    # Full repo mounted for hot editing
+      - ./logs:/app/logs:rw
+      - ./reports:/app/reports:rw
+    
+    networks:
+      - mcp-net
+    
+    # Keep the container alive for interactive use
+    entrypoint: ["/bin/sh"]
+    command: ["-c", "tail -f /dev/null"]
+    
+    profiles:
+      - mcp-dev
+
+# ===========================================================================
+# Networks
+# ===========================================================================
+networks:
+  mcp-net:
+    driver: bridge
+    name: apileak-mcp-network

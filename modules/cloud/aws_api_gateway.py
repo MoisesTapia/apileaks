@@ -35,8 +35,10 @@ from modules.cloud.base import (
     GatewaySeverity,
     InsufficientPermissionsError,
     ProviderThrottledError,
+    create_permission_denied_finding,
 )
 from utils.cloud.aws_client import AWSGatewayClient
+from utils.cloud.backoff import with_exponential_backoff
 from utils.cloud.readonly_guard import CloudReadOnlyGuard
 
 logger = get_logger(__name__)
@@ -123,19 +125,39 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
         return "aws"
 
     async def discover_resources(self) -> list[dict[str, Any]]:
-        """Return all REST APIs and HTTP APIs accessible with current credentials."""
-        resources: list[dict[str, Any]] = []
-        try:
-            rest_apis = self._client.paginate_v1("get_rest_apis", "items")
-            resources.extend({"type": "rest_api", **a} for a in rest_apis)
-        except Exception as exc:
-            self._handle_aws_error("get_rest_apis", exc)
+        """Return all REST APIs (v1) and HTTP APIs (v2) accessible with current credentials.
 
+        Each returned dict contains the original API fields plus an ``"api_type"``
+        key set to ``"REST"`` (v1) or ``"HTTP"`` (v2).
+
+        ``guard.guard_operation`` is called for both operations to document
+        intent — both are read-only so they always pass.
+        """
+        resources: list[dict[str, Any]] = []
+
+        # v1 REST APIs
+        self._guard.guard_operation("get_rest_apis")
         try:
-            http_apis = self._client.paginate_v2("get_apis", "Items")
-            resources.extend({"type": "http_api", **a} for a in http_apis)
-        except Exception as exc:
-            self._handle_aws_error("get_apis", exc)
+            rest_apis = await self._call_paginate_v1("get_rest_apis", "items")
+            resources.extend({"api_type": "REST", **a} for a in rest_apis)
+        except (InsufficientPermissionsError, ProviderThrottledError) as exc:
+            logger.warning(
+                "Could not enumerate REST APIs during discovery",
+                account=self._account_context,
+                error=str(exc),
+            )
+
+        # v2 HTTP APIs
+        self._guard.guard_operation("get_apis")
+        try:
+            http_apis = await self._call_paginate_v2("get_apis", "Items")
+            resources.extend({"api_type": "HTTP", **a} for a in http_apis)
+        except (InsufficientPermissionsError, ProviderThrottledError) as exc:
+            logger.warning(
+                "Could not enumerate HTTP APIs during discovery",
+                account=self._account_context,
+                error=str(exc),
+            )
 
         logger.info(
             "AWS discovery complete",
@@ -150,9 +172,17 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
 
         # --- REST APIs (v1) ---
         try:
-            rest_apis = self._client.paginate_v1("get_rest_apis", "items")
-        except Exception as exc:
-            self._handle_aws_error("get_rest_apis", exc)
+            rest_apis = await self._call_paginate_v1("get_rest_apis", "items")
+        except (InsufficientPermissionsError, ProviderThrottledError):
+            findings.append(
+                create_permission_denied_finding(
+                    resource_id=f"aws:{self._account_context}:rest-apis",
+                    resource_type="rest_api_list",
+                    provider="aws",
+                    account_context=self._account_context,
+                    operation="get_rest_apis",
+                )
+            )
             rest_apis = []
 
         for api in rest_apis:
@@ -164,30 +194,59 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
             if f:
                 findings.append(f)
 
-            # 4.2 Method authorizers
+            # 4.2 Method authorizers + 4.8 CORS + 4.9 Lambda role
+            self._guard.guard_operation("get_resources")
             try:
-                resources = self._client.paginate_v1("get_resources", "items", restApiId=api_id)
+                resources = await self._call_paginate_v1(
+                    "get_resources", "items", restApiId=api_id
+                )
                 for resource in resources:
-                    for http_method, method_data in resource.get("resourceMethods", {}).items():
-                        f = self._check_method_authorizer(
-                            api_id, api_name, resource, http_method, method_data
-                        )
-                        if f:
-                            findings.append(f)
-                        # 4.8 CORS
-                        fc = self._check_cors_wildcard(
-                            api_id, api_name, resource, http_method, method_data
-                        )
-                        if fc:
-                            findings.append(fc)
-                        # 4.9 Lambda role
-                        fl = self._check_lambda_role(
+                    resource_id = resource.get("id", "")
+                    resource_methods = resource.get("resourceMethods", {})
+
+                    # 4.2 — call get_method for each mutating verb to get authorizer info
+                    for http_method in _STATE_CHANGING_HTTP_METHODS:
+                        if http_method not in resource_methods:
+                            continue
+                        self._guard.guard_operation("get_method")
+                        try:
+                            method = self._client.apigateway.get_method(
+                                restApiId=api_id,
+                                resourceId=resource_id,
+                                httpMethod=http_method,
+                            )
+                            f = self._check_method_authorizer(api, resource, method)
+                            if f:
+                                findings.append(f)
+                        except Exception as exc:
+                            self._handle_aws_error(
+                                f"get_method(api={api_id},resource={resource_id},method={http_method})",
+                                exc,
+                            )
+
+                    # 4.8 CORS + 4.9 Lambda role use the summary data from get_resources
+                    for http_method, method_data in resource_methods.items():
+                        if http_method.upper() == "OPTIONS":
+                            fc = self._check_cors_wildcard_with_credentials(
+                                api_id, api_name, resource, method_data
+                            )
+                            if fc:
+                                findings.append(fc)
+                        fl = self._check_lambda_role_overprivilege(
                             api_id, api_name, resource, http_method, method_data
                         )
                         if fl:
                             findings.append(fl)
-            except Exception as exc:
-                self._handle_aws_error(f"get_resources(api={api_id})", exc)
+            except (InsufficientPermissionsError, ProviderThrottledError):
+                findings.append(
+                    create_permission_denied_finding(
+                        resource_id=f"arn:aws:apigateway:::restapis/{api_id}",
+                        resource_type="rest_api",
+                        provider="aws",
+                        account_context=self._account_context,
+                        operation=f"get_resources(api={api_id})",
+                    )
+                )
 
             # Stages: 4.3 WAF, 4.4 logging, 4.5 TLS
             try:
@@ -195,16 +254,38 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
                 for stage in stages_resp.get("item", []):
                     findings.extend(self._check_stage_v1(api_id, api_name, stage))
             except Exception as exc:
-                self._handle_aws_error(f"get_stages(api={api_id})", exc)
+                try:
+                    self._handle_aws_error(f"get_stages(api={api_id})", exc)
+                except (InsufficientPermissionsError, ProviderThrottledError):
+                    findings.append(
+                        create_permission_denied_finding(
+                            resource_id=f"arn:aws:apigateway:::restapis/{api_id}/stages",
+                            resource_type="rest_api_stage_list",
+                            provider="aws",
+                            account_context=self._account_context,
+                            operation=f"get_stages(api={api_id})",
+                        )
+                    )
+
+        # --- Custom domains (4.5 TLS) ---
+        findings.extend(await self._audit_custom_domains_async())
 
         # --- Usage plans & API keys (4.6, 4.7) ---
-        findings.extend(self._audit_usage_plans())
+        findings.extend(await self._audit_usage_plans_async())
 
         # --- HTTP APIs (v2) — 4.10 ---
         try:
-            http_apis = self._client.paginate_v2("get_apis", "Items")
-        except Exception as exc:
-            self._handle_aws_error("get_apis", exc)
+            http_apis = await self._call_paginate_v2("get_apis", "Items")
+        except (InsufficientPermissionsError, ProviderThrottledError):
+            findings.append(
+                create_permission_denied_finding(
+                    resource_id=f"aws:{self._account_context}:http-apis",
+                    resource_type="http_api_v2_list",
+                    provider="aws",
+                    account_context=self._account_context,
+                    operation="get_apis",
+                )
+            )
             http_apis = []
 
         for api in http_apis:
@@ -220,6 +301,16 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
     # ------------------------------------------------------------------
     # Check 4.1 — Resource policy wildcard Principal
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _has_restrictive_condition(condition: dict) -> bool:
+        """Return True if the condition contains aws:SourceIp or aws:SourceVpc."""
+        for operator_conditions in condition.values():
+            if isinstance(operator_conditions, dict):
+                for key in operator_conditions:
+                    if key.lower() in ("aws:sourceip", "aws:sourcevpc"):
+                        return True
+        return False
 
     def _check_resource_policy_wildcard(self, api: dict) -> GatewayFinding | None:
         raw_policy = api.get("policy")
@@ -238,10 +329,14 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
         for stmt in policy.get("Statement", []):
             principal = stmt.get("Principal", "")
             effect = stmt.get("Effect", "")
-            if effect == "Allow" and (principal == "*" or principal == {"AWS": "*"}):
-                # Check if there's no restrictive Condition
+            is_wildcard_principal = (
+                principal == "*"
+                or principal == {"AWS": "*"}
+                or (isinstance(principal, dict) and principal.get("AWS") == "*")
+            )
+            if effect == "Allow" and is_wildcard_principal:
                 condition = stmt.get("Condition", {})
-                if not condition:
+                if not condition or not self._has_restrictive_condition(condition):
                     return GatewayFinding(
                         provider="aws",
                         resource_id=f"arn:aws:apigateway:::restapis/{api.get('id')}",
@@ -267,15 +362,25 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
 
     def _check_method_authorizer(
         self,
-        api_id: str,
-        api_name: str,
+        api: dict,
         resource: dict,
-        http_method: str,
-        method_data: dict,
+        method: dict,
     ) -> GatewayFinding | None:
+        """Check whether a state-mutating method has no authorizer.
+
+        Parameters
+        ----------
+        api:      REST API dict (must have ``id`` and ``name``).
+        resource: Resource dict from ``get_resources`` (must have ``id`` and ``path``).
+        method:   Full method dict from ``get_method`` (must have ``httpMethod``
+                  and ``authorizationType``).
+        """
+        http_method = method.get("httpMethod", "")
         if http_method.upper() not in _STATE_CHANGING_HTTP_METHODS:
             return None
-        auth_type = method_data.get("authorizationType", "NONE")
+        auth_type = method.get("authorizationType", "NONE")
+        api_id = api.get("id", "")
+        api_name = api.get("name", api_id)
         if auth_type == "NONE":
             return GatewayFinding(
                 provider="aws",
@@ -301,64 +406,121 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
     # ------------------------------------------------------------------
 
     def _check_stage_v1(self, api_id: str, api_name: str, stage: dict) -> list[GatewayFinding]:
+        """Delegate per-stage checks to the canonical check methods."""
         findings: list[GatewayFinding] = []
-        stage_name = stage.get("stageName", "")
-        stage_arn = f"arn:aws:apigateway:::restapis/{api_id}/stages/{stage_name}"
 
-        # 4.3 WAF association
-        waf_arn = stage.get("webAclArn")
-        if not waf_arn:
-            findings.append(
-                GatewayFinding(
-                    provider="aws",
-                    resource_id=stage_arn,
-                    resource_type="rest_api_stage",
-                    check_id="aws_apigw_stage_no_waf",
-                    title="API Gateway stage has no WAF WebACL associated",
-                    severity=GatewaySeverity.MEDIUM,
-                    evidence={
-                        "api_id": api_id,
-                        "api_name": api_name,
-                        "stage_name": stage_name,
-                        "waf_arn": None,
-                    },
-                    remediation=_REMEDIATION_WAF,
-                    account_context=self._account_context,
-                )
-            )
+        f = self._check_waf_association(api_id, api_name, stage)
+        if f:
+            findings.append(f)
 
-        # 4.4 Logging
-        method_settings = stage.get("methodSettings", {})
-        default_settings = method_settings.get("*/*", {})
-        access_log_enabled = bool(stage.get("accessLogSettings", {}).get("destinationArn"))
-        execution_log_level = default_settings.get("loggingLevel", "OFF")
+        f = self._check_stage_logging(api_id, api_name, stage)
+        if f:
+            findings.append(f)
 
-        if not access_log_enabled and execution_log_level in ("OFF", ""):
-            findings.append(
-                GatewayFinding(
-                    provider="aws",
-                    resource_id=stage_arn,
-                    resource_type="rest_api_stage",
-                    check_id="aws_apigw_stage_logging_disabled",
-                    title="API Gateway stage has both access logging and execution logging disabled",
-                    severity=GatewaySeverity.MEDIUM,
-                    evidence={
-                        "api_id": api_id,
-                        "api_name": api_name,
-                        "stage_name": stage_name,
-                        "access_log_enabled": access_log_enabled,
-                        "execution_log_level": execution_log_level,
-                    },
-                    remediation=_REMEDIATION_LOGGING,
-                    account_context=self._account_context,
-                )
-            )
-
-        # 4.5 TLS via custom domain (checked separately — see _check_custom_domains)
         return findings
 
+    # ------------------------------------------------------------------
+    # Check 4.3 — WAF association
+    # ------------------------------------------------------------------
+
+    def _check_waf_association(
+        self, api_id: str, api_name: str, stage: dict
+    ) -> GatewayFinding | None:
+        """Return a MEDIUM finding if the stage has no WAF WebACL associated (Req 4.3)."""
+        waf_arn = stage.get("webAclArn")
+        if waf_arn:
+            return None
+        stage_name = stage.get("stageName", "")
+        return GatewayFinding(
+            provider="aws",
+            resource_id=f"arn:aws:apigateway:::restapis/{api_id}/stages/{stage_name}",
+            resource_type="rest_api_stage",
+            check_id="aws_apigw_stage_no_waf",
+            title="API Gateway stage has no WAF WebACL associated",
+            severity=GatewaySeverity.MEDIUM,
+            evidence={
+                "api_id": api_id,
+                "api_name": api_name,
+                "stage_name": stage_name,
+                "waf_arn": None,
+            },
+            remediation=_REMEDIATION_WAF,
+            account_context=self._account_context,
+        )
+
+    # ------------------------------------------------------------------
+    # Check 4.4 — Stage logging
+    # ------------------------------------------------------------------
+
+    def _check_stage_logging(
+        self, api_id: str, api_name: str, stage: dict
+    ) -> GatewayFinding | None:
+        """Return a MEDIUM finding when both access and execution logging are off (Req 4.4)."""
+        access_log_enabled = bool(
+            stage.get("accessLogSettings", {}).get("destinationArn")
+        )
+        execution_log_level = (
+            stage.get("methodSettings", {})
+            .get("*/*", {})
+            .get("loggingLevel", "OFF")
+        )
+
+        if access_log_enabled or execution_log_level not in ("OFF", ""):
+            return None
+
+        stage_name = stage.get("stageName", "")
+        return GatewayFinding(
+            provider="aws",
+            resource_id=f"arn:aws:apigateway:::restapis/{api_id}/stages/{stage_name}",
+            resource_type="rest_api_stage",
+            check_id="aws_apigw_stage_logging_disabled",
+            title="API Gateway stage has both access logging and execution logging disabled",
+            severity=GatewaySeverity.MEDIUM,
+            evidence={
+                "api_id": api_id,
+                "api_name": api_name,
+                "stage_name": stage_name,
+                "access_log_enabled": access_log_enabled,
+                "execution_log_level": execution_log_level,
+            },
+            remediation=_REMEDIATION_LOGGING,
+            account_context=self._account_context,
+        )
+
+    # ------------------------------------------------------------------
+    # Check 4.5 — Custom domain TLS version (per-domain helper)
+    # ------------------------------------------------------------------
+
+    def _check_stage_tls(self, domain: dict) -> GatewayFinding | None:
+        """Return a MEDIUM finding if the custom domain allows TLS < 1.2 (Req 4.5)."""
+        security_policy = domain.get("securityPolicy", "TLS_1_0")
+        if security_policy not in ("TLS_1_0", "TLS_1_1"):
+            return None
+        return GatewayFinding(
+            provider="aws",
+            resource_id=f"arn:aws:apigateway:::domainnames/{domain.get('domainName')}",
+            resource_type="custom_domain",
+            check_id="aws_apigw_domain_weak_tls",
+            title=f"API Gateway custom domain allows TLS < 1.2 (policy={security_policy})",
+            severity=GatewaySeverity.MEDIUM,
+            evidence={
+                "domain_name": domain.get("domainName"),
+                "security_policy": security_policy,
+            },
+            remediation=_REMEDIATION_TLS,
+            account_context=self._account_context,
+        )
+
     def _audit_custom_domains(self) -> list[GatewayFinding]:
-        """Check 4.5 — custom domain TLS minimum version."""
+        """Check 4.5 — custom domain TLS minimum version.
+
+        Iterates all custom domain names and delegates to `_check_stage_tls`
+        for each one.
+
+        .. deprecated::
+            Prefer :meth:`_audit_custom_domains_async`.  Kept for call sites
+            that are not yet async.
+        """
         findings: list[GatewayFinding] = []
         try:
             domains = self._client.paginate_v1("get_domain_names", "items")
@@ -367,31 +529,100 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
             return findings
 
         for domain in domains:
-            security_policy = domain.get("securityPolicy", "TLS_1_0")
-            if security_policy in ("TLS_1_0", "TLS_1_1", "TLS_1_0_1_0"):
-                findings.append(
-                    GatewayFinding(
-                        provider="aws",
-                        resource_id=f"arn:aws:apigateway:::domainnames/{domain.get('domainName')}",
-                        resource_type="custom_domain",
-                        check_id="aws_apigw_domain_weak_tls",
-                        title=f"API Gateway custom domain allows TLS < 1.2 (policy={security_policy})",
-                        severity=GatewaySeverity.MEDIUM,
-                        evidence={
-                            "domain_name": domain.get("domainName"),
-                            "security_policy": security_policy,
-                        },
-                        remediation=_REMEDIATION_TLS,
-                        account_context=self._account_context,
-                    )
+            f = self._check_stage_tls(domain)
+            if f:
+                findings.append(f)
+        return findings
+
+    async def _audit_custom_domains_async(self) -> list[GatewayFinding]:
+        """Async version of :meth:`_audit_custom_domains` with backoff support."""
+        findings: list[GatewayFinding] = []
+        try:
+            domains = await self._call_paginate_v1("get_domain_names", "items")
+        except (InsufficientPermissionsError, ProviderThrottledError):
+            findings.append(
+                create_permission_denied_finding(
+                    resource_id=f"aws:{self._account_context}:domain-names",
+                    resource_type="custom_domain_list",
+                    provider="aws",
+                    account_context=self._account_context,
+                    operation="get_domain_names",
                 )
+            )
+            return findings
+
+        for domain in domains:
+            f = self._check_stage_tls(domain)
+            if f:
+                findings.append(f)
         return findings
 
     # ------------------------------------------------------------------
     # Checks 4.6 / 4.7 — Usage plans and API keys
     # ------------------------------------------------------------------
 
+    def _check_usage_plan_throttling(self, plan: dict) -> GatewayFinding | None:
+        """Return a MEDIUM finding if the usage plan has no throttling configured (Req 4.6).
+
+        A plan is considered unconfigured when the ``throttle`` key is absent or
+        both ``rateLimit`` and ``burstLimit`` are missing / falsy.
+        """
+        plan_id = plan.get("id", "")
+        throttle = plan.get("throttle", {})
+        if throttle and (throttle.get("rateLimit") or throttle.get("burstLimit")):
+            return None
+        return GatewayFinding(
+            provider="aws",
+            resource_id=f"arn:aws:apigateway:::usageplans/{plan_id}",
+            resource_type="usage_plan",
+            check_id="aws_apigw_usage_plan_no_throttling",
+            title="API Gateway usage plan has no throttling configured",
+            severity=GatewaySeverity.MEDIUM,
+            evidence={
+                "plan_id": plan_id,
+                "plan_name": plan.get("name"),
+                "throttle": throttle,
+            },
+            remediation=_REMEDIATION_THROTTLING,
+            account_context=self._account_context,
+        )
+
+    def _check_orphan_api_keys(
+        self, keys: list[dict], plan_key_ids: set[str]
+    ) -> list[GatewayFinding]:
+        """Return LOW findings for every API key not associated with any usage plan (Req 4.7).
+
+        Parameters
+        ----------
+        keys:         Full list of API keys from ``get_api_keys``.
+        plan_key_ids: Set of key IDs already associated with at least one usage plan.
+        """
+        findings: list[GatewayFinding] = []
+        for key in keys:
+            key_id = key.get("id", "")
+            if key_id in plan_key_ids:
+                continue
+            findings.append(
+                GatewayFinding(
+                    provider="aws",
+                    resource_id=f"arn:aws:apigateway:::apikeys/{key_id}",
+                    resource_type="api_key",
+                    check_id="aws_apigw_orphan_api_key",
+                    title="API Gateway API key is not associated with any usage plan",
+                    severity=GatewaySeverity.LOW,
+                    evidence={
+                        "key_id": key_id,
+                        "key_name": key.get("name"),
+                        "enabled": key.get("enabled"),
+                    },
+                    remediation=_REMEDIATION_ORPHAN_KEY,
+                    account_context=self._account_context,
+                )
+            )
+        return findings
+
     def _audit_usage_plans(self) -> list[GatewayFinding]:
+        """Orchestrate checks 4.6 and 4.7 by delegating to the canonical helpers."""
         findings: list[GatewayFinding] = []
 
         try:
@@ -403,63 +634,87 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
         plan_key_ids: set[str] = set()
 
         for plan in plans:
-            plan_id = plan.get("id", "")
-            # 4.6 Missing throttling
-            throttle = plan.get("throttle", {})
-            if not throttle or (not throttle.get("rateLimit") and not throttle.get("burstLimit")):
-                findings.append(
-                    GatewayFinding(
-                        provider="aws",
-                        resource_id=f"arn:aws:apigateway:::usageplans/{plan_id}",
-                        resource_type="usage_plan",
-                        check_id="aws_apigw_usage_plan_no_throttling",
-                        title="API Gateway usage plan has no throttling configured",
-                        severity=GatewaySeverity.MEDIUM,
-                        evidence={
-                            "plan_id": plan_id,
-                            "plan_name": plan.get("name"),
-                            "throttle": throttle,
-                        },
-                        remediation=_REMEDIATION_THROTTLING,
-                        account_context=self._account_context,
-                    )
-                )
+            # 4.6 — delegate to standalone method
+            f = self._check_usage_plan_throttling(plan)
+            if f:
+                findings.append(f)
 
-            # Collect keys associated with plans
+            # Collect keys associated with this plan
+            plan_id = plan.get("id", "")
             try:
-                keys = self._client.paginate_v1("get_usage_plan_keys", "items", usagePlanId=plan_id)
-                for key in keys:
+                plan_keys = self._client.paginate_v1(
+                    "get_usage_plan_keys", "items", usagePlanId=plan_id
+                )
+                for key in plan_keys:
                     plan_key_ids.add(key.get("id", ""))
             except Exception as exc:
                 self._handle_aws_error(f"get_usage_plan_keys(plan={plan_id})", exc)
 
-        # 4.7 Orphan keys
+        # 4.7 — delegate to standalone method
         try:
             all_keys = self._client.paginate_v1("get_api_keys", "items", includeValues=False)
         except Exception as exc:
             self._handle_aws_error("get_api_keys", exc)
             all_keys = []
 
-        for key in all_keys:
-            key_id = key.get("id", "")
-            if key_id not in plan_key_ids:
+        findings.extend(self._check_orphan_api_keys(all_keys, plan_key_ids))
+
+        return findings
+
+    async def _audit_usage_plans_async(self) -> list[GatewayFinding]:
+        """Async version of :meth:`_audit_usage_plans` with backoff support."""
+        findings: list[GatewayFinding] = []
+
+        try:
+            plans = await self._call_paginate_v1("get_usage_plans", "items")
+        except (InsufficientPermissionsError, ProviderThrottledError):
+            findings.append(
+                create_permission_denied_finding(
+                    resource_id=f"aws:{self._account_context}:usage-plans",
+                    resource_type="usage_plan_list",
+                    provider="aws",
+                    account_context=self._account_context,
+                    operation="get_usage_plans",
+                )
+            )
+            return findings
+
+        plan_key_ids: set[str] = set()
+
+        for plan in plans:
+            # 4.6 — delegate to standalone method
+            f = self._check_usage_plan_throttling(plan)
+            if f:
+                findings.append(f)
+
+            # Collect keys associated with this plan
+            plan_id = plan.get("id", "")
+            try:
+                plan_keys = await self._call_paginate_v1(
+                    "get_usage_plan_keys", "items", usagePlanId=plan_id
+                )
+                for key in plan_keys:
+                    plan_key_ids.add(key.get("id", ""))
+            except (InsufficientPermissionsError, ProviderThrottledError):
                 findings.append(
-                    GatewayFinding(
+                    create_permission_denied_finding(
+                        resource_id=f"arn:aws:apigateway:::usageplans/{plan_id}/keys",
+                        resource_type="usage_plan_keys",
                         provider="aws",
-                        resource_id=f"arn:aws:apigateway:::apikeys/{key_id}",
-                        resource_type="api_key",
-                        check_id="aws_apigw_orphan_api_key",
-                        title="API Gateway API key is not associated with any usage plan",
-                        severity=GatewaySeverity.LOW,
-                        evidence={
-                            "key_id": key_id,
-                            "key_name": key.get("name"),
-                            "enabled": key.get("enabled"),
-                        },
-                        remediation=_REMEDIATION_ORPHAN_KEY,
                         account_context=self._account_context,
+                        operation=f"get_usage_plan_keys(plan={plan_id})",
                     )
                 )
+
+        # 4.7 — delegate to standalone method
+        try:
+            all_keys = await self._call_paginate_v1(
+                "get_api_keys", "items", includeValues=False
+            )
+        except (InsufficientPermissionsError, ProviderThrottledError):
+            all_keys = []
+
+        findings.extend(self._check_orphan_api_keys(all_keys, plan_key_ids))
 
         return findings
 
@@ -467,17 +722,19 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
     # Check 4.8 — CORS wildcard with credentials
     # ------------------------------------------------------------------
 
-    def _check_cors_wildcard(
+    def _check_cors_wildcard_with_credentials(
         self,
         api_id: str,
         api_name: str,
         resource: dict,
-        http_method: str,
         method_data: dict,
     ) -> GatewayFinding | None:
-        if http_method.upper() != "OPTIONS":
-            return None
+        """Return a HIGH finding when the OPTIONS integration response combines
+        ``Access-Control-Allow-Origin: *`` with ``Access-Control-Allow-Credentials: true``
+        (Req 4.8).
 
+        Callers are responsible for passing only the OPTIONS method's data.
+        """
         # Check integration responses for CORS headers
         integration = method_data.get("methodIntegration", {})
         for _, int_resp in integration.get("integrationResponses", {}).items():
@@ -508,7 +765,7 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
     # Check 4.9 — Lambda integration role overprivilege
     # ------------------------------------------------------------------
 
-    def _check_lambda_role(
+    def _check_lambda_role_overprivilege(
         self,
         api_id: str,
         api_name: str,
@@ -634,6 +891,45 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
         return findings
 
     # ------------------------------------------------------------------
+    # Resilient pagination helpers (backoff + error conversion)
+    # ------------------------------------------------------------------
+
+    async def _call_paginate_v1(
+        self, operation: str, result_key: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        """
+        Paginate a v1 REST API list call with exponential backoff on throttling.
+
+        Converts boto3 ``ClientError`` to :class:`InsufficientPermissionsError`
+        or :class:`ProviderThrottledError` via :meth:`_handle_aws_error`.
+        :class:`ProviderThrottledError` is retried up to *max_retries* times;
+        :class:`InsufficientPermissionsError` propagates immediately.
+        """
+
+        def _call() -> list[dict[str, Any]]:
+            try:
+                return self._client.paginate_v1(operation, result_key, **kwargs)
+            except Exception as exc:
+                self._handle_aws_error(operation, exc)
+                return []  # only reached for non-fatal errors logged by _handle_aws_error
+
+        return await with_exponential_backoff(_call, retry_on=ProviderThrottledError)
+
+    async def _call_paginate_v2(
+        self, operation: str, result_key: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        """Same as :meth:`_call_paginate_v1` but for the v2 HTTP API client."""
+
+        def _call() -> list[dict[str, Any]]:
+            try:
+                return self._client.paginate_v2(operation, result_key, **kwargs)
+            except Exception as exc:
+                self._handle_aws_error(operation, exc)
+                return []
+
+        return await with_exponential_backoff(_call, retry_on=ProviderThrottledError)
+
+    # ------------------------------------------------------------------
     # Error handling (Requirement 9)
     # ------------------------------------------------------------------
 
@@ -648,7 +944,13 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
         except (AttributeError, KeyError, TypeError):
             pass
 
-        if error_code in ("AccessDenied", "AccessDeniedException", "UnauthorizedClientException"):
+        if error_code in (
+            "AccessDenied",
+            "AccessDeniedException",
+            "UnauthorizedException",
+            "UnauthorizedClientException",
+            "Forbidden",
+        ):
             logger.warning(
                 "Insufficient permissions for AWS operation",
                 operation=operation,
@@ -656,7 +958,19 @@ class AWSGatewayAuditor(CloudGatewayAuditor):
                 account=self._account_context,
             )
             raise InsufficientPermissionsError(str(exc)) from exc
-        elif error_code in ("ThrottlingException", "TooManyRequestsException"):
+        elif error_code in (
+            "ThrottlingException",
+            "TooManyRequestsException",
+            "LimitExceededException",
+            "RequestThrottledException",
+            "SlowDown",
+        ):
+            logger.warning(
+                "AWS operation throttled — will retry with backoff",
+                operation=operation,
+                error=str(exc),
+                account=self._account_context,
+            )
             raise ProviderThrottledError(str(exc)) from exc
         else:
             logger.warning(
