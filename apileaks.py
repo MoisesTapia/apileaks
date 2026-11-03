@@ -96,49 +96,73 @@ from utils.jwt_attack_engine import JWTAttackEngine  # noqa: F401  re-exported (
 @click.option("--no-banner", is_flag=True, help="Suppress banner output")
 @click.pass_context
 def cli(ctx, no_banner):
-    """APILeak v1.0.0 - Enterprise API Fuzzing Tool
-
-
-    \b
-    Performs comprehensive security testing of APIs including:
-    • Traditional endpoint and parameter fuzzing
-    • OWASP API Security Top 10 testing
-    • Advanced vulnerability detection with framework detection
-    • Version fuzzing and subdomain discovery
-    • WAF detection and evasion techniques
-    • Advanced payload encoding and obfuscation
-    • CORS analysis and security headers testing
-    • Multi-format reporting with CI/CD integration
-    • JWT token manipulation and analysis
+    """APILeak v1.0.0 — Enterprise API Security Testing Tool
 
     \b
-    Discovery & fuzzing:
-      python apileaks.py dir --target URL              # Directory/endpoint fuzzing
-      python apileaks.py par --target URL              # Parameter fuzzing
+    Full OWASP API Security Top 10 2023 coverage, JWT attack suite,
+    endpoint/parameter fuzzing, cloud gateway auditing, and an MCP server
+    that lets AI agents (Claude, Kiro) run scans via natural language.
 
     \b
-    OWASP API Security Top 10:
-      python apileaks.py owasp                          # List every OWASP module
-      python apileaks.py owasp bola --target URL        # Run a single module (isolated)
-      python apileaks.py owasp auth --target URL        # Run only the Auth module
-      python apileaks.py scan --target URL              # Orchestrated scan (all modules)
-      python apileaks.py scan --target URL --modules bola,auth   # Selected modules
+    ── Discovery & Fuzzing ───────────────────────────────────────────────────
+      apileaks dir --target URL                   Endpoint/directory fuzzing
+      apileaks par --target URL                   Hidden parameter discovery
+      apileaks brute --target URL                 API spec file discovery
 
     \b
-    Advanced examples:
-      python apileaks.py scan --target URL --enable-advanced
-      python apileaks.py scan --target URL --detect-framework --fuzz-versions
-      python apileaks.py scan --target URL --user-agent-random --enable-waf-evasion
+    ── OWASP API Security Top 10 ────────────────────────────────────────────
+      apileaks owasp                              List all modules with descriptions
+      apileaks owasp bola --target URL            BOLA / IDOR (API1)
+      apileaks owasp auth --target URL            Broken Authentication (API2)
+      apileaks owasp property --target URL        Mass Assignment (API3)
+      apileaks owasp resource --target URL        Resource Consumption (API4)
+      apileaks owasp function --target URL        BFLA (API5)
+      apileaks owasp business --target URL        Business Flows (API6)
+      apileaks owasp ssrf --target URL            SSRF (API7)
+      apileaks owasp security --target URL        Misconfiguration (API8)
+      apileaks owasp inventory --target URL       Inventory Management (API9)
+      apileaks owasp unsafe --target URL          Unsafe Consumption (API10)
+      apileaks owasp parameter_pollution ...      HTTP Parameter Pollution
+      apileaks owasp spec_driven_testing ...      OpenAPI Contract Audit
 
     \b
-    CI/CD integration (severity gate, SARIF, baseline):
-      python apileaks.py scan --target URL --ci-mode --fail-on high --sarif
+    ── Orchestrated Scan (all modules) ──────────────────────────────────────
+      apileaks scan --target URL                  Full scan (discovery + all OWASP)
+      apileaks scan --target URL --modules bola,ssrf,auth   Selected modules only
+      apileaks scan --target URL --openapi spec.json        Spec-aware scan
+      apileaks scan --target URL --ai-triage      + LLM finding prioritisation
+      apileaks scan --target URL --ai-dedup       + Semantic deduplication
+      apileaks scan --target URL --ci-mode --fail-on high --sarif   CI/CD gate
 
     \b
-    JWT utilities (manual toolkit):
-      python apileaks.py jwt decode TOKEN
-      python apileaks.py jwt encode '{"sub":"user"}' --secret key
-      python apileaks.py jwt --help                     # Full JWT toolkit listing
+    ── JWT Attack Suite ─────────────────────────────────────────────────────
+      apileaks jwt attack-test --target URL --token TOKEN   Full attack suite
+      apileaks jwt decode TOKEN                  Decode & inspect a JWT
+      apileaks jwt encode '{"sub":"1"}' --secret key   Forge a token
+      apileaks jwt --help                        Full JWT toolkit (13 subcommands)
+
+    \b
+    ── Cloud API Gateway Audit ──────────────────────────────────────────────
+      apileaks cloud-audit --provider aws --target https://api-id.execute-api...
+      apileaks cloud-audit --provider gcp --target https://gateway.example.com
+      apileaks cloud-audit --provider azure --target https://apim.azure-api.net
+
+    \b
+    ── MCP Server (AI agent integration) ────────────────────────────────────
+      apileaks mcp-server --transport stdio       Connect Claude Desktop / Kiro
+      apileaks mcp-server --transport http --port 8080 --mcp-auth-token TOKEN
+      apileaks mcp-audit --target URL            Audit a 3rd-party MCP server
+      apileaks mcp-server --help                 All MCP server options
+
+    \b
+    ── Utilities ────────────────────────────────────────────────────────────
+      apileaks replay report.json                Replay requests from a scan
+      apileaks wordlist list                     Browse Assetnote wordlists
+      apileaks wordlist fetch apiroutes-210328   Download & cache a wordlist
+
+    \b
+    ── Docs & quick reference ────────────────────────────────────────────────
+      https://moisestapia.github.io/apileaks/
     """
     ctx.ensure_object(dict)
     ctx.obj["no_banner"] = no_banner
