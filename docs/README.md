@@ -39,7 +39,7 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[HTTP Parameter Pollution](owasp/parameter-pollution.md)** - Discovered-endpoint and Burp/Caido capture-replay duplicate-parameter testing (beyond the Top 10)
 - **[Spec-Driven Testing](owasp/spec-driven-testing.md)** - OpenAPI/Swagger contract-enforcement audit (beyond the Top 10)
 
-### MCP Server — AI Integration (v0.3.0)
+### MCP Server — AI Integration (v1.0.0)
 - **[MCP Server Guide](mcp-server.md)** - Complete guide: install, connect Claude/Kiro, run scans via AI
 - **[Docker Deployment](mcp-docker.md)** - Run the MCP server in Docker and docker-compose
 - **[AI Providers](mcp-ai-providers.md)** - Configure Anthropic, OpenAI, or Amazon Bedrock for AI triage

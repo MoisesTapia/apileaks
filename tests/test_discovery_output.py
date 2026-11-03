@@ -191,7 +191,7 @@ def _seed_session(path: str) -> DiscoverySession:
     session = DiscoverySession(
         target="https://api.example.com",
         timestamp="2025-01-15T10:30:00Z",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         results=records,
     )
     session.save(path)

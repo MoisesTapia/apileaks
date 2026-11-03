@@ -674,7 +674,7 @@ export APILEAK_VERIFY_SSL="true"
 
 # Advanced configuration
 export APILEAK_MAX_DEPTH="3"
-export APILEAK_USER_AGENT="APILeak-CI/0.2.0"
+export APILEAK_USER_AGENT="APILeak-CI/1.0.0"
 ```
 
 ### Per-Environment Variables

@@ -119,7 +119,7 @@ class TestSeedTestedUrls:
         checkpoint = DiscoveryCheckpoint(
             target="http://example.com/",
             timestamp="2025-01-01T00:00:00+00:00",
-            tool_version="0.2.0",
+            tool_version="1.0.0",
             tested=[
                 ("http://example.com/users/", "GET"),
                 ("http://example.com:80/admin", "POST"),
@@ -146,7 +146,7 @@ class TestSeedTestedUrls:
         checkpoint = DiscoveryCheckpoint(
             target="http://example.com/",
             timestamp="2025-01-01T00:00:00+00:00",
-            tool_version="0.2.0",
+            tool_version="1.0.0",
             tested=[("http://example.com/users", "GET")],
         )
         fuzzer.seed_from_checkpoint(checkpoint)
@@ -174,7 +174,7 @@ class TestSeedDiscoveredEndpoints:
         checkpoint = DiscoveryCheckpoint(
             target="http://example.com/",
             timestamp="2025-01-01T00:00:00+00:00",
-            tool_version="0.2.0",
+            tool_version="1.0.0",
             results=[
                 # Non-canonical url normalizes to .../users.
                 _result("http://example.com:80/users/", "GET", 200, "valid"),
@@ -208,7 +208,7 @@ class TestSeedDiscoveredEndpoints:
         checkpoint = DiscoveryCheckpoint(
             target="http://example.com/",
             timestamp="2025-01-01T00:00:00+00:00",
-            tool_version="0.2.0",
+            tool_version="1.0.0",
             tested=[("http://example.com/users", "GET")],
             results=[_result("http://example.com/users", "GET", 200, "valid")],
         )

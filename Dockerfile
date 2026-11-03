@@ -23,10 +23,10 @@ FROM python:3.11-alpine
 # Metadata
 LABEL maintainer="FortGenix Team <team@apileak.com>" \
       description="Enterprise-grade API fuzzing and OWASP testing tool" \
-      version="0.2.0" \
+      version="1.0.0" \
       org.opencontainers.image.title="APILeak" \
       org.opencontainers.image.description="OWASP API Security Top 10 testing tool" \
-      org.opencontainers.image.version="0.2.0" \
+      org.opencontainers.image.version="1.0.0" \
       org.opencontainers.image.vendor="FortGenix Team" \
       org.opencontainers.image.licenses="MIT"
 

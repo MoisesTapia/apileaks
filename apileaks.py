@@ -96,7 +96,7 @@ from utils.jwt_attack_engine import JWTAttackEngine  # noqa: F401  re-exported (
 @click.option("--no-banner", is_flag=True, help="Suppress banner output")
 @click.pass_context
 def cli(ctx, no_banner):
-    """APILeak v0.3.0 - Enterprise API Fuzzing Tool
+    """APILeak v1.0.0 - Enterprise API Fuzzing Tool
 
 
     \b

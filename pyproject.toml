@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apileaks"
-version = "0.3.0"
+version = "1.0.0"
 description = "Enterprise-grade API fuzzing and OWASP testing tool"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -21,7 +21,7 @@ classifiers = [
     # technical-debt/code-quality-audit.md).
     # Not yet "5 - Production/Stable": PyPI/.deb publishing is currently
     # disabled for this release. Bump to Stable once that is resolved.
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Topic :: Security",

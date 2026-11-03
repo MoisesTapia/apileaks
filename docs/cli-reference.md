@@ -1,6 +1,6 @@
 # 📖 APILeak CLI Reference
 
-Complete command-line interface reference for APILeak v0.3.0 - Enterprise API security testing tool.
+Complete command-line interface reference for APILeak v1.0.0 - Enterprise API security testing tool.
 
 ## Table of Contents
 

@@ -57,10 +57,10 @@ FROM python:3.11-alpine
 # Image metadata
 LABEL maintainer="APILeak Team <team@apileak.com>" \
       description="APILeak MCP Server — exposes API security testing as MCP tools for AI agents" \
-      version="0.3.0" \
+      version="1.0.0" \
       org.opencontainers.image.title="APILeak MCP Server" \
       org.opencontainers.image.description="OWASP API Security Top 10 testing via Model Context Protocol" \
-      org.opencontainers.image.version="0.3.0" \
+      org.opencontainers.image.version="1.0.0" \
       org.opencontainers.image.vendor="APILeak Team" \
       org.opencontainers.image.licenses="MIT"
 

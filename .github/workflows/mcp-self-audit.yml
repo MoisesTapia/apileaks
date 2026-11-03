@@ -11,7 +11,7 @@ name: MCP Self-Audit (Dogfooding)
 
 on:
   push:
-    branches: [main, develop, v0.2.0, v0.3.0]
+    branches: [main, develop, v1.0.0, v1.0.0]
   pull_request:
     branches: [main]
   workflow_dispatch:

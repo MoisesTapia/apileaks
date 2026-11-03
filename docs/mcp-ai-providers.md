@@ -1,6 +1,6 @@
 # APILeak MCP Server — AI Provider Configuration
 
-APILeak v0.3.0 includes an optional AI assistance layer (`apileaks[ai]`) that uses a large language model to triage scan findings, generate contextualised remediation advice, and semantically deduplicate overlapping findings from different OWASP modules.
+APILeak v1.0.0 includes an optional AI assistance layer (`apileaks[ai]`) that uses a large language model to triage scan findings, generate contextualised remediation advice, and semantically deduplicate overlapping findings from different OWASP modules.
 
 This guide covers setup and configuration for all three supported providers: **Anthropic**, **OpenAI**, and **Amazon Bedrock**.
 

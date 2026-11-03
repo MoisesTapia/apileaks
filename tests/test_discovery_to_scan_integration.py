@@ -229,7 +229,7 @@ def _build_session_file(tmp_path, records, name="session.json"):
     session = DiscoverySession(
         target=TARGET,
         timestamp="2024-01-01T00:00:00Z",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         results=records,
     )
     path = str(tmp_path / name)

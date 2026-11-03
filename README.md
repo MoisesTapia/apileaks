@@ -1,10 +1,10 @@
-# APILeak v0.3.0
+# APILeak v1.0.0
 
 <div align="center">
   <img src="images/apileaks_logo.png" alt="APILeak Logo" width="500"/>
 </div>
 
-## APILeak v0.3.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+## APILeak v1.0.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
 
 **Enterprise-grade API security testing tool with comprehensive OWASP API Security Top 10 2023 coverage.**
 

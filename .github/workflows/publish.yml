@@ -3,11 +3,12 @@ name: Publish apileaks
 on:
   push:
     tags:
-      - "v*.*.*"   # Se dispara al crear un tag como v0.2.0
+      - "v*.*.*"   # Triggered on tags like v1.0.0
 
 jobs:
-  # ── 1. Publicar en PyPI ─────────────────────────────────────────────────────
-  # TEMPORALMENTE DESHABILITADO para v0.3.0
+  # ── 1. Build & Publish to PyPI ────────────────────────────────────────────
+  # Requires a "pypi" environment configured in GitHub repo settings
+  # with PyPI Trusted Publishing. Enable when PyPI project is set up.
   # publish-pypi:
   #   name: Build & Publish to PyPI
   #   runs-on: ubuntu-latest
@@ -29,8 +30,7 @@ jobs:
   #     - name: Publish to PyPI (Trusted Publishing)
   #       uses: pypa/gh-action-pypi-publish@release/v1
 
-  # ── 2. Build paquete .deb ──────────────────────────────────────────────────
-  # TEMPORALMENTE DESHABILITADO para v0.3.0
+  # ── 2. Build .deb package ─────────────────────────────────────────────────
   # build-deb:
   #   name: Build .deb package
   #   runs-on: ubuntu-latest
@@ -57,7 +57,6 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    # needs: [publish-pypi, build-deb]  # deshabilitado temporalmente
     permissions:
       contents: write
 
@@ -68,38 +67,88 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "apileaks ${{ github.ref_name }}"
+          name: "APILeak ${{ github.ref_name }}"
           body: |
-            ## Instalación
+            ## APILeak ${{ github.ref_name }} — MCP Server + AI Integration
 
-            **pip / uv (recomendado):**
+            This is the first production-stable release of APILeak, adding a full **Model Context Protocol (MCP) server** that exposes every scan capability as a tool invocable by AI agents (Claude Desktop, Kiro, custom LLM workflows).
+
+            ### What's New
+
+            #### MCP Server (`apileaks mcp-server`)
+            - **16+ MCP tools** — every CLI command exposed as a typed, schema-validated MCP tool
+            - **stdio transport** — connect Claude Desktop, Kiro, or any MCP client with a single config line
+            - **HTTP/SSE transport** — persistent server with Bearer token auth and optional TLS
+            - **Destructive Confirmation Gate** — AI cannot execute destructive scans without a human `ConfirmationToken`
+            - **Append-only audit log** — every tool invocation logged as JSON Lines (OWASP MCP08)
+            - **Rate limiting + timeouts** — 60 req/min per client, 300s max per tool (OWASP MCP05)
+            - **Tool manifest hash** — SHA-256 of registered tools logged at startup (OWASP MCP03)
+            - **All 10 OWASP MCP Top 10 controls implemented**
+
+            #### AI Assistance (`apileaks[ai]`)
+            - `--ai-triage` — LLM-powered finding prioritisation (Anthropic / OpenAI / Amazon Bedrock)
+            - `--ai-dedup` — semantic deduplication of overlapping module findings
+            - Graceful degradation — AI errors never fail the scan
+
+            #### Offensive MCP Auditing (`apileaks mcp-audit`)
+            - Tool poisoning detection (hidden prompt instructions in descriptions)
+            - SSRF probing via URL-accepting tools
+            - Missing confirmation gate check on destructive tools
+            - Credential leak detection in tool responses
+
+            #### Docker
+            - **`Dockerfile.mcp`** — dedicated MCP server image (Alpine, non-root, hash-verified deps)
+            - **`docker compose --profile mcp up`** — one command to start the full stack
+            - **`docker compose --profile mcp-audit up`** — security self-audit in Docker
+
+            #### Documentation & GitHub Pages
+            - Full docs site: **https://moisestapia.github.io/apileaks/**
+            - MCP Server Guide, Docker Deployment, AI Providers, Tools Reference, Security docs
+
+            ### Installation
+
             ```bash
-            pip install apileaks
-            uv tool install apileaks
-            pipx install apileaks
+            # MCP server only
+            pip install 'apileaks[mcp]'
+
+            # MCP + AI triage/dedup (Anthropic + OpenAI)
+            pip install 'apileaks[mcp,ai]'
+
+            # MCP + AI + Amazon Bedrock
+            pip install 'apileaks[mcp,ai,aws]'
             ```
 
-            **Kali Linux / Parrot OS / Debian / Ubuntu:**
+            ### Quick Start
+
             ```bash
-            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/apileaks_*.deb
-            sudo dpkg -i apileaks_*.deb
-            sudo apt-get install -f
+            # Connect to Claude Desktop or Kiro (stdio)
+            apileaks mcp-server --transport stdio
+
+            # HTTP server
+            export APILEAKS_MCP_AUTH_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+            apileaks mcp-server --transport http --port 8080
+
+            # Docker
+            APILEAKS_MCP_AUTH_TOKEN=secret docker compose --profile mcp up
             ```
 
-            **macOS (Homebrew):**
-            ```bash
-            brew tap ${{ github.repository_owner }}/apileaks
-            brew install apileaks
-            ```
+            ### Security Self-Audit
+
+            The MCP server passes its own `apileaks mcp-audit` security check on every release (dogfooding). Results are attached as a workflow artifact.
+
+            See the full [MCP Security documentation](https://moisestapia.github.io/apileaks/mcp_server_security/) for OWASP MCP Top 10 control details.
+
+            ---
+
+            **Full Changelog**: https://github.com/${{ github.repository }}/compare/v0.3.0...${{ github.ref_name }}
           draft: false
           prerelease: false
 
-  # ── 4. Generar SBOM (CycloneDX) para el extra [mcp] ──────────────────────
-  # Requisito 13.3 (OWASP MCP04): adjuntar SBOM como artefacto del release.
+  # ── 4. Generate SBOM (CycloneDX) for [mcp] extra ─────────────────────────
+  # Requirement 13.3 (OWASP MCP04): attach SBOM as release artifact.
   generate-sbom:
     name: Generate MCP SBOM (CycloneDX)
     runs-on: ubuntu-latest
-    # needs: [publish-pypi]  # deshabilitado hasta que publish-pypi se reactive
 
     steps:
       - uses: actions/checkout@v4
@@ -109,22 +158,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install cyclonedx-bom and package with [mcp] extra
+      - name: Install cyclonedx-bom and [mcp] dependencies
         run: |
           python -m pip install --upgrade pip
-          # Instalar cyclonedx-bom con versión pinnada para reproducibilidad
           python -m pip install "cyclonedx-bom==4.6.1"
-          # Instalar apileaks con todas las dependencias del extra [mcp]
           python -m pip install -e ".[mcp]"
 
       - name: Generate CycloneDX SBOM (JSON)
         run: |
-          # cyclonedx-py environment escanea el entorno Python activo,
-          # lo que incluye las dependencias transitivas de [mcp].
           cyclonedx-py environment \
             --output-format JSON \
             --outfile sbom-mcp.cdx.json
-          echo "SBOM generado:"
+          echo "SBOM generated:"
           head -5 sbom-mcp.cdx.json
 
       - name: Upload SBOM as release artifact

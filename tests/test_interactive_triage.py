@@ -362,7 +362,7 @@ def test_reloaded_session_records_are_the_selectable_source(tmp_path):
     session = DiscoverySession(
         target="https://api.example.com",
         timestamp="2024-01-01T00:00:00Z",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         results=records,
     )
     path = str(tmp_path / "session.json")
@@ -392,7 +392,7 @@ def test_reloaded_empty_session_skips_prompt(tmp_path):
     session = DiscoverySession(
         target="https://api.example.com",
         timestamp="2024-01-01T00:00:00Z",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         results=[],
     )
     path = str(tmp_path / "empty_session.json")

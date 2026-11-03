@@ -1,6 +1,6 @@
 # APILeak MCP Server — Complete Guide
 
-APILeak v0.3.0 exposes its full API security-testing capability as **MCP tools** that any AI agent (Claude Desktop, Kiro, custom LLM workflows) can invoke via natural language. This guide covers everything from installation to production deployment.
+APILeak v1.0.0 exposes its full API security-testing capability as **MCP tools** that any AI agent (Claude Desktop, Kiro, custom LLM workflows) can invoke via natural language. This guide covers everything from installation to production deployment.
 
 ---
 

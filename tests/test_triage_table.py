@@ -204,7 +204,7 @@ def test_rendered_from_reloaded_session_records(tmp_path):
     session = DiscoverySession(
         target="https://api.example.com",
         timestamp="2024-01-01T00:00:00Z",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         results=records,
     )
     path = str(tmp_path / "session.json")

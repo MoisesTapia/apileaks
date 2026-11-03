@@ -501,7 +501,7 @@ def expensive_computation(input_data):
 # Follow semantic versioning (MAJOR.MINOR.PATCH)
 
 # Create release branch
-git checkout -b release/v0.3.0
+git checkout -b release/v1.0.0
 
 # Update CHANGELOG.md
 # Update documentation

@@ -140,7 +140,7 @@ class UserAgentRotator:
                 return user_agent
         else:
             # Default user agent
-            return "APILeak/0.2.0"
+            return "APILeak/1.0.0"
 
 
 class RequestMethod(str, Enum):

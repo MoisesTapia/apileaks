@@ -3,7 +3,7 @@ APILeak Core Module
 Enterprise-grade API fuzzing and OWASP testing engine
 """
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
 __author__ = "APILeak Team"
 
 from .config import APILeakConfig, ConfigurationManager

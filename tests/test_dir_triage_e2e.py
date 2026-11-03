@@ -182,7 +182,7 @@ def test_dir_triage_interactive_selection_launches_one_follow_up(tmp_path):
     DiscoverySession(
         target="https://api.example.com",
         timestamp="2025-01-15T10:30:00Z",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         results=records,
     ).save(str(session_path))
 

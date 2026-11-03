@@ -125,7 +125,7 @@ target:
   
   # Optional: Custom headers for all requests
   headers:
-    User-Agent: "APILeak/0.2.0"
+    User-Agent: "APILeak/1.0.0"
     Accept: "application/json"
 ```
 

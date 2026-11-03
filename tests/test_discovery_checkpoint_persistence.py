@@ -44,7 +44,7 @@ def _checkpoint() -> DiscoveryCheckpoint:
     return DiscoveryCheckpoint(
         target="https://api.example.com/",
         timestamp="2025-01-01T00:00:00+00:00",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
         tested=[
             ("https://api.example.com/users", "GET"),
             ("https://api.example.com/admin", "GET"),
@@ -71,7 +71,7 @@ def test_save_writes_expected_json_shape(tmp_path):
     assert document["schema_version"] == SCHEMA_VERSION
     assert document["target"] == "https://api.example.com/"
     assert document["timestamp"] == "2025-01-01T00:00:00+00:00"
-    assert document["tool_version"] == "0.2.0"
+    assert document["tool_version"] == "1.0.0"
     assert document["tested"] == [
         {"url": "https://api.example.com/users", "method": "GET"},
         {"url": "https://api.example.com/admin", "method": "GET"},
@@ -106,7 +106,7 @@ def test_save_empty_checkpoint_round_trips(tmp_path):
     checkpoint = DiscoveryCheckpoint(
         target="https://api.example.com/",
         timestamp="2025-01-01T00:00:00+00:00",
-        tool_version="0.2.0",
+        tool_version="1.0.0",
     )
     path = str(tmp_path / "empty.json")
 

@@ -2,7 +2,7 @@
 title: APILeak — Enterprise API Security Testing
 ---
 
-# APILeak v0.3.0
+# APILeak v1.0.0
 
 <div align="center">
   <img src="assets/logo.png" alt="APILeak Logo" width="400" style="margin: 20px auto; display: block;"/>

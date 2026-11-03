@@ -24,7 +24,7 @@ class SARIFFormatter:
     VERSION = "2.1.0"
 
     TOOL_NAME = "APILeak"
-    TOOL_VERSION = "0.2.0"
+    TOOL_VERSION = "1.0.0"
 
     @staticmethod
     def severity_to_level(sev: Any) -> str:
