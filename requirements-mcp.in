@@ -1,0 +1,5 @@
+# Dependencias del extra [mcp] de APILeak.
+# Regenerar con: pip-compile --generate-hashes requirements-mcp.in
+# Requerimiento: OWASP MCP04 / Requirement 13.1
+mcp==1.28.1
+jsonschema>=4.0.0

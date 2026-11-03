@@ -1,0 +1,167 @@
+site_name: APILeak Documentation
+site_description: Enterprise-grade API Security Testing Tool with OWASP API Security Top 10 coverage and MCP AI integration
+site_url: https://MoisesTapia.github.io/apileaks/
+site_author: APILeak Team
+
+repo_name: MoisesTapia/apileaks
+repo_url: https://github.com/MoisesTapia/apileaks
+edit_uri: edit/main/docs/
+
+copyright: Copyright &copy; 2024-2026 APILeak Team — MIT License
+
+# ── Theme ──────────────────────────────────────────────────────────────────
+theme:
+  name: material
+  language: en
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+    - header.autohide
+
+# ── Plugins ────────────────────────────────────────────────────────────────
+plugins:
+  - search:
+      lang: en
+  - minify:
+      minify_html: true
+
+# ── Extensions ────────────────────────────────────────────────────────────
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - tables
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# ── Extra ─────────────────────────────────────────────────────────────────
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/MoisesTapia/apileaks
+      name: GitHub
+  version:
+    provider: mike
+    default: latest
+  analytics:
+    provider: google
+    property: !ENV [GOOGLE_ANALYTICS_KEY, ""]
+
+extra_css:
+  - assets/extra.css
+
+# ── Navigation ────────────────────────────────────────────────────────────
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: installation.md
+    - Quick Reference: quick-reference.md
+    - User Guide: user-guide.md
+    - Usage Examples: usage-examples.md
+    - Configuration: configuration.md
+  - MCP Server (AI Integration):
+    - Overview & Quick Start: mcp-server.md
+    - Docker Deployment: mcp-docker.md
+    - AI Providers: mcp-ai-providers.md
+    - Tools Reference: mcp-tools-reference.md
+    - Security & OWASP Controls: mcp_server_security.md
+  - OWASP Testing:
+    - Coverage Overview: owasp-coverage.md
+    - Scan Command: scan-guide.md
+    - OWASP Command: owasp-command.md
+    - Modules Guide: owasp-modules-guide.md
+    - API1 — BOLA: owasp/bola-testing.md
+    - API3 — Property Level Auth: owasp/property-level-auth.md
+    - API4 — Resource Consumption: owasp/resource-consumption.md
+    - API5 — BFLA: owasp/function-level-auth.md
+    - API6 — Business Flows: owasp/business-flows.md
+    - API7 — SSRF: owasp/ssrf-testing.md
+    - API8 — Misconfiguration: owasp/security-misconfiguration.md
+    - API9 — Inventory: owasp/inventory-management.md
+    - API10 — Unsafe Consumption: owasp/unsafe-consumption.md
+    - HPP (beyond Top 10): owasp/parameter-pollution.md
+    - Spec-Driven Testing: owasp/spec-driven-testing.md
+  - Discovery & Fuzzing:
+    - Advanced Discovery: advanced-discovery.md
+    - Parameter Fuzzing: parameter-fuzzing.md
+    - Payload Generator: payload-generator.md
+    - dir vs scan vs inventory: dir-vs-scan-vs-inventory.md
+    - Framework Detection: framework-detection-version-fuzzing.md
+    - WAF Evasion: waf-evasion.md
+    - Colored HTTP Output: colored-http-output.md
+  - JWT Security:
+    - JWT Attack Testing: jwt-attacks.md
+  - Cloud Audit:
+    - Cloud Audit Guide: cloud_audit/
+  - Deployment:
+    - Docker Usage: docker-usage.md
+    - Docker MCP Server: mcp-docker.md
+    - CI/CD Integration: ci-cd-integration.md
+  - CLI Reference:
+    - CLI Reference: cli-reference.md
+  - Developer Guide:
+    - Architecture: architecture.md
+    - Development Setup: development.md
+    - Developer Guide: developer-guide.md
+    - Testing Guide: testing.md
+    - Troubleshooting: troubleshooting-guide.md

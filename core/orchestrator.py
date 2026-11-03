@@ -186,6 +186,16 @@ class EnhancedOrchestrator:
                     await self._execute_phase(phase_name, target, core_engine)
                     results.phases_executed.append(phase_name)
 
+                    # Emit incremental progress to an attached ToolProgressStream,
+                    # if the engine has one (Task 5.1 / Requirements 3.1, 3.2).
+                    _emit = getattr(core_engine, "_emit_phase_progress", None)
+                    if callable(_emit):
+                        await _emit(
+                            phase_name,
+                            len(results.phases_executed),
+                            len(execution_order),
+                        )
+
                     self.logger.info("Phase completed successfully", phase=phase_name)
 
                 except Exception as e:

@@ -13,6 +13,7 @@ We welcome contributions from the community and are pleased to have you join us 
 - [Testing](#testing)
 - [Submitting Changes](#submitting-changes)
 - [Code Standards](#code-standards)
+- [Dependency Management](#dependency-management)
 - [Documentation](#documentation)
 - [Community](#community)
 
@@ -324,6 +325,82 @@ class ExampleClass:
         """
         return isinstance(item, dict) and 'id' in item
 ```
+
+## 📦 Dependency Management
+
+### MCP SDK Version Bump Policy _(OWASP MCP04 — Supply Chain Security)_
+
+> **⚠️ Mandatory policy: PRs that bump the MCP SDK version (`mcp==X.Y.Z` in `pyproject.toml`) will NOT be merged without evidence of a manual changelog review in the PR description.**
+
+The MCP SDK is a security-critical dependency — it defines the protocol surface that APILeak exposes to AI agents. An unchecked upgrade can silently introduce breaking changes, new attack surfaces, or transitive vulnerabilities. This policy exists to satisfy **OWASP MCP04** supply-chain security requirements and is verified as part of the CI pipeline.
+
+#### Where to find the MCP SDK changelog
+
+- **GitHub Releases**: <https://github.com/modelcontextprotocol/python-sdk/releases>
+- **CHANGELOG.md** in the SDK repository: <https://github.com/modelcontextprotocol/python-sdk/blob/main/CHANGELOG.md>
+
+Always review the changelog for **every version between the current pinned version and the target version**, not just the latest entry.
+
+#### Steps to follow when bumping the MCP SDK version
+
+1. **Review the changelog** — Read the release notes for every version between the current pin and the target. Pay particular attention to:
+   - 🔴 **Breaking changes**: API removals, renamed symbols, changed behavior, updated JSON Schema for tool definitions.
+   - 🟠 **Security fixes**: Any CVE patches, input validation improvements, or protocol-level security hardening.
+   - 🟡 **New features**: New transport options, new tool capabilities, or behavioral additions that may require updates to APILeak's `MCPToolSpec` definitions or guardrails.
+
+2. **Update `pyproject.toml`** — Change the pinned version using an exact `==` operator:
+   ```toml
+   # pyproject.toml — [project.optional-dependencies]
+   mcp = [
+       "mcp==X.Y.Z",   # Always exact pin, never >= or ~=
+       ...
+   ]
+   ```
+
+3. **Regenerate `requirements-mcp.txt` with hash verification**:
+   ```bash
+   pip-compile --generate-hashes requirements-mcp.in -o requirements-mcp.txt
+   ```
+   Commit both `requirements-mcp.in` (if changed) and the updated `requirements-mcp.txt`.
+
+4. **Run the full test suite** — Ensure no regressions were introduced by the SDK update:
+   ```bash
+   make test
+   # Or directly:
+   python -m pytest tests/ -v --tb=short
+   ```
+
+5. **Run `pip-audit`** against the updated MCP/AI extras to verify no new CVEs were introduced:
+   ```bash
+   pip-audit --requirement requirements-mcp.txt
+   ```
+
+6. **Include a changelog review summary in the PR description** — The PR description must contain a section like the following (the merge gate will not be approved without it):
+
+   ```markdown
+   ## MCP SDK Changelog Review (OWASP MCP04)
+
+   - **Previous version**: `mcp==X.Y.Z`
+   - **New version**: `mcp==A.B.C`
+   - **Versions reviewed**: vX.Y.Z+1 → vA.B.C
+   - **Breaking changes**: None / <describe if any>
+   - **Security fixes**: None / <describe CVEs or hardening>
+   - **New features relevant to APILeak**: <describe or "N/A">
+   - **Required follow-up tasks**: <link issues or "None">
+   ```
+
+#### Why this policy matters
+
+| Risk | Mitigation |
+|------|-----------|
+| Transitive CVE inherited via SDK update | `pip-audit` step + hash pinning catch known vulnerabilities |
+| Breaking protocol changes silently corrupt tool definitions | Changelog review + full test suite detect behavioral regressions |
+| New SDK feature changes guardrail semantics | Manual review flags unexpected security-relevant behavior changes |
+| Supply-chain tampering of the SDK package | `--generate-hashes` in `requirements-mcp.txt` verifies package integrity at install time |
+
+This policy applies equally to the `[ai]` optional-dependency group (`anthropic`, `openai`, `boto3` for Bedrock) when those packages receive security-relevant updates. For the MCP SDK specifically, every version bump — including patch releases — requires the full review process above.
+
+---
 
 ## 📚 Documentation
 

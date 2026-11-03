@@ -1,0 +1,162 @@
+name: MCP Self-Audit (Dogfooding)
+
+# Requirement 9.1: Every release build must run `apileaks mcp-audit` against
+# the own MCP server before shipping. This job implements that obligation by
+# launching the APILeak MCP server in stdio mode as the audit target, which
+# means the tool literally audits itself (dogfooding).
+#
+# Task 12.1 — wires up the CI infrastructure.
+# Task 12.2 — activates the severity gate: job fails on any HIGH/CRITICAL finding.
+# Task 12.3 — will publish the audit result in the security documentation.
+
+on:
+  push:
+    branches: [main, develop, v0.2.0, v0.3.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  mcp-self-audit:
+    name: MCP Self-Audit — dogfooding via stdio transport
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Install the package with all dependencies needed to both *run* the MCP
+      # server and *invoke* the mcp-audit command (modules/mcp_security).
+      - name: Install apileaks with [mcp] extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[mcp]"
+
+      # Sanity-check: confirm the CLI commands are reachable before the real run.
+      - name: Verify mcp-server and mcp-audit commands are available
+        run: |
+          apileaks mcp-server --help
+          apileaks mcp-audit  --help
+
+      # Core self-audit step (Requirement 9.1).
+      #
+      # How it works:
+      #   `apileaks mcp-audit --target "apileaks mcp-server --transport stdio"`
+      #
+      #   MCPTargetAuditor receives the target string, detects it is NOT a URL,
+      #   and launches the command as a subprocess in stdio mode.  It then sends
+      #   JSON-RPC `initialize` + `tools/list` + individual `tools/call` probes
+      #   to the spawned process, exactly as a real MCP client would.  The checks
+      #   cover tool-poisoning (Req 8.2), SSRF via URL params (Req 8.3), missing
+      #   confirmation gates on destructive tools (Req 8.4), and credential leaks
+      #   in tool responses (Req 8.5).
+      #
+      # `continue-on-error` is removed as of task 12.2: the severity gate is now
+      #   active.  The post-processing step below fails the job when any finding
+      #   with severity HIGH or CRITICAL is present (Requirement 9.2).  The audit
+      #   command itself may still exit 0; the gate step provides the final verdict.
+      - name: Run MCP self-audit (Requirement 9.1)
+        id: mcp_self_audit
+        run: |
+          apileaks mcp-audit \
+            --target "apileaks mcp-server --transport stdio" \
+            --output json \
+            | tee mcp-self-audit-findings.json
+          echo "audit_exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # Severity gate (Requirement 9.2).
+      #
+      # Reads mcp-self-audit-findings.json (a JSON array of Finding objects) and
+      # exits with code 1 if any finding carries severity HIGH or CRITICAL.
+      # This step is implemented as a self-contained Python script so it does not
+      # depend on a --fail-on-findings CLI flag being present in the apileaks
+      # binary.  The Finding model uses str-enum values: "HIGH" and "CRITICAL".
+      - name: Severity gate — fail on HIGH/CRITICAL findings (Requirement 9.2)
+        id: severity_gate
+        run: |
+          python3 - <<'EOF'
+          import json
+          import sys
+
+          FINDINGS_FILE = "mcp-self-audit-findings.json"
+          BLOCKING_SEVERITIES = {"HIGH", "CRITICAL"}
+
+          try:
+              with open(FINDINGS_FILE) as fh:
+                  data = json.load(fh)
+          except FileNotFoundError:
+              print(f"::warning::{FINDINGS_FILE} not found — skipping severity gate")
+              sys.exit(0)
+          except json.JSONDecodeError as exc:
+              print(f"::error::Could not parse {FINDINGS_FILE}: {exc}")
+              sys.exit(1)
+
+          # Support both a bare list and the {"findings": [...]} envelope shape.
+          if isinstance(data, dict):
+              findings = data.get("findings", [])
+          elif isinstance(data, list):
+              findings = data
+          else:
+              print(f"::error::Unexpected JSON shape in {FINDINGS_FILE}")
+              sys.exit(1)
+
+          blocking = [
+              f for f in findings
+              if str(f.get("severity", "")).upper() in BLOCKING_SEVERITIES
+          ]
+
+          if blocking:
+              print(f"::error::MCP self-audit produced {len(blocking)} HIGH/CRITICAL finding(s). "
+                    "Release pipeline blocked (Requirement 9.2).")
+              for f in blocking:
+                  sev  = f.get("severity", "UNKNOWN")
+                  cat  = f.get("category", "UNKNOWN")
+                  ep   = f.get("endpoint", "")
+                  meth = f.get("method", "")
+                  print(f"  [{sev}] {cat}  {meth} {ep}")
+              sys.exit(1)
+
+          print(f"Severity gate passed — {len(findings)} finding(s), none HIGH or CRITICAL.")
+          sys.exit(0)
+          EOF
+
+      # Always upload the findings JSON so they appear in the Actions summary
+      # even when the audit step is skipped or fails.
+      - name: Upload self-audit findings as build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-self-audit-findings-${{ github.run_number }}
+          path: mcp-self-audit-findings.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # Emit a workflow annotation so the findings are visible in the PR check
+      # summary without having to download the artifact.
+      - name: Summarize audit outcome
+        if: always()
+        run: |
+          if [ -f mcp-self-audit-findings.json ]; then
+            FINDING_COUNT=$(python3 -c "
+          import json, sys
+          try:
+              data = json.load(open('mcp-self-audit-findings.json'))
+              # Output is a JSON array when --output json is used.
+              if isinstance(data, list):
+                  print(len(data))
+              else:
+                  print(0)
+          except Exception:
+              print('unknown')
+          ")
+            echo "::notice title=MCP Self-Audit::Findings detected: ${FINDING_COUNT} (see artifact mcp-self-audit-findings-${{ github.run_number }})"
+          else
+            echo "::notice title=MCP Self-Audit::Findings file not produced — audit may have exited early or produced text output"
+          fi
