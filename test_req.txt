@@ -1,47 +1,452 @@
-Register User Account: POST
+==============================================================
+  APILeak v1.0.0 — apileaks req / apileaks request
+  Ejemplos de prueba del nuevo comando HTTP
+==============================================================
 
-POST /api/users.php?format=json HTTP/1.1
-HOST: localhost
-content-­‐length: 76
-
-username=doctest&password=doctest&cnfpassword=doctest&email=doctest@test.com
-
-User Login: GET
-
-GET /api/users.php?format=json&username=doctest&password=doctest HTTP/1.1
-HOST: localhost
-
-View Profile: GET
-
-GET /api/users.php?format=json&token=2c76e72a8ae99c3c485190157649b2a6 HTTP/1.1
-HOST: localhost
-
-Update password: PUT
-
-PUT /api/users.php?format=json HTTP/1.1
-HOST: localhost
-content-­‐length: 267
-<?xml version="1.0" standalone="yes"?>
-<updatepassword>
-<user>
-<username>doctest</username>
-<newpassword>doctest</newpassword>
-<cnfnewpassword>doctest</cnfnewpassword>
-<token>2c76e72a8ae99c3c485190157649b2a6</token>
-</user>
-</updatepassword>
-
-Delete Account: DELETE
+NOTA: reemplaza https://api.example.com con tu target real
+      reemplaza eyJhbGci... con un token válido si el endpoint lo requiere
+      reemplaza 127.0.0.1:8080 con el listener de tu proxy
 
 
-DELETE /api/users.php?format=json HTTP/1.1
-HOST: localhost
-content-­‐length: 145
-<?xml version="1.0" standalone="yes"?>
-<deleteaccount>
-<user>
-<token>2c76e72a8ae99c3c485190157649b2a6</token>
-</user>
-</deleteaccount>
+──────────────────────────────────────────────────────────────
+ 1. BÁSICO — GET / POST / PATCH / DELETE
+──────────────────────────────────────────────────────────────
+
+# GET simple
+python apileaks.py req GET https://api.example.com/users
+
+# GET con https automático (sin esquema)
+python apileaks.py req GET api.example.com/users
+
+# POST vacío
+python apileaks.py req POST https://api.example.com/users
+
+# PUT
+python apileaks.py req PUT https://api.example.com/users/42
+
+# PATCH
+python apileaks.py req PATCH https://api.example.com/users/42
+
+# DELETE
+python apileaks.py req DELETE https://api.example.com/users/42
+
+# HEAD (solo headers de respuesta)
+python apileaks.py req HEAD https://api.example.com/users
+
+# OPTIONS (ver métodos permitidos)
+python apileaks.py req OPTIONS https://api.example.com/users
 
 
+──────────────────────────────────────────────────────────────
+ 2. BODY — JSON, KEY=VALUE, FORM, RAW
+──────────────────────────────────────────────────────────────
+
+# --json string directa
+python apileaks.py req POST https://api.example.com/users \
+  --json '{"username":"alice","email":"alice@test.com","role":"admin"}'
+
+# Key=value httpie-style (todos strings)
+python apileaks.py req POST https://api.example.com/users \
+  username=alice email=alice@test.com role=admin
+
+# Key:=value tipado — entero, bool, array, objeto
+python apileaks.py req POST https://api.example.com/users \
+  username=alice age:=30 active:=true roles:='["admin","editor"]'
+
+# Objeto anidado con :=
+python apileaks.py req POST https://api.example.com/users \
+  username=alice meta:='{"plan":"enterprise","seats":50}'
+
+# Form data (application/x-www-form-urlencoded)
+python apileaks.py req POST https://api.example.com/auth/login \
+  -F username=admin -F password=hunter2 -F remember_me=true
+
+# Raw body (ej: GraphQL)
+python apileaks.py req POST https://api.example.com/graphql \
+  --raw '{"query":"{ users { id username email } }"}' \
+  -H "Content-Type: application/json"
+
+# PATCH con JSON — modificar un recurso
+python apileaks.py req PATCH https://api.example.com/users/42 \
+  --json '{"role":"superadmin","active":true}'
+
+# PATCH httpie-style
+python apileaks.py req PATCH https://api.example.com/users/42 \
+  role=superadmin active:=true
+
+
+──────────────────────────────────────────────────────────────
+ 3. AUTENTICACIÓN
+──────────────────────────────────────────────────────────────
+
+# JWT / Bearer token
+python apileaks.py req GET https://api.example.com/admin/users \
+  --jwt eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig
+
+# Bearer manual con -H
+python apileaks.py req GET https://api.example.com/admin/users \
+  -H "Authorization: Bearer eyJhbGci..."
+
+# API key en header
+python apileaks.py req GET https://api.example.com/users \
+  -H "X-API-Key: sk-EXAMPLE_abcdefghijklmnop"
+
+# API key en query param
+python apileaks.py req GET https://api.example.com/users \
+  -p api_key=abcdef1234567890
+
+# Basic Auth
+python apileaks.py req GET https://api.example.com/admin \
+  -H "Authorization: Basic YWRtaW46aHVudGVyMg=="
+
+# JWT + headers adicionales de contexto
+python apileaks.py req GET https://api.example.com/internal/config \
+  --jwt eyJhbGci... \
+  -H "X-Forwarded-For: 127.0.0.1" \
+  -H "X-Internal-Token: internal-secret-123" \
+  -H "Accept: application/json"
+
+
+──────────────────────────────────────────────────────────────
+ 4. PROXY — Burp Suite / Caido / Hetty / mitmproxy
+──────────────────────────────────────────────────────────────
+
+# GET a través de Burp (listener default 8080)
+python apileaks.py req GET https://api.example.com/users \
+  --proxy http://127.0.0.1:8080
+
+# POST con body a través de Burp
+python apileaks.py req POST https://api.example.com/users \
+  --json '{"username":"alice","role":"admin"}' \
+  --proxy http://127.0.0.1:8080
+
+# PATCH con JWT + Burp — prueba de BOLA/escalada de privilegios
+python apileaks.py req PATCH https://api.example.com/users/42 \
+  --json '{"role":"superadmin"}' \
+  --jwt eyJhbGci... \
+  --proxy http://127.0.0.1:8080
+
+# DELETE a través de proxy
+python apileaks.py req DELETE https://api.example.com/users/99 \
+  --jwt eyJhbGci... \
+  --proxy http://127.0.0.1:8080
+
+# Caido (listener default 8080 también)
+python apileaks.py req POST https://api.example.com/auth/login \
+  username=admin password=hunter2 \
+  --proxy http://127.0.0.1:8080
+
+# Hetty
+python apileaks.py req GET https://api.example.com/config \
+  --jwt eyJhbGci... \
+  --proxy http://127.0.0.1:8080
+
+# mitmproxy (listener default 8080)
+python apileaks.py req GET https://api.example.com/admin \
+  --proxy http://127.0.0.1:8080
+
+# SOCKS5 (Tor / SSH tunnel)
+python apileaks.py req GET https://api.example.com/users \
+  --proxy socks5://127.0.0.1:9050
+
+# Proxy + JWT + headers + body completo
+python apileaks.py req POST https://api.example.com/api/v2/orders \
+  --json '{"product_id":1,"quantity":999,"price":0.01}' \
+  --jwt eyJhbGci... \
+  -H "X-Request-ID: test-order-001" \
+  -H "X-Forwarded-For: 10.0.0.1" \
+  --proxy http://127.0.0.1:8080
+
+
+──────────────────────────────────────────────────────────────
+ 5. QUERY PARAMS
+──────────────────────────────────────────────────────────────
+
+# Un param
+python apileaks.py req GET https://api.example.com/search \
+  -p q=admin
+
+# Múltiples params
+python apileaks.py req GET https://api.example.com/users \
+  -p page=1 -p limit=100 -p sort=created_at -p order=desc
+
+# Params + JWT + proxy
+python apileaks.py req GET https://api.example.com/audit-log \
+  -p from=2026-01-01 -p to=2026-11-03 \
+  --jwt eyJhbGci... \
+  --proxy http://127.0.0.1:8080
+
+# Params para prueba de inyección / HPP
+python apileaks.py req GET https://api.example.com/products \
+  -p category=electronics -p user_id=1 -p user_id=42
+
+
+──────────────────────────────────────────────────────────────
+ 6. HEADERS EXTRA
+──────────────────────────────────────────────────────────────
+
+# Content-Type custom
+python apileaks.py req POST https://api.example.com/import \
+  --raw '<user><name>alice</name></user>' \
+  -H "Content-Type: application/xml"
+
+# Múltiples headers de seguridad / bypass
+python apileaks.py req GET https://api.example.com/admin \
+  -H "X-Forwarded-For: 127.0.0.1" \
+  -H "X-Real-IP: 127.0.0.1" \
+  -H "X-Original-URL: /public" \
+  -H "X-Rewrite-URL: /public"
+
+# Custom Accept
+python apileaks.py req GET https://api.example.com/users \
+  -H "Accept: application/xml"
+
+# Referer / Origin spoofing
+python apileaks.py req GET https://api.example.com/api/data \
+  -H "Origin: https://trusted.com" \
+  -H "Referer: https://trusted.com/app"
+
+
+──────────────────────────────────────────────────────────────
+ 7. FOLLOW REDIRECTS
+──────────────────────────────────────────────────────────────
+
+# Por defecto NO sigue redirects — ver el 301/302 crudo
+python apileaks.py req GET https://api.example.com/old-path
+
+# Seguir redirects
+python apileaks.py req GET https://api.example.com/old-path \
+  --follow-redirects
+
+# Seguir redirects a través de proxy (para capturar el chain completo en Burp)
+python apileaks.py req GET https://api.example.com/login \
+  --follow-redirects \
+  --proxy http://127.0.0.1:8080
+
+
+──────────────────────────────────────────────────────────────
+ 8. TLS / CERTIFICADOS
+──────────────────────────────────────────────────────────────
+
+# Deshabilitar verificación TLS (targets con cert autofirmado)
+python apileaks.py req GET https://10.0.0.5:8443/api/users \
+  --no-verify
+
+# Con proxy — TLS se deshabilita automáticamente, sin necesidad de --no-verify
+python apileaks.py req GET https://api.internal.com/users \
+  --proxy http://127.0.0.1:8080
+
+
+──────────────────────────────────────────────────────────────
+ 9. TIMEOUT
+──────────────────────────────────────────────────────────────
+
+# Timeout corto (endpoint rápido esperado)
+python apileaks.py req GET https://api.example.com/health --timeout 5
+
+# Timeout largo (endpoint que tarda / subida de archivo)
+python apileaks.py req POST https://api.example.com/import \
+  --json '{"data":[...]}' --timeout 120
+
+
+──────────────────────────────────────────────────────────────
+ 10. ESCANEO DE SECRETOS EN RESPUESTA
+──────────────────────────────────────────────────────────────
+
+# Buscar secretos en el body de respuesta
+python apileaks.py req GET https://api.example.com/config \
+  --scan-response
+
+# Config endpoint con JWT + scan
+python apileaks.py req GET https://api.example.com/admin/settings \
+  --jwt eyJhbGci... \
+  --scan-response
+
+# Endpoint que devuelve credenciales de terceros
+python apileaks.py req GET https://api.example.com/integrations/tokens \
+  --jwt eyJhbGci... \
+  --scan-response \
+  --proxy http://127.0.0.1:8080
+
+# Output JSON + scan para guardar los hallazgos
+python apileaks.py req GET https://api.example.com/config \
+  --jwt eyJhbGci... \
+  --scan-response \
+  --output json > scan-config.json
+
+
+──────────────────────────────────────────────────────────────
+ 11. OUTPUT — QUIET / JSON / PIPE
+──────────────────────────────────────────────────────────────
+
+# Solo el body (para scripting)
+python apileaks.py req GET https://api.example.com/token \
+  --quiet
+
+# Pipe a jq — extraer un campo
+python apileaks.py req GET https://api.example.com/auth/token \
+  --quiet | jq .access_token
+
+# Login → extraer token → usarlo en siguiente request (bash)
+TOKEN=$(python apileaks.py req POST https://api.example.com/auth/login \
+  --json '{"username":"admin","password":"hunter2"}' --quiet | jq -r .access_token)
+python apileaks.py req GET https://api.example.com/admin/users --jwt "$TOKEN"
+
+# Output JSON estructurado
+python apileaks.py req POST https://api.example.com/users \
+  --json '{"name":"alice","role":"admin"}' \
+  --output json
+
+# Output JSON a archivo
+python apileaks.py req GET https://api.example.com/users \
+  --jwt eyJhbGci... \
+  --output json > response.json
+
+# Output JSON + scan + guardar
+python apileaks.py req GET https://api.example.com/config \
+  --jwt eyJhbGci... \
+  --output json \
+  --scan-response > config-audit.json
+
+
+──────────────────────────────────────────────────────────────
+ 12. GUARDAR SESIÓN PARA REPLAY
+──────────────────────────────────────────────────────────────
+
+# Guardar en sesión nueva
+python apileaks.py req POST https://api.example.com/users \
+  --json '{"username":"alice","role":"admin"}' \
+  --jwt eyJhbGci... \
+  --save-session sessions/pentest.json
+
+# Agregar más requests a la misma sesión
+python apileaks.py req GET https://api.example.com/users/99 \
+  --jwt eyJhbGci... \
+  --save-session sessions/pentest.json
+
+python apileaks.py req DELETE https://api.example.com/users/99 \
+  --jwt eyJhbGci... \
+  --save-session sessions/pentest.json
+
+# Ver qué hay en la sesión
+python apileaks.py replay sessions/pentest.json --list
+
+# Replay de todo a través de Burp
+python apileaks.py replay sessions/pentest.json \
+  --proxy http://127.0.0.1:8080 \
+  --all
+
+# Replay solo los POST
+python apileaks.py replay sessions/pentest.json \
+  --method POST \
+  --proxy http://127.0.0.1:8080 \
+  --all
+
+
+──────────────────────────────────────────────────────────────
+ 13. CI / SCRIPTS / EXIT CODES
+──────────────────────────────────────────────────────────────
+
+# Falla si el endpoint devuelve 4xx o 5xx
+python apileaks.py req GET https://api.example.com/health \
+  --fail-on-error
+
+# En bash: healthcheck en pipeline
+python apileaks.py req GET https://api.example.com/health \
+  --quiet --fail-on-error && echo "OK" || echo "DOWN"
+
+# Verificar que un endpoint protegido devuelve 401 sin token
+# (esperas el 401 — sin --fail-on-error el exit code es 0 igual)
+python apileaks.py req GET https://api.example.com/admin \
+  --output json | jq .status_code
+
+
+──────────────────────────────────────────────────────────────
+ 14. CASOS DE PRUEBA DE SEGURIDAD TÍPICOS
+──────────────────────────────────────────────────────────────
+
+# Prueba BOLA — acceder a recurso de otro usuario
+python apileaks.py req GET https://api.example.com/users/1 \
+  --jwt eyJhbGci...user42_token...
+
+python apileaks.py req GET https://api.example.com/users/2 \
+  --jwt eyJhbGci...user42_token...  # ¿devuelve datos del usuario 2?
+
+# Prueba de escalada de privilegios vía PATCH
+python apileaks.py req PATCH https://api.example.com/users/42 \
+  --json '{"role":"admin"}' \
+  --jwt eyJhbGci...low_privilege_token... \
+  --proxy http://127.0.0.1:8080
+
+# Probar endpoint admin con token de usuario normal
+python apileaks.py req GET https://api.example.com/admin/users \
+  --jwt eyJhbGci...user_token_not_admin...
+
+# Probar si el servidor acepta un token caducado
+python apileaks.py req GET https://api.example.com/api/data \
+  --jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIiwiZXhwIjoxMDAwfQ.expired_sig
+
+# Probar CORS — Origin inusual
+python apileaks.py req GET https://api.example.com/api/data \
+  --jwt eyJhbGci... \
+  -H "Origin: https://evil.com"
+
+# Probar Host header injection
+python apileaks.py req GET https://api.example.com/reset-password \
+  -H "Host: evil.com"
+
+# Probar mass assignment — enviar campos extra no declarados
+python apileaks.py req POST https://api.example.com/users \
+  --json '{"username":"alice","password":"test","role":"admin","isAdmin":true,"privilege_level":99}' \
+  --proxy http://127.0.0.1:8080
+
+# Probar inyección en query param a través de Burp
+python apileaks.py req GET https://api.example.com/products \
+  -p id="1 OR 1=1" \
+  --proxy http://127.0.0.1:8080
+
+# Probar endpoint interno con IP directa (bypass de hostname-based auth)
+python apileaks.py req GET https://10.0.0.10/internal/config \
+  --no-verify \
+  -H "Host: api.example.com"
+
+# Escanear respuesta de un endpoint de configuración expuesto
+python apileaks.py req GET https://api.example.com/.env \
+  --scan-response
+
+python apileaks.py req GET https://api.example.com/api/debug/config \
+  --jwt eyJhbGci... \
+  --scan-response \
+  --proxy http://127.0.0.1:8080
+
+
+──────────────────────────────────────────────────────────────
+ 15. COMBINACIONES COMPLETAS (FLUJOS REALES)
+──────────────────────────────────────────────────────────────
+
+# Flujo completo: login → token → acción privilegiada → a través de Burp
+python apileaks.py req POST https://api.example.com/auth/login \
+  --json '{"username":"admin","password":"hunter2"}' \
+  --proxy http://127.0.0.1:8080 \
+  --save-session sessions/admin-session.json
+
+# Luego con el token del body anterior:
+python apileaks.py req POST https://api.example.com/admin/users \
+  --json '{"username":"backdoor","role":"admin","password":"abc123"}' \
+  --jwt eyJhbGci...token_del_login... \
+  --proxy http://127.0.0.1:8080 \
+  --save-session sessions/admin-session.json
+
+# Verificar si el usuario fue creado (scan de secretos en respuesta)
+python apileaks.py req GET https://api.example.com/admin/users \
+  --jwt eyJhbGci...token_del_login... \
+  --proxy http://127.0.0.1:8080 \
+  --scan-response
+
+# Replay del flujo completo para repetirlo con variaciones
+python apileaks.py replay sessions/admin-session.json \
+  --list
+
+python apileaks.py replay sessions/admin-session.json \
+  --proxy http://127.0.0.1:8080 \
+  --all
