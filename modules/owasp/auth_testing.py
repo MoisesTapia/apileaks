@@ -3029,6 +3029,45 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         total = 10**digits
         return [str(i).zfill(digits) for i in range(total)]
 
+    def _otp_attempt_succeeded(self, response: Response) -> bool:
+        """Decide whether an OTP attempt succeeded.
+
+        Precedence of operator-configured rules (any set takes priority over the
+        default 2xx check):
+
+        1. ``otp_success_match`` — regex found in the body => success.
+        2. ``otp_failure_match`` — regex ABSENT from the body => success.
+        3. ``otp_filter_size``   — response size != the filtered size => success
+           (mirrors ffuf ``-fs``: the filtered size is the known FAILURE size).
+
+        Falls back to ``response.is_success`` (2xx) when none are configured.
+        """
+        body = response.text or ""
+
+        success_match = getattr(self.config, "otp_success_match", None)
+        if success_match:
+            try:
+                return re.search(success_match, body, re.IGNORECASE) is not None
+            except re.error as e:
+                self.logger.warning("Invalid otp_success_match regex", error=str(e))
+                return response.is_success
+
+        failure_match = getattr(self.config, "otp_failure_match", None)
+        if failure_match:
+            try:
+                return re.search(failure_match, body, re.IGNORECASE) is None
+            except re.error as e:
+                self.logger.warning("Invalid otp_failure_match regex", error=str(e))
+                return response.is_success
+
+        filter_size = getattr(self.config, "otp_filter_size", None)
+        if filter_size is not None:
+            # A response whose size differs from the filtered (failure) size is a
+            # candidate success, just like ffuf's -fs filter.
+            return len(response.content) != int(filter_size)
+
+        return response.is_success
+
     async def _test_otp_brute_force(self) -> list[Finding]:
         """Sequential OTP / MFA brute-force probe (Level 2, CWE-307).
 
@@ -3058,37 +3097,52 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         otp_endpoint = getattr(self.config, "otp_endpoint", None)
         session_token = getattr(self.config, "otp_session_token", None)
+        extra_fields = getattr(self.config, "otp_extra_fields", None) or {}
         if not otp_endpoint:
             self.logger.info("OTP brute-force probe skipped; no otp_endpoint configured")
             return findings
-        if not session_token:
-            self.logger.info("OTP brute-force probe skipped; no otp_session_token configured")
+        # The session token is required UNLESS the operator supplies extra body
+        # fields (e.g. Email + NewPassword for a password-reset flow), which
+        # identify the target without a provisional/session token.
+        if not session_token and not extra_fields:
+            self.logger.info(
+                "OTP brute-force probe skipped; no otp_session_token or otp_extra_fields configured"
+            )
             return findings
 
         digits = max(4, int(getattr(self.config, "otp_digits", 6)))
         otp_field = getattr(self.config, "otp_field", "otp")
         session_field = getattr(self.config, "otp_session_field", "session_token")
-        max_attempts = max(1, int(getattr(self.config, "rate_limit_attempts", 10)))
+        exhaustive = bool(getattr(self.config, "otp_exhaustive", False))
 
         codes = self._generate_otp_codes(digits)
-        probe_codes = codes[:max_attempts]
+        if exhaustive:
+            probe_codes = codes  # full 10**digits space
+        else:
+            max_attempts = max(1, int(getattr(self.config, "rate_limit_attempts", 10)))
+            probe_codes = codes[:max_attempts]
 
         self.logger.info(
             "Starting OTP brute-force probe",
             endpoint=otp_endpoint,
             digits=digits,
             max_attempts=len(probe_codes),
+            exhaustive=exhaustive,
         )
 
         responses: list[Response] = []
         successful_code: str | None = None
 
         for code in probe_codes:
+            body = {otp_field: code}
+            if session_token:
+                body[session_field] = session_token
+            body.update(extra_fields)
             try:
                 resp = await self.http_client.request(
                     "POST",
                     otp_endpoint,
-                    json={otp_field: code, session_field: session_token},
+                    json=body,
                     headers={"Content-Type": "application/json"},
                 )
             except Exception as e:
@@ -3097,7 +3151,7 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
             responses.append(resp)
 
-            if resp.is_success:
+            if self._otp_attempt_succeeded(resp):
                 successful_code = code
                 break
 

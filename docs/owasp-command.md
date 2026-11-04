@@ -184,6 +184,39 @@ python apileaks.py owasp auth \
   --failure-match 'Invalid|incorrect|denied'
 ```
 
+### OTP / MFA Brute-Force Probe
+
+Enumerates numeric OTP codes against a verification or password-reset endpoint. Requires `--allow-aggressive-auth`. For the full guide see [Authentication Testing (API2)](owasp/authentication-testing.md#otp--mfa-brute-force).
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--otp-endpoint URL` | OTP verification / reset endpoint (POST JSON) | — | `--otp-endpoint https://api.example.com/api/v1/auth/otp/verify` |
+| `--otp-digits N` | Digits in the OTP code | `6` | `--otp-digits 4` |
+| `--otp-field FIELD` | JSON field carrying the code | `otp` | `--otp-field OTP` |
+| `--otp-session-token TOKEN` | Provisional/session token (optional with extra fields) | — | `--otp-session-token prov_abc` |
+| `--otp-session-field FIELD` | Session token field name | `session_token` | `--otp-session-field session` |
+| `--otp-extra-field KEY=VALUE` | Extra fixed body field (repeatable) | — | `--otp-extra-field 'Email=victim@x.com'` |
+| `--otp-success-match REGEX` | Body regex marking a correct OTP | — | `--otp-success-match 'reset successful'` |
+| `--otp-failure-match REGEX` | Body regex whose absence marks a correct OTP | — | `--otp-failure-match 'Invalid OTP'` |
+| `--otp-filter-size N` | Failure response byte size (ffuf `-fs`); other sizes = hit | — | `--otp-filter-size 23` |
+| `--otp-exhaustive` | Enumerate the full `10**digits` space | off | `--otp-exhaustive` |
+| `--otp-race-concurrency N` | Concurrency for the OTP race-condition probe | `50` | `--otp-race-concurrency 100` |
+
+Example — 4-digit OTP brute-force on a password-reset flow, classifying success by response size (equivalent to `ffuf -fs 23`):
+
+```bash
+python apileaks.py owasp auth \
+  --target 'http://host' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'http://host/api/v1/authentication/customers/passwords/resets' \
+  --otp-digits 4 --otp-field OTP \
+  --otp-extra-field 'Email=victim@example.com' \
+  --otp-extra-field 'NewPassword=123456' \
+  --otp-filter-size 23 \
+  --otp-exhaustive \
+  --hide-errors
+```
+
 ## Function Level Auth Module Options (API5)
 
 The `function_auth` subcommand accepts the transversal options above plus these module-specific options. For the full guide, see [Function Level Authorization Testing (API5)](owasp/function-level-auth.md).
