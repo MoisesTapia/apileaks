@@ -276,6 +276,23 @@ TRANSVERSAL_OPTIONS = [
         "list of endpoint types like 'admin,api_version'. Only narrows the default "
         "recursion; never relaxes it.",
     ),
+    click.option(
+        "--hide-status",
+        "hide_status",
+        metavar="CODES",
+        default=None,
+        help="Hide HTTP requests with these status codes from the request log "
+        "(display-only; findings are unaffected). Accepts codes, ranges, and "
+        "class tokens, e.g. '400,404' or '4xx,5xx'.",
+    ),
+    click.option(
+        "--hide-errors",
+        "hide_errors",
+        is_flag=True,
+        default=False,
+        help="Hide all 4xx and 5xx HTTP requests from the request log "
+        "(shortcut for --hide-status 4xx,5xx). Display-only.",
+    ),
 ]
 
 

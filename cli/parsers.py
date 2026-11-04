@@ -77,7 +77,30 @@ def parse_status_codes(status_filter: str) -> list:
 
     return sorted(set(codes))  # Remove duplicates and sort
 
-    return sorted(set(codes))  # Remove duplicates and sort
+
+def parse_status_codes_with_classes(status_filter: str) -> list:
+    """Parse a status filter supporting class tokens like ``4xx``/``5xx``.
+
+    Extends :func:`parse_status_codes` by also accepting class tokens of the
+    form ``Nxx`` (e.g. ``4xx`` expands to 400-499). Individual codes and ranges
+    are still handled by the underlying parser. Returns a sorted, de-duplicated
+    list of integer status codes.
+    """
+    if not status_filter:
+        return []
+
+    codes: list[int] = []
+    for part in status_filter.split(","):
+        token = part.strip().lower()
+        if not token:
+            continue
+        if len(token) == 3 and token.endswith("xx") and token[0].isdigit():
+            base = int(token[0]) * 100
+            codes.extend(range(base, base + 100))
+        else:
+            codes.extend(parse_status_codes(token))
+
+    return sorted(set(codes))
 
 
 def _validate_confirm_hits(ctx, param, value):

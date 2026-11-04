@@ -391,9 +391,47 @@ class AuthTestingConfig:
     spray_password: str | None = None
     # Maximum requests per spray batch before a pause (safety bound).
     spray_batch_size: int = 50
-    # JSON field names for username and password in the login body.
+    # Field names for username and password in the login request.
     login_username_field: str = "username"
     login_password_field: str = "password"
+    # Explicit login endpoint URL. When set, the password-spray probe targets
+    # this URL directly instead of relying on auto-detection from the discovered
+    # endpoints (which only recognizes POST/PUT routes matching known login
+    # path patterns like /login or /signin).
+    login_endpoint: str | None = None
+    # How credentials are transmitted to the login endpoint for the spray probe:
+    #   "json"  -> JSON body (default): {"username": ..., "password": ...}
+    #   "form"  -> application/x-www-form-urlencoded body
+    #   "query" -> appended to the URL query string (for GET-style login APIs)
+    #   "xml"   -> application/xml body
+    login_send_mode: str = "json"
+    # HTTP method used for spray login requests. Defaults to POST; use GET for
+    # query-string login APIs such as users.php?username=..&password=..
+    login_method: str = "POST"
+    # -------------------------------------------------------------------
+    # Password brute-force fields (Level 3 Advanced): the inverse of spraying,
+    # one fixed username tried against a list of candidate passwords.
+    # -------------------------------------------------------------------
+    # Fixed username/email to brute-force.
+    brute_username: str | None = None
+    # Path to a file containing one candidate password per line.
+    passwords_wordlist: str | None = None
+    # Maximum passwords attempted in one brute-force run (safety bound).
+    brute_batch_size: int = 100
+    # -------------------------------------------------------------------
+    # Success-detection fields (shared by spray / brute-force probes).
+    # By default success is a 2xx status code. These let the operator define
+    # success from the RESPONSE BODY/STATUS, needed for APIs that return 200
+    # for both valid and invalid logins (e.g. PHP APIs) or for SQLi payloads.
+    # -------------------------------------------------------------------
+    # Regex searched in the response body; a match marks the attempt as success.
+    success_match: str | None = None
+    # Regex searched in the response body; its ABSENCE marks success (the string
+    # is the known failure marker, e.g. "Invalid credentials").
+    failure_match: str | None = None
+    # Explicit set of HTTP status codes that count as success (e.g. {200, 302}).
+    # When None, the default 2xx rule applies.
+    success_status_codes: list[int] | None = None
     # -------------------------------------------------------------------
     # IP-rotation / header-injection fields (Level 3 Advanced).
     # -------------------------------------------------------------------
@@ -1197,7 +1235,11 @@ class CICDIntegrationConfig:
 class HTTPOutputConfig:
     """HTTP output configuration"""
 
+    # Allowlist: when set, ONLY these status codes are printed.
     status_code_filter: list[int] | None = None
+    # Denylist: when set, these status codes are hidden from the HTTP request log
+    # (e.g. [400, 404] or an expanded 4xx/5xx class). Applied after the allowlist.
+    hide_status_codes: list[int] | None = None
 
 
 def _looks_like_env_var_ref(value: str) -> bool:

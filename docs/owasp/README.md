@@ -7,7 +7,7 @@ APILeak provides comprehensive coverage of the OWASP API Security Top 10 2023, t
 | Rank | Category | Module key | Status | Priority | Summary |
 |------|----------|-----------|--------|----------|---------|
 | **API1** | [Broken Object Level Authorization](bola-testing.md) | `bola` | ✅ Complete | P0 | Broken Object Level Authorization (BOLA) detection |
-| **API2** | Broken Authentication | `auth` | ✅ Complete | P0 | Broken Authentication detection |
+| **API2** | [Broken Authentication](authentication-testing.md) | `auth` | ✅ Complete | P0 | Broken Authentication detection (incl. spraying & brute-force) |
 | **API3** | [Broken Object Property Level Authorization](property-level-auth.md) | `property` | ✅ Complete | P0 | Broken Object Property Level Authorization detection |
 | **API4** | [Unrestricted Resource Consumption](resource-consumption.md) | `resource` | ✅ Complete | P1 | Unrestricted Resource Consumption detection |
 | **API5** | [Broken Function Level Authorization](function-level-auth.md) | `function_auth` | ✅ Complete | P0 | Broken Function Level Authorization detection |
@@ -250,6 +250,7 @@ Integrate OWASP testing into CI/CD pipelines:
 ### Detailed Module Guides
 
 - **[BOLA Testing (API1)](bola-testing.md)** - Comprehensive guide to Broken Object Level Authorization testing
+- **[Authentication Testing (API2)](authentication-testing.md)** - Password spraying, brute-force, credential transport modes, and response-based success detection
 - **[Property Level Authorization (API3)](property-level-auth.md)** - Mass assignment, data exposure, and property-level access control
 - **[SSRF Testing (API7)](ssrf-testing.md)** - Internal network access, cloud metadata, blind SSRF, bypass encodings, port scanning
 - **[HTTP Parameter Pollution](parameter-pollution.md)** - Discovered-endpoint and Burp/Caido capture-replay duplicate-parameter testing

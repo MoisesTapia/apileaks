@@ -35,6 +35,7 @@ from cli.parsers import (
     load_user_agents_from_file,
     parse_auth_context_option,
     parse_status_codes,
+    parse_status_codes_with_classes,
     parse_target_file,
     prepare_output_filename,
     validate_user_agent_options,
@@ -126,6 +127,19 @@ def _apply_transversal_overrides(cfg, opts, parsed_auth_contexts):
     if opts.get("sarif") and hasattr(cfg, "reporting"):
         if "sarif" not in cfg.reporting.formats:
             cfg.reporting.formats.append("sarif")
+
+    # --- HTTP request-log hide filter (--hide-status / --hide-errors) ---
+    # Suppresses matching status codes from the colored HTTP request log without
+    # affecting findings. --hide-errors is a shortcut for 4xx+5xx. Both merge
+    # into cfg.http_output.hide_status_codes when hasattr(cfg, "http_output").
+    if hasattr(cfg, "http_output"):
+        hidden: set[int] = set(getattr(cfg.http_output, "hide_status_codes", None) or [])
+        if opts.get("hide_status"):
+            hidden.update(parse_status_codes_with_classes(opts["hide_status"]))
+        if opts.get("hide_errors"):
+            hidden.update(range(400, 600))
+        if hidden:
+            cfg.http_output.hide_status_codes = sorted(hidden)
 
     # --- multi-user auth contexts (appended to the existing anonymous context) ---
     if parsed_auth_contexts and hasattr(cfg, "authentication"):
@@ -593,6 +607,28 @@ def _build_and_run(ctx, *, selected_keys, descriptors, opts, config_path=None):
             # When endpoints come from a spec, skip parameter fuzzing — it
             # generates thousands of wordlist probes against endpoints the
             # operator already knows about and drowns the OWASP module output.
+            if hasattr(cfg, "fuzzing") and hasattr(cfg.fuzzing, "parameters"):
+                cfg.fuzzing.parameters.enabled = False
+                cfg.fuzzing.headers.enabled = False
+
+        # --- 6c. --no-discovery: skip wordlist/endpoint discovery and seed the
+        #     scan with ONLY the target URL. Mirrors the spec-seeding path above
+        #     but uses the single resolved target, so the OWASP modules run
+        #     exclusively against the endpoint the operator provided.
+        if opts.get("no_discovery") and scope_endpoints is None:
+            from utils.discovery_session import DiscoveryResult
+
+            target_url = cfg.target.base_url
+            scope_endpoints = [
+                DiscoveryResult(
+                    url=target_url,
+                    method="GET",
+                    status_code=200,
+                    endpoint_status="valid",
+                )
+            ]
+            logger.info("Discovery disabled; seeding scan with target only", target=target_url)
+            click.echo(f"🎯 Discovery skipped — testing only: {target_url}")
             if hasattr(cfg, "fuzzing") and hasattr(cfg.fuzzing, "parameters"):
                 cfg.fuzzing.parameters.enabled = False
                 cfg.fuzzing.headers.enabled = False
