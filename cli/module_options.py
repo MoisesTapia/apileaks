@@ -847,6 +847,45 @@ AUTH_OPTIONS = [
         help="Number of concurrent OTP requests for the race-condition probe (default: 50).",
     ),
     click.option(
+        "--otp-extra-field",
+        "otp_extra_field",
+        metavar="KEY=VALUE",
+        multiple=True,
+        help="Additional fixed field merged into the OTP request body (repeatable), "
+        "e.g. --otp-extra-field 'Email=user@x.com' --otp-extra-field 'NewPassword=123456'. "
+        "Lets the OTP probe target password-reset flows.",
+    ),
+    click.option(
+        "--otp-success-match",
+        "otp_success_match",
+        metavar="REGEX",
+        default=None,
+        help="Regex in the OTP response body that marks the code as correct.",
+    ),
+    click.option(
+        "--otp-failure-match",
+        "otp_failure_match",
+        metavar="REGEX",
+        default=None,
+        help="Regex whose ABSENCE in the OTP response body marks the code as correct.",
+    ),
+    click.option(
+        "--otp-filter-size",
+        "otp_filter_size",
+        type=int,
+        default=None,
+        help="Response byte size that represents a FAILED OTP attempt (like ffuf -fs). "
+        "Any other size is treated as a successful code.",
+    ),
+    click.option(
+        "--otp-exhaustive",
+        "otp_exhaustive",
+        is_flag=True,
+        default=False,
+        help="Enumerate the FULL OTP space (10**digits) instead of stopping at "
+        "the rate-limit attempt bound. Use against unprotected OTP endpoints.",
+    ),
+    click.option(
         "--users-wordlist",
         "users_wordlist",
         metavar="PATH",
@@ -1097,6 +1136,22 @@ def apply_auth_options(auth_cfg, opts: dict) -> None:
         auth_cfg.otp_session_token = opts["otp_session_token"]
     if opts.get("otp_race_concurrency") is not None:
         auth_cfg.otp_race_concurrency = opts["otp_race_concurrency"]
+    if opts.get("otp_extra_field"):
+        extra: dict[str, str] = {}
+        for item in opts["otp_extra_field"]:
+            key, sep, value = item.partition("=")
+            if sep:
+                extra[key.strip()] = value
+        if extra:
+            auth_cfg.otp_extra_fields = extra
+    if opts.get("otp_success_match"):
+        auth_cfg.otp_success_match = opts["otp_success_match"]
+    if opts.get("otp_failure_match"):
+        auth_cfg.otp_failure_match = opts["otp_failure_match"]
+    if opts.get("otp_filter_size") is not None:
+        auth_cfg.otp_filter_size = opts["otp_filter_size"]
+    if opts.get("otp_exhaustive"):
+        auth_cfg.otp_exhaustive = True
     if opts.get("users_wordlist"):
         auth_cfg.users_wordlist = opts["users_wordlist"]
     if opts.get("spray_password"):

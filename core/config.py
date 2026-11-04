@@ -382,6 +382,21 @@ class AuthTestingConfig:
     otp_session_token: str | None = None
     # Number of parallel goroutines for the OTP race-condition probe.
     otp_race_concurrency: int = 50
+    # Additional fixed fields merged into the OTP request body (e.g.
+    # {"Email": "...", "NewPassword": "..."}). Lets the OTP probe target
+    # password-reset flows that need more than just the OTP + session token.
+    otp_extra_fields: dict[str, str] | None = None
+    # Success detection for the OTP probe (overrides the default 2xx rule):
+    #   otp_success_match -> regex in body marks the OTP as correct.
+    #   otp_failure_match -> regex whose ABSENCE marks the OTP as correct.
+    #   otp_filter_size   -> response byte size treated as FAILURE (ffuf -fs);
+    #                        any other size is treated as success.
+    otp_success_match: str | None = None
+    otp_failure_match: str | None = None
+    otp_filter_size: int | None = None
+    # When True, enumerate the FULL OTP space (10**digits) instead of stopping at
+    # rate_limit_attempts. Use for real cracking of unprotected OTP endpoints.
+    otp_exhaustive: bool = False
     # -------------------------------------------------------------------
     # Password-spraying fields (Level 3 Advanced).
     # -------------------------------------------------------------------
