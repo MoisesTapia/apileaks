@@ -127,6 +127,7 @@ apileaks --help
 
 | Command | Description |
 |---------|-------------|
+| `apileaks req` / `apileaks request` | Send a single HTTP request (coloured dump, proxy, secret scan) |
 | `apileaks scan` | Orchestrated scan — discovery + all (or selected) OWASP modules |
 | `apileaks owasp <module>` | Run a single OWASP module in isolation |
 | `apileaks dir` | Directory/endpoint fuzzing with triage |
@@ -216,9 +217,35 @@ apileaks mcp-audit --target http://mcp.example.com --fail-on-findings
 
 Checks: tool poisoning, SSRF via URL params, missing confirmation gates, credential leaks in responses.
 
+### Single HTTP Request (`apileaks req`)
+
+Send a single request with a rich coloured dump, native proxy support, secret scanning, and session persistence:
+
+```bash
+# Basics
+apileaks req GET  https://api.example.com/users
+apileaks req POST https://api.example.com/users name=alice role=admin
+apileaks req POST https://api.example.com/users --json '{"name":"alice","role":"admin"}'
+
+# Through Burp / Caido / Hetty
+apileaks req PATCH https://api.example.com/users/42 \
+  --json '{"role":"admin"}' --proxy http://127.0.0.1:8080
+
+# Secret scan on response
+apileaks req GET https://api.example.com/config --scan-response
+
+# Pipe response body
+apileaks req GET https://api.example.com/token --quiet | jq .access_token
+
+# Save for replay
+apileaks req POST https://api.example.com/users name=alice \
+  --save-session sessions/pentest.json
+apileaks replay sessions/pentest.json --proxy http://127.0.0.1:8080
+```
+
 ---
 
-## 🛠️ Usage Examples
+
 
 ### Full scan with CI gate
 

@@ -8,6 +8,7 @@ import click
 
 from cli.commands.cloud_audit_cmds import cloud_audit_cmd
 from cli.commands.mcp_cmds import mcp_audit_cmd, mcp_server_cmd
+from cli.commands.request_cmd import request_cmd
 from cli.commands.discovery_cmds import (
     DEFAULT_PARAMETER_WORDLIST,  # noqa: F401  re-exported (public surface / tests)
     ScanScopeError,  # noqa: F401  re-exported (public surface / tests)
@@ -148,6 +149,16 @@ def cli(ctx, no_banner):
       apileaks cloud-audit --provider azure --target https://apim.azure-api.net
 
     \b
+    ── Single HTTP Request ───────────────────────────────────────────────────
+      apileaks req GET  URL                       Coloured request/response dump
+      apileaks req POST URL --json '{"k":"v"}'    JSON body
+      apileaks req POST URL key=value             httpie-style key=value body
+      apileaks req PATCH URL --proxy http://127.0.0.1:8080  Through Burp/Caido/Hetty
+      apileaks req GET  URL --scan-response       Scan response for leaked secrets
+      apileaks req GET  URL --quiet | jq .token   Pipe response body
+      apileaks req --help                         Full option reference
+
+    \b
     ── MCP Server (AI agent integration) ────────────────────────────────────
       apileaks mcp-server --transport stdio       Connect Claude Desktop / Kiro
       apileaks mcp-server --transport http --port 8080 --mcp-auth-token TOKEN
@@ -177,6 +188,8 @@ cli.add_command(jwt)
 cli.add_command(cloud_audit_cmd)
 cli.add_command(mcp_server_cmd)
 cli.add_command(mcp_audit_cmd)
+cli.add_command(request_cmd, name="request")
+cli.add_command(request_cmd, name="req")
 cli.add_command(wordlist_group)
 cli.add_command(dir)
 cli.add_command(par)

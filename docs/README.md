@@ -46,6 +46,9 @@ Welcome to the APILeak documentation! This directory contains comprehensive docu
 - **[MCP Tools Reference](mcp-tools-reference.md)** - Full JSON Schema and examples for every MCP tool
 - **[MCP Security Documentation](mcp_server_security.md)** - OWASP MCP Top 10 controls and self-audit results
 
+### Single HTTP Request
+- **[`apileaks req` Command](request-command.md)** - Send a single request with coloured output, proxy routing, secret scanning, and session persistence
+
 ### Advanced Topics
 - **[Advanced Discovery](advanced-discovery.md)** - Advanced endpoint discovery techniques
 - **[Framework Detection](framework-detection-version-fuzzing.md)** - Framework detection and version fuzzing

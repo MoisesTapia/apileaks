@@ -119,6 +119,7 @@ nav:
     - User Guide: user-guide.md
     - Usage Examples: usage-examples.md
     - Configuration: configuration.md
+  - Single HTTP Request: request-command.md
   - MCP Server (AI Integration):
     - Overview & Quick Start: mcp-server.md
     - Docker Deployment: mcp-docker.md

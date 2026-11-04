@@ -422,6 +422,7 @@ class HTTPRequestEngine:
         cert: str | tuple[str, str] | None = None,
         ca_bundle: str | None = None,
         resolve: tuple[str, str] | None = None,
+        follow_redirects: bool = False,
     ):
         self.rate_limiter = rate_limiter
         self.retry_config = retry_config
@@ -442,6 +443,7 @@ class HTTPRequestEngine:
         self.cert = cert
         self.ca_bundle = ca_bundle
         self.resolve = resolve
+        self.follow_redirects = follow_redirects
         self.user_agent_rotator = user_agent_rotator or UserAgentRotator()
         self.status_code_filter = status_code_filter  # Filter for status codes to display
         # Engine-level headers applied to every request unless overridden per
@@ -491,7 +493,7 @@ class HTTPRequestEngine:
                 "limits": limits,
                 "timeout": timeout,
                 "verify": self.verify_ssl,
-                "follow_redirects": False,  # We'll handle redirects manually
+                "follow_redirects": self.follow_redirects,  # configurable per-instance
                 "http2": False,  # Disable HTTP/2 to avoid h2 dependency
             }
 
