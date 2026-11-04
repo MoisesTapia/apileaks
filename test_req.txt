@@ -1,0 +1,47 @@
+Register User Account: POST
+
+POST /api/users.php?format=json HTTP/1.1
+HOST: localhost
+content-­‐length: 76
+
+username=doctest&password=doctest&cnfpassword=doctest&email=doctest@test.com
+
+User Login: GET
+
+GET /api/users.php?format=json&username=doctest&password=doctest HTTP/1.1
+HOST: localhost
+
+View Profile: GET
+
+GET /api/users.php?format=json&token=2c76e72a8ae99c3c485190157649b2a6 HTTP/1.1
+HOST: localhost
+
+Update password: PUT
+
+PUT /api/users.php?format=json HTTP/1.1
+HOST: localhost
+content-­‐length: 267
+<?xml version="1.0" standalone="yes"?>
+<updatepassword>
+<user>
+<username>doctest</username>
+<newpassword>doctest</newpassword>
+<cnfnewpassword>doctest</cnfnewpassword>
+<token>2c76e72a8ae99c3c485190157649b2a6</token>
+</user>
+</updatepassword>
+
+Delete Account: DELETE
+
+
+DELETE /api/users.php?format=json HTTP/1.1
+HOST: localhost
+content-­‐length: 145
+<?xml version="1.0" standalone="yes"?>
+<deleteaccount>
+<user>
+<token>2c76e72a8ae99c3c485190157649b2a6</token>
+</user>
+</deleteaccount>
+
+
