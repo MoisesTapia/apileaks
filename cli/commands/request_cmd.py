@@ -393,6 +393,94 @@ def _inject_param(url: str, params: dict[str, str], param_name: str, value: str)
     return new_url, new_params
 
 
+def _load_payloads_from_file(path: str) -> list[dict[str, str]]:
+    """Load SQLi payloads from an external file.
+
+    Supported formats:
+
+    **Plain text** (one payload per line, ``#`` = comment, blank lines ignored):
+
+        ' OR '1'='1
+        ' OR 1=1--
+        # this line is a comment
+        admin'--
+
+    **JSON array of strings**::
+
+        ["' OR '1'='1", "' OR 1=1--"]
+
+    **JSON array of objects** (with optional ``label`` field)::
+
+        [
+            {"payload": "' OR '1'='1",       "label": "OR bypass"},
+            {"payload": "' UNION SELECT NULL--"}
+        ]
+
+    Raises :class:`click.BadParameter` on any parse or I/O error so the
+    error surfaces before any requests are made.
+    """
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise click.BadParameter(
+            f"Cannot read payload file {path!r}: {exc}", param_hint="--payload-file"
+        ) from exc
+
+    stripped = raw.strip()
+
+    # --- JSON branch ---
+    if stripped.startswith(("[", "{")):
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(
+                f"Payload file {path!r} looks like JSON but failed to parse: {exc}",
+                param_hint="--payload-file",
+            ) from exc
+
+        if not isinstance(data, list):
+            raise click.BadParameter(
+                f"Payload file {path!r}: JSON must be an array, got {type(data).__name__}.",
+                param_hint="--payload-file",
+            )
+
+        result: list[dict[str, str]] = []
+        for i, item in enumerate(data):
+            if isinstance(item, str):
+                result.append({"payload": item, "label": f"custom-{i + 1}"})
+            elif isinstance(item, dict) and "payload" in item:
+                result.append({
+                    "payload": str(item["payload"]),
+                    "label": str(item.get("label", f"custom-{i + 1}")),
+                })
+            else:
+                raise click.BadParameter(
+                    f"Payload file {path!r}: item {i} must be a string or "
+                    '{"payload": "...", "label": "..."} object.',
+                    param_hint="--payload-file",
+                )
+        if not result:
+            raise click.BadParameter(
+                f"Payload file {path!r} is empty.", param_hint="--payload-file"
+            )
+        return result
+
+    # --- Plain text branch ---
+    payloads: list[dict[str, str]] = []
+    for i, line in enumerate(raw.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        payloads.append({"payload": line, "label": f"custom-{i}"})
+
+    if not payloads:
+        raise click.BadParameter(
+            f"Payload file {path!r} contains no payloads (all lines empty or comments).",
+            param_hint="--payload-file",
+        )
+    return payloads
+
+
 def _check_sqli_indicators(body: str) -> list[str]:
     """Return list of matched error pattern labels for the response body."""
     return [p.pattern for p in SQLI_ERROR_PATTERNS if p.search(body)]
@@ -408,6 +496,7 @@ async def _run_sqli_plugin(
     proxy: str | None,
     verify_ssl: bool,
     timeout: float,
+    payloads: list[dict[str, str]] | None = None,
     follow_redirects: bool,
     parameters: list[str],
     baseline_body: str,
@@ -419,19 +508,21 @@ async def _run_sqli_plugin(
     click.echo(f"\n{_BOLD}{_CYAN}{'═' * 60}")
     click.echo("  SQL INJECTION PLUGIN")
     click.echo(f"  Parameters: {', '.join(parameters)}")
-    click.echo(f"  Payloads:   {len(SQLI_PAYLOADS)}")
-    click.echo(f"{'═' * 60}{_RESET}\n")
+    active_payloads = payloads if payloads is not None else SQLI_PAYLOADS
+    source_label = "custom" if payloads is not None else "built-in"
+    click.echo(f"  Payloads:   {len(active_payloads)} ({source_label})")
+    click.echo(f"{'=':=<60}{_RESET}\n")
 
     # Table header
     click.echo(
         f"{_BOLD}{'PARAM':<18} {'PAYLOAD':<42} {'STATUS':<7} {'LEN':>6} {'DIFF':>6} {'RESULT'}{_RESET}"
     )
-    click.echo("─" * 100)
+    click.echo("-" * 100)
 
     findings: list[dict[str, Any]] = []
 
     for param in parameters:
-        for entry in SQLI_PAYLOADS:
+        for entry in active_payloads:
             payload = entry["payload"]
             label   = entry["label"]
 
@@ -640,6 +731,17 @@ SUPPORTED_PLUGINS = {"sqlinjection"}
                   "Comma-separated list of parameters to target with --plugin.\n"
                   "Example: --plugin sqlinjection --parameters token,id,username"
               ))
+@click.option("--payload-file", "payload_file", default=None,
+              type=click.Path(exists=True, dir_okay=False, readable=True), metavar="FILE",
+              help=(
+                  "Load payloads from a file instead of the built-in list.\n"
+                  "Formats supported:\n"
+                  "  plain text  -- one payload per line, # = comment\n"
+                  '  JSON array  -- ["payload1", "payload2"]\n'
+                  '  JSON objs   -- [{"payload":"...", "label":"..."}]\n'
+                  "When provided, replaces (not extends) the default payloads.\n"
+                  "Example: --plugin sqlinjection --parameters token --payload-file sqli.txt"
+              ))
 @click.pass_context
 def request_cmd(
     ctx,
@@ -664,6 +766,7 @@ def request_cmd(
     fail_on_error: bool,
     plugin_name: str | None,
     plugin_params: str | None,
+    payload_file: str | None,
 ) -> None:
     """Send a single HTTP request and display a coloured request/response dump.
 
@@ -832,6 +935,15 @@ def request_cmd(
     # ── Plugins ───────────────────────────────────────────────────────────
     if plugin_name and plugin_name.lower() == "sqlinjection":
         param_list = [p.strip() for p in (plugin_params or "").split(",") if p.strip()]
+        # Load custom payloads from file if provided
+        custom_payloads: list[dict[str, str]] | None = None
+        if payload_file:
+            custom_payloads = _load_payloads_from_file(payload_file)
+            click.echo(
+                f"{_GRAY}[payloads] Loaded {len(custom_payloads)} payloads "
+                f"from {payload_file}{_RESET}",
+                err=True,
+            )
         asyncio.run(
             _run_sqli_plugin(
                 method=method,
@@ -844,6 +956,7 @@ def request_cmd(
                 timeout=timeout,
                 follow_redirects=follow_redirects,
                 parameters=param_list,
+                payloads=custom_payloads,
                 baseline_body=result["response_body"],
                 baseline_status=result["status_code"],
                 baseline_length=len(result["response_body"] or ""),

