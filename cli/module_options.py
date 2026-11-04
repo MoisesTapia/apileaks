@@ -870,6 +870,56 @@ AUTH_OPTIONS = [
         help="Maximum number of users in one spray batch (default: 50).",
     ),
     click.option(
+        "--brute-username",
+        "brute_username",
+        metavar="USERNAME",
+        default=None,
+        help="Fixed username/email to brute-force against a password list "
+        "(inverse of spraying). Requires --passwords-wordlist and "
+        "--allow-aggressive-auth.",
+    ),
+    click.option(
+        "--passwords-wordlist",
+        "passwords_wordlist",
+        metavar="PATH",
+        default=None,
+        help="Path to a newline-separated file of candidate passwords for the "
+        "brute-force probe. Requires --brute-username.",
+    ),
+    click.option(
+        "--brute-batch-size",
+        "brute_batch_size",
+        type=int,
+        default=None,
+        help="Maximum number of passwords in one brute-force run (default: 100).",
+    ),
+    click.option(
+        "--success-match",
+        "success_match",
+        metavar="REGEX",
+        default=None,
+        help="Regex searched in the login response body; a match marks the "
+        "attempt as SUCCESS. Use for APIs returning 200 for both valid and "
+        "invalid logins (e.g. match '\"token\"' or 'welcome').",
+    ),
+    click.option(
+        "--failure-match",
+        "failure_match",
+        metavar="REGEX",
+        default=None,
+        help="Regex searched in the login response body; its ABSENCE marks "
+        "SUCCESS (the regex is the known failure marker, e.g. "
+        "'Invalid credentials'). Mutually complementary with --success-match.",
+    ),
+    click.option(
+        "--success-status",
+        "success_status",
+        metavar="CODES",
+        default=None,
+        help="Comma-separated HTTP status codes that count as a successful "
+        "login (e.g. '200,302'). Overrides the default 2xx rule.",
+    ),
+    click.option(
         "--login-username-field",
         "login_username_field",
         metavar="FIELD",
@@ -882,6 +932,40 @@ AUTH_OPTIONS = [
         metavar="FIELD",
         default=None,
         help="JSON body field name for the password in login requests (default: password).",
+    ),
+    click.option(
+        "--login-endpoint",
+        "login_endpoint",
+        metavar="URL",
+        default=None,
+        help="Explicit login endpoint URL for the password-spray probe. Use this "
+        "when the login route is not auto-detected (e.g. /v1/users.php). "
+        "Bypasses login path/method auto-detection.",
+    ),
+    click.option(
+        "--login-send-mode",
+        "login_send_mode",
+        type=click.Choice(["json", "form", "query", "xml"], case_sensitive=False),
+        default=None,
+        help="How credentials are sent to the login endpoint: 'json' (JSON body, "
+        "default), 'form' (urlencoded body), 'query' (URL query string, for "
+        "GET-style login APIs), or 'xml' (XML body).",
+    ),
+    click.option(
+        "--login-method",
+        "login_method",
+        type=click.Choice(["GET", "POST", "PUT"], case_sensitive=False),
+        default=None,
+        help="HTTP method for spray login requests (default: POST). Use GET for "
+        "query-string login APIs.",
+    ),
+    click.option(
+        "--no-discovery",
+        "no_discovery",
+        is_flag=True,
+        default=False,
+        help="Skip endpoint/directory discovery and test ONLY the target URL. "
+        "Use when probing a single known endpoint (e.g. a login API).",
     ),
     click.option(
         "--ip-rotation-burst",
@@ -1019,10 +1103,30 @@ def apply_auth_options(auth_cfg, opts: dict) -> None:
         auth_cfg.spray_password = opts["spray_password"]
     if opts.get("spray_batch_size") is not None:
         auth_cfg.spray_batch_size = opts["spray_batch_size"]
+    if opts.get("brute_username"):
+        auth_cfg.brute_username = opts["brute_username"]
+    if opts.get("passwords_wordlist"):
+        auth_cfg.passwords_wordlist = opts["passwords_wordlist"]
+    if opts.get("brute_batch_size") is not None:
+        auth_cfg.brute_batch_size = opts["brute_batch_size"]
+    if opts.get("success_match"):
+        auth_cfg.success_match = opts["success_match"]
+    if opts.get("failure_match"):
+        auth_cfg.failure_match = opts["failure_match"]
+    if opts.get("success_status"):
+        auth_cfg.success_status_codes = [
+            int(code.strip()) for code in opts["success_status"].split(",") if code.strip()
+        ]
     if opts.get("login_username_field"):
         auth_cfg.login_username_field = opts["login_username_field"]
     if opts.get("login_password_field"):
         auth_cfg.login_password_field = opts["login_password_field"]
+    if opts.get("login_endpoint"):
+        auth_cfg.login_endpoint = opts["login_endpoint"]
+    if opts.get("login_send_mode"):
+        auth_cfg.login_send_mode = opts["login_send_mode"].lower()
+    if opts.get("login_method"):
+        auth_cfg.login_method = opts["login_method"].upper()
     if opts.get("ip_rotation_burst") is not None:
         auth_cfg.ip_rotation_burst = opts["ip_rotation_burst"]
     if opts.get("extra_ip_headers"):

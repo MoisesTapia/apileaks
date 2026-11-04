@@ -149,6 +149,41 @@ The `auth` subcommand accepts the transversal options above plus these module-sp
 
 When none of the aggressive or input-driven options are supplied, those probes are skipped. The auth module's safe defaults never issue destructive, high-volume, or account-dependent probes without explicit opt-in.
 
+### Login Attack Probes (spraying & brute-force)
+
+These drive the password-spraying and brute-force probes. All require `--allow-aggressive-auth`. For the full guide with worked examples see [Authentication Testing (API2)](owasp/authentication-testing.md).
+
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--no-discovery` | Skip discovery; test only the target URL | off | `--no-discovery` |
+| `--login-endpoint URL` | Explicit login endpoint (bypasses auto-detection) | auto | `--login-endpoint https://api.example.com/v1/users.php` |
+| `--login-send-mode MODE` | Credential transport: `json`, `form`, `query`, `xml` | `json` | `--login-send-mode query` |
+| `--login-method METHOD` | HTTP method: `GET`, `POST`, `PUT` | `POST` | `--login-method GET` |
+| `--login-username-field FIELD` | Username field/param name | `username` | `--login-username-field email` |
+| `--login-password-field FIELD` | Password field/param name | `password` | `--login-password-field pass` |
+| `--spray-password PASSWORD` | Single password sprayed across users | — | `--spray-password 'Spring2024!'` |
+| `--users-wordlist PATH` | Username/email wordlist for spraying | — | `--users-wordlist users.txt` |
+| `--spray-batch-size N` | Max usernames per spray run | `50` | `--spray-batch-size 100` |
+| `--brute-username USERNAME` | Fixed username for brute-force | — | `--brute-username admin` |
+| `--passwords-wordlist PATH` | Password (or SQLi payload) wordlist | — | `--passwords-wordlist passwords.txt` |
+| `--brute-batch-size N` | Max passwords per brute-force run | `100` | `--brute-batch-size 500` |
+| `--success-match REGEX` | Body regex marking success | — | `--success-match '"token"'` |
+| `--failure-match REGEX` | Body regex whose absence marks success | — | `--failure-match 'Invalid credentials'` |
+| `--success-status CODES` | Comma-separated status codes counting as success | 2xx | `--success-status 200,302` |
+
+Example — SQLi auth-bypass against a GET-style PHP API, classifying success by response body:
+
+```bash
+python apileaks.py owasp auth \
+  --target 'http://192.168.1.79/v1/users.php' \
+  --no-discovery --allow-aggressive-auth \
+  --login-endpoint 'http://192.168.1.79/v1/users.php?format=json' \
+  --login-send-mode query --login-method GET \
+  --brute-username test \
+  --passwords-wordlist sqli-auth-bypass.txt \
+  --failure-match 'Invalid|incorrect|denied'
+```
+
 ## Function Level Auth Module Options (API5)
 
 The `function_auth` subcommand accepts the transversal options above plus these module-specific options. For the full guide, see [Function Level Authorization Testing (API5)](owasp/function-level-auth.md).

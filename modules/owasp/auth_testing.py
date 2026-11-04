@@ -8,12 +8,14 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from xml.sax.saxutils import escape
 
 from core.config import AuthContext, AuthTestingConfig, AuthType, Severity
 from core.logging import get_logger
@@ -3469,6 +3471,109 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             self.logger.error("Failed to read users wordlist", error=str(e))
             return []
 
+    def _login_attempt_succeeded(self, response: Response) -> bool:
+        """Decide whether a login/brute-force attempt succeeded.
+
+        Precedence of operator-configured rules (any that are set take priority
+        over the default 2xx check):
+
+        1. ``success_match``  — regex found in the body => success.
+        2. ``failure_match``  — regex ABSENT from the body => success.
+        3. ``success_status_codes`` — status code in the configured set => success.
+
+        When none are configured, falls back to the default 2xx rule
+        (``response.is_success``). This lets the probes work against APIs that
+        return 200 for both valid and invalid logins, or classify SQLi-bypass
+        responses by body content rather than status code alone.
+        """
+        body = response.text or ""
+
+        success_match = getattr(self.config, "success_match", None)
+        if success_match:
+            try:
+                return re.search(success_match, body, re.IGNORECASE) is not None
+            except re.error as e:
+                self.logger.warning("Invalid success_match regex", error=str(e))
+                return response.is_success
+
+        failure_match = getattr(self.config, "failure_match", None)
+        if failure_match:
+            try:
+                return re.search(failure_match, body, re.IGNORECASE) is None
+            except re.error as e:
+                self.logger.warning("Invalid failure_match regex", error=str(e))
+                return response.is_success
+
+        success_status_codes = getattr(self.config, "success_status_codes", None)
+        if success_status_codes:
+            return response.status_code in set(success_status_codes)
+
+        return response.is_success
+
+    def _build_login_request_kwargs(
+        self, url: str, username: str, password: str
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Build (method, url, kwargs) for a login request honoring send-mode.
+
+        Supports four credential transports controlled by
+        ``config.login_send_mode``:
+          * ``json``  -> JSON body (default)
+          * ``form``  -> application/x-www-form-urlencoded body
+          * ``query`` -> credentials appended to the URL query string
+          * ``xml``   -> application/xml body built from the field names
+
+        Returns the HTTP method, the (possibly rewritten) URL, and the kwargs
+        dict to pass to ``http_client.request``.
+        """
+        username_field = getattr(self.config, "login_username_field", "username")
+        password_field = getattr(self.config, "login_password_field", "password")
+        send_mode = str(getattr(self.config, "login_send_mode", "json")).lower()
+        method = str(getattr(self.config, "login_method", "POST")).upper()
+        creds = {username_field: username, password_field: password}
+
+        if send_mode == "query":
+            parsed = urlparse(url)
+            existing = parse_qs(parsed.query)
+            # Preserve any pre-existing query params, override the credential ones.
+            merged = {k: v[0] if len(v) == 1 else v for k, v in existing.items()}
+            merged[username_field] = username
+            merged[password_field] = password
+            new_url = urlunparse(parsed._replace(query=urlencode(merged, doseq=True)))
+            return method, new_url, {}
+
+        if send_mode == "form":
+            return (
+                method,
+                url,
+                {
+                    "data": creds,
+                    "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                },
+            )
+
+        if send_mode == "xml":
+            # Minimal XML envelope using the configured field names as tags.
+            # Values are escaped to keep the document well-formed.
+            u = escape(str(username))
+            p = escape(str(password))
+            body = (
+                f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                f"<login><{username_field}>{u}</{username_field}>"
+                f"<{password_field}>{p}</{password_field}></login>"
+            )
+            return (
+                method,
+                url,
+                {"data": body, "headers": {"Content-Type": "application/xml"}},
+            )
+
+        # Default: JSON body.
+        return (
+            method,
+            url,
+            {"json": creds, "headers": {"Content-Type": "application/json"}},
+        )
+
     async def _test_password_spraying(self, login_endpoint: str) -> list[Finding]:
         """Password-spraying probe (Level 3 Advanced).
 
@@ -3505,7 +3610,6 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             return findings
 
         username_field = getattr(self.config, "login_username_field", "username")
-        password_field = getattr(self.config, "login_password_field", "password")
         batch_size = max(1, int(getattr(self.config, "spray_batch_size", 50)))
         batch = users[:batch_size]
 
@@ -3521,19 +3625,17 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
 
         for username in batch:
             try:
-                resp = await self.http_client.request(
-                    "POST",
-                    login_endpoint,
-                    json={username_field: username, password_field: spray_password},
-                    headers={"Content-Type": "application/json"},
+                method, req_url, req_kwargs = self._build_login_request_kwargs(
+                    login_endpoint, username, spray_password
                 )
+                resp = await self.http_client.request(method, req_url, **req_kwargs)
             except Exception as e:
                 self.logger.debug("Spray probe request failed", username=username, error=str(e))
                 continue
 
             responses.append(resp)
 
-            if resp.is_success:
+            if self._login_attempt_succeeded(resp):
                 valid_username = username
                 break
 
@@ -3618,6 +3720,185 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
             )
             self.logger.warning(
                 "Password spray not detected by API",
+                endpoint=login_endpoint,
+                attempts=len(responses),
+            )
+
+        return findings
+
+    # ==================================================================
+    # NIVEL 3 AVANZADO – Password Brute-Force (1 user × N passwords)
+    # El inverso del spraying: un usuario fijo contra una lista de
+    # contraseñas candidatas. Detecta ausencia de lockout / rate-limit.
+    # Requiere: allow_aggressive + brute_username + passwords_wordlist
+    # Finding: AUTH_PASSWORD_BRUTE_FORCE_VALID_CREDENTIAL (CRITICAL)
+    #          AUTH_PASSWORD_BRUTE_FORCE_NO_LOCKOUT (HIGH)
+    # ==================================================================
+
+    def _load_passwords_wordlist(self) -> list[str]:
+        """Load a newline-separated passwords wordlist from ``config.passwords_wordlist``."""
+        path_str = getattr(self.config, "passwords_wordlist", None)
+        if not path_str:
+            return []
+        path = Path(path_str)
+        if not path.exists():
+            self.logger.warning("Passwords wordlist not found", path=str(path))
+            return []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            # Passwords may contain leading/trailing spaces intentionally, so only
+            # strip the trailing newline; drop empty lines and comments.
+            pwds = [line.rstrip("\r\n") for line in lines]
+            pwds = [p for p in pwds if p and not p.startswith("#")]
+            self.logger.info("Passwords wordlist loaded", count=len(pwds), path=str(path))
+            return pwds
+        except OSError as e:
+            self.logger.error("Failed to read passwords wordlist", error=str(e))
+            return []
+
+    async def _test_password_brute_force(self, login_endpoint: str) -> list[Finding]:
+        """Password brute-force probe (Level 3 Advanced) — 1 user × N passwords.
+
+        Tries ONE fixed username (``config.brute_username``) against UP TO
+        ``brute_batch_size`` (default 100) candidate passwords loaded from
+        ``config.passwords_wordlist``. This is the inverse of password spraying
+        and is designed to surface the ABSENCE of per-account lockout and
+        rate-limiting on the login endpoint.
+
+        The probe reports:
+        - ``AUTH_PASSWORD_BRUTE_FORCE_VALID_CREDENTIAL`` (CRITICAL) when a 2xx
+          response is observed (valid password found for the username).
+        - ``AUTH_PASSWORD_BRUTE_FORCE_NO_LOCKOUT`` (HIGH) when the full batch
+          completes without any lockout or global rate-limit signal.
+
+        Gated by ``_aggressive_allowed()``. Requires ``brute_username``,
+        ``passwords_wordlist``, and a resolved ``login_endpoint``. Honours the
+        same ``login_send_mode`` / ``login_method`` transport as the spray probe.
+        """
+        findings: list[Finding] = []
+
+        if not self._aggressive_allowed():
+            self.logger.info(
+                "Skipping password-brute-force probe", reason="opt-in absent or safe mode"
+            )
+            return findings
+
+        brute_username = getattr(self.config, "brute_username", None)
+        if not brute_username:
+            self.logger.info("Brute-force probe skipped; no brute_username configured")
+            return findings
+
+        passwords = self._load_passwords_wordlist()
+        if not passwords:
+            self.logger.info("Brute-force probe skipped; no passwords loaded from wordlist")
+            return findings
+
+        username_field = getattr(self.config, "login_username_field", "username")
+        batch_size = max(1, int(getattr(self.config, "brute_batch_size", 100)))
+        batch = passwords[:batch_size]
+
+        self.logger.info(
+            "Starting password-brute-force probe",
+            endpoint=login_endpoint,
+            username=brute_username,
+            passwords=len(batch),
+        )
+
+        responses: list[Response] = []
+        valid_password: str | None = None
+
+        for password in batch:
+            try:
+                method, req_url, req_kwargs = self._build_login_request_kwargs(
+                    login_endpoint, brute_username, password
+                )
+                resp = await self.http_client.request(method, req_url, **req_kwargs)
+            except Exception as e:
+                self.logger.debug("Brute-force request failed", error=str(e))
+                continue
+
+            responses.append(resp)
+
+            if self._login_attempt_succeeded(resp):
+                valid_password = password
+                break
+
+            # Stop early if the API starts throttling (429) — a lockout or rate
+            # limit is exactly the defence we are probing for.
+            cls = self._classify_throttling(responses)
+            if cls["evidence"]["signals"]["http_429"]:
+                self.logger.info("Rate limit / lockout hit during brute-force")
+                break
+
+        if not responses:
+            return findings
+
+        if valid_password is not None:
+            last = responses[-1]
+            evidence = (
+                f"Password brute-force found a valid credential for username "
+                f"'{brute_username}' after {len(responses)} attempt(s). No "
+                f"account lockout or rate limiting stopped the attack."
+            )
+            evidence = self._redact_secret(evidence, valid_password)
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_PASSWORD_BRUTE_FORCE_VALID_CREDENTIAL",
+                    owasp_category="API2",
+                    severity=Severity.CRITICAL,
+                    endpoint=login_endpoint,
+                    method=method,
+                    status_code=last.status_code,
+                    response_size=len(last.content),
+                    response_time=last.elapsed,
+                    evidence=evidence,
+                    recommendation=(
+                        "Enforce account lockout or exponential backoff after a small "
+                        "number of failed attempts. Add per-account and per-IP rate "
+                        "limiting. Enforce MFA and strong password policies."
+                    ),
+                    payload=f"{username_field}={brute_username}",
+                )
+            )
+            self.logger.warning(
+                "Brute-force found valid credential",
+                endpoint=login_endpoint,
+                username=brute_username,
+            )
+            return findings
+
+        cls = self._classify_throttling(responses)
+        if not cls["throttled"]:
+            last = responses[-1]
+            status_codes = cls["evidence"]["status_codes"]
+            findings.append(
+                Finding(
+                    id=str(uuid.uuid4()),
+                    scan_id="",
+                    category="AUTH_PASSWORD_BRUTE_FORCE_NO_LOCKOUT",
+                    owasp_category="API2",
+                    severity=Severity.HIGH,
+                    endpoint=login_endpoint,
+                    method=method,
+                    status_code=last.status_code,
+                    response_size=len(last.content),
+                    response_time=last.elapsed,
+                    evidence=(
+                        f"A brute-force pattern ({len(responses)} password attempts "
+                        f"against username '{brute_username}') completed without "
+                        f"triggering any account lockout or global rate limit. "
+                        f"Status codes: {status_codes}."
+                    ),
+                    recommendation=(
+                        "Implement account lockout or exponential backoff after a few "
+                        "failed attempts, combined with per-IP rate limiting and MFA."
+                    ),
+                )
+            )
+            self.logger.warning(
+                "Brute-force not throttled by API",
                 endpoint=login_endpoint,
                 attempts=len(responses),
             )
@@ -3909,8 +4190,16 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
         findings.extend(otp_race_findings)
         self.logger.debug("OTP race-condition probe completed", findings=len(otp_race_findings))
 
-        # -- Login-endpoint probes (auto-detected from discovered set) ------
-        login_endpoints = self._detect_login_endpoints(endpoints)
+        # -- Login-endpoint probes (explicit override OR auto-detected) -----
+        # An operator-supplied login_endpoint takes precedence and bypasses
+        # auto-detection entirely (needed for login routes that do not match the
+        # built-in path patterns, e.g. /v1/users.php).
+        explicit_login = getattr(self.config, "login_endpoint", None)
+        if explicit_login:
+            login_endpoints = [explicit_login]
+            self.logger.info("Using explicit login endpoint", endpoint=explicit_login)
+        else:
+            login_endpoints = self._detect_login_endpoints(endpoints)
         if not login_endpoints:
             self.logger.info("No login endpoints detected; skipping login-based probes")
         else:
@@ -3926,6 +4215,10 @@ class AuthenticationTestingModule(OWASPModule, SafeModeGuard, NegativeControlMix
                 # Req 37 (Level 3): password spraying (1 password × N users)
                 spray_findings = await self._test_password_spraying(login_url)
                 findings.extend(spray_findings)
+
+                # Req 37 (Level 3): password brute-force (1 user × N passwords)
+                brute_findings = await self._test_password_brute_force(login_url)
+                findings.extend(brute_findings)
 
                 # Expert: timing / Content-Length oracle (username enumeration)
                 timing_findings = await self._test_timing_oracle(login_url)

@@ -417,6 +417,7 @@ class HTTPRequestEngine:
         verify_ssl: bool = True,
         user_agent_rotator: UserAgentRotator = None,
         status_code_filter: list[int] = None,
+        hide_status_codes: list[int] = None,
         proxy: str | None = None,
         default_headers: dict[str, str] = None,
         cert: str | tuple[str, str] | None = None,
@@ -445,7 +446,8 @@ class HTTPRequestEngine:
         self.resolve = resolve
         self.follow_redirects = follow_redirects
         self.user_agent_rotator = user_agent_rotator or UserAgentRotator()
-        self.status_code_filter = status_code_filter  # Filter for status codes to display
+        self.status_code_filter = status_code_filter  # Allowlist of codes to display
+        self.hide_status_codes = hide_status_codes  # Denylist of codes to hide
         # Engine-level headers applied to every request unless overridden per
         # call (e.g. operator-supplied discovery headers and the Cookie string).
         # User-Agent is intentionally excluded by callers so it stays managed by
@@ -709,7 +711,11 @@ class HTTPRequestEngine:
 
                 # Log colored HTTP request (always shown, regardless of log level)
                 self._log_colored_request(
-                    request.method, request.url, response.status_code, self.status_code_filter
+                    request.method,
+                    request.url,
+                    response.status_code,
+                    self.status_code_filter,
+                    self.hide_status_codes,
                 )
 
                 # Update metrics
@@ -785,7 +791,11 @@ class HTTPRequestEngine:
 
                     # Log failed request (always shown, regardless of log level)
                     self._log_colored_request(
-                        request.method, request.url, 0, self.status_code_filter
+                        request.method,
+                        request.url,
+                        0,
+                        self.status_code_filter,
+                        self.hide_status_codes,
                     )
 
                     return error_response
@@ -839,12 +849,21 @@ class HTTPRequestEngine:
         self.metrics.max_response_time = max(self.metrics.max_response_time, elapsed)
 
     def _log_colored_request(
-        self, method: str, url: str, status_code: int, status_code_filter: list[int] = None
+        self,
+        method: str,
+        url: str,
+        status_code: int,
+        status_code_filter: list[int] = None,
+        hide_status_codes: list[int] = None,
     ) -> None:
         """Log HTTP request with colored status indicators"""
-        # Check if we should filter by status code
+        # Allowlist: show only codes in the filter when one is set.
         if status_code_filter and status_code not in status_code_filter:
             return  # Skip this request if it doesn't match the filter
+
+        # Denylist: hide codes the operator asked to suppress (e.g. 4xx/5xx).
+        if hide_status_codes and status_code in hide_status_codes:
+            return
 
         # ANSI color codes
         GREEN = "\033[92m"

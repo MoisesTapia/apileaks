@@ -106,6 +106,15 @@ def _get_status_code_filter(config):
     return None
 
 
+def _get_hide_status_codes(config):
+    """Helper function to get the hidden-status-code denylist from configuration"""
+    if hasattr(config, "http_output") and getattr(
+        config.http_output, "hide_status_codes", None
+    ):
+        return config.http_output.hide_status_codes
+    return None
+
+
 def _get_proxy_settings(config):
     """Resolve the proxy URL and TLS verification flag from configuration.
 
@@ -529,6 +538,7 @@ class APILeakCore:
 
             # Get status code filter for HTTP output
             status_code_filter = _get_status_code_filter(self.config)
+            hide_status_codes = _get_hide_status_codes(self.config)
 
             proxy, verify_ssl = _get_proxy_settings(self.config)
             # Forward operator-supplied discovery headers and the --cookie string
@@ -552,6 +562,7 @@ class APILeakCore:
                 verify_ssl=verify_ssl,
                 user_agent_rotator=user_agent_rotator,
                 status_code_filter=status_code_filter,
+                hide_status_codes=hide_status_codes,
                 proxy=proxy,
                 default_headers=discovery_headers,
                 cert=client_cert,
@@ -1002,6 +1013,7 @@ class APILeakCore:
 
             # Get status code filter for HTTP output
             status_code_filter = _get_status_code_filter(self.config)
+            hide_status_codes = _get_hide_status_codes(self.config)
 
             proxy, verify_ssl = _get_proxy_settings(self.config)
             http_client = HTTPRequestEngine(
@@ -1011,6 +1023,7 @@ class APILeakCore:
                 verify_ssl=verify_ssl,
                 user_agent_rotator=user_agent_rotator,
                 status_code_filter=status_code_filter,
+                hide_status_codes=hide_status_codes,
                 proxy=proxy,
             )
 
@@ -1192,6 +1205,7 @@ class APILeakCore:
 
             # Get status code filter for HTTP output
             status_code_filter = _get_status_code_filter(self.config)
+            hide_status_codes = _get_hide_status_codes(self.config)
 
             proxy, verify_ssl = _get_proxy_settings(self.config)
             http_client = HTTPRequestEngine(
@@ -1201,6 +1215,7 @@ class APILeakCore:
                 verify_ssl=verify_ssl,
                 user_agent_rotator=user_agent_rotator,
                 status_code_filter=status_code_filter,
+                hide_status_codes=hide_status_codes,
                 proxy=proxy,
             )
 
